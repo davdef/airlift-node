@@ -1,0 +1,404 @@
+// src/main.rs
+
+mod agent;
+mod ring;
+mod io;
+mod config;
+mod monitoring;
+mod recorder;
+mod audio;
+
+use std::path::PathBuf;
+use std::sync::{Arc};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
+use config::Config;
+
+use crate::io::peak_analyzer::{PeakAnalyzer, PeakEvent};
+use crate::io::broadcast_http::BroadcastHttp;
+use crate::io::influx_out::InfluxOut;
+
+use crate::recorder::{
+    run_recorder,
+    RecorderConfig,
+    WavSink,
+    Mp3Sink,
+    FsRetention,
+    AudioSink,
+};
+
+use crate::audio::http::start_audio_http_server;
+
+fn main() -> anyhow::Result<()> {
+    // ------------------------------------------------------------
+    // Config
+    // ------------------------------------------------------------
+    let cfg_path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "config.toml".into());
+
+    let cfg: Config = config::load(&cfg_path)?;
+    println!("[airlift] loaded {}", cfg_path);
+
+    // ------------------------------------------------------------
+    // Graceful shutdown
+    // ------------------------------------------------------------
+    let running = Arc::new(AtomicBool::new(true));
+    {
+        let r = running.clone();
+        ctrlc::set_handler(move || {
+            println!("\n[airlift] shutdown requested");
+            r.store(false, Ordering::SeqCst);
+        })?;
+    }
+
+    // ------------------------------------------------------------
+    // Agent / Ring
+    // ------------------------------------------------------------
+    let agent = agent::Agent::new(
+        cfg.ring.slots,
+        cfg.ring.prealloc_samples,
+    );
+
+    // ------------------------------------------------------------
+    // Monitoring
+    // ------------------------------------------------------------
+    monitoring::create_health_file()?;
+    let metrics = Arc::new(monitoring::Metrics::new());
+
+    start_monitoring(&cfg, &agent, metrics.clone(), running.clone());
+
+    // ------------------------------------------------------------
+    // IO NODES
+    // ------------------------------------------------------------
+    start_alsa_in(&cfg, &agent, metrics.clone());
+    start_udp_out(&cfg, &agent, metrics.clone());
+    start_icecast_out(&cfg, &agent);
+    start_mp3_out(&cfg, &agent);
+    start_srt_in(&cfg, &agent);
+    start_srt_out(&cfg, &agent);
+
+    // ------------------------------------------------------------
+    // Peaks / Influx / Broadcast
+    // ------------------------------------------------------------
+    start_peak_console(&agent);
+    start_peak_broadcast(&agent);
+    start_influx_and_broadcast(&agent);
+    // ------------------------------------------------------------
+    // Recorder (WAV / MP3 / Retention)
+    // ------------------------------------------------------------
+    start_recorder(&cfg, &agent)?;
+
+let ring = agent.ring.clone();
+
+start_audio_http_server(
+    "0.0.0.0:3007",
+    PathBuf::from("/data/aircheck/wav"),
+    move || ring.subscribe(),
+)?;
+
+    // ------------------------------------------------------------
+    // Main loop
+    // ------------------------------------------------------------
+    println!("[airlift] running – Ctrl+C to stop");
+
+    let mut last_stats = Instant::now();
+
+    while running.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(100));
+
+        if last_stats.elapsed() >= Duration::from_secs(5) {
+            let stats = agent.ring.stats();
+            let fill = stats.head_seq - stats.next_seq.wrapping_sub(1);
+
+            println!(
+                "[airlift] head_seq={} fill={}",
+                stats.head_seq,
+                fill
+            );
+
+            last_stats = Instant::now();
+        }
+    }
+
+    // ------------------------------------------------------------
+    // Shutdown
+    // ------------------------------------------------------------
+    println!("[airlift] shutting down…");
+    std::thread::sleep(Duration::from_secs(1));
+    monitoring::update_health_status(false)?;
+    println!("[airlift] shutdown complete");
+
+    Ok(())
+}
+
+//
+// ============================================================
+// START_* HELPERS
+// ============================================================
+//
+
+fn start_monitoring(
+    cfg: &Config,
+    agent: &agent::Agent,
+    metrics: Arc<monitoring::Metrics>,
+    running: Arc<AtomicBool>,
+) {
+    let ring = agent.ring.clone();
+    let port = cfg.monitoring.http_port;
+
+    std::thread::spawn(move || {
+        if let Err(e) = monitoring::run_metrics_server(
+            metrics,
+            ring,
+            port,
+            running,
+        ) {
+            eprintln!("[monitoring] error: {}", e);
+        }
+    });
+
+    println!("[airlift] monitoring on port {}", port);
+}
+
+fn start_alsa_in(
+    cfg: &Config,
+    agent: &agent::Agent,
+    metrics: Arc<monitoring::Metrics>,
+) {
+    if let Some(c) = &cfg.alsa_in {
+        if !c.enabled { return; }
+
+        let ring = agent.ring.clone();
+        std::thread::spawn(move || {
+            if let Err(e) = io::alsa_in::run_alsa_in(ring, metrics) {
+                eprintln!("[alsa_in] fatal: {}", e);
+            }
+        });
+
+        println!("[airlift] alsa_in enabled ({})", c.device);
+    }
+}
+
+fn start_udp_out(
+    cfg: &Config,
+    agent: &agent::Agent,
+    metrics: Arc<monitoring::Metrics>,
+) {
+    if let Some(c) = &cfg.udp_out {
+        if !c.enabled { return; }
+
+        let reader = agent.ring.subscribe();
+        let target = c.target.clone();
+
+        std::thread::spawn(move || {
+            if let Err(e) = io::udp_out::run_udp_out(reader, &target, metrics) {
+                eprintln!("[udp_out] fatal: {}", e);
+            }
+        });
+
+        println!("[airlift] udp_out → {}", c.target);
+    }
+}
+
+fn start_icecast_out(cfg: &Config, agent: &agent::Agent) {
+    if let Some(c) = &cfg.icecast_out {
+        if !c.enabled { return; }
+
+        let reader = agent.ring.subscribe();
+
+        let ice_cfg = io::icecast_out::IcecastConfig {
+            host: c.host.clone(),
+            port: c.port,
+            mount: c.mount.clone(),
+            user: c.user.clone(),
+            password: c.password.clone(),
+            name: c.name.clone(),
+            description: c.description.clone(),
+            genre: c.genre.clone(),
+            public: c.public,
+            opus_bitrate: c.bitrate,
+        };
+
+        std::thread::spawn(move || {
+            if let Err(e) = io::icecast_out::run_icecast_out(reader, ice_cfg) {
+                eprintln!("[icecast_out] fatal: {}", e);
+            }
+        });
+
+        println!("[airlift] icecast_out → {}:{}{}", c.host, c.port, c.mount);
+    }
+}
+
+fn start_mp3_out(cfg: &Config, agent: &agent::Agent) {
+    if let Some(c) = &cfg.mp3_out {
+        if !c.enabled { return; }
+
+        let reader = agent.ring.subscribe();
+
+        let mp3_cfg = io::mp3_out::Mp3Config {
+            host: c.host.clone(),
+            port: c.port,
+            mount: c.mount.clone(),
+            user: c.user.clone(),
+            password: c.password.clone(),
+            name: c.name.clone(),
+            description: c.description.clone(),
+            genre: c.genre.clone(),
+            public: c.public,
+            bitrate: c.bitrate,
+        };
+
+        std::thread::spawn(move || {
+            if let Err(e) = io::mp3_out::run_mp3_out(reader, mp3_cfg) {
+                eprintln!("[mp3_out] fatal: {}", e);
+            }
+        });
+
+        println!(
+            "[airlift] mp3_out → {}:{}{} ({} kbps)",
+            c.host, c.port, c.mount, c.bitrate
+        );
+    }
+}
+
+fn start_srt_in(cfg: &Config, agent: &agent::Agent) {
+    if let Some(c) = &cfg.srt_in {
+        if !c.enabled { return; }
+
+        let ring = agent.ring.clone();
+        let cfg = c.clone();
+
+        std::thread::spawn(move || {
+            if let Err(e) = io::srt_in::run_srt_in(ring, cfg) {
+                eprintln!("[srt_in] fatal: {}", e);
+            }
+        });
+
+        println!("[airlift] srt_in → {}", c.listen);
+    }
+}
+
+fn start_srt_out(cfg: &Config, agent: &agent::Agent) {
+    if let Some(c) = cfg.srt_out.clone() {
+        let reader = agent.ring.subscribe();
+        let target = c.target.clone();
+
+        std::thread::spawn(move || {
+            if let Err(e) = io::srt_out::run_srt_out(reader, c) {
+                eprintln!("[srt_out] fatal: {}", e);
+            }
+        });
+
+        println!("[airlift] srt_out → {}", target);
+    }
+}
+
+fn start_peak_console(agent: &agent::Agent) {
+    let reader = agent.ring.subscribe();
+
+    let handler = Box::new(|evt: &PeakEvent| {
+        println!(
+            "[peak] seq={} L={:.3} R={:.3} lat={:.1}ms",
+            evt.seq, evt.peak_l, evt.peak_r, evt.latency_ms
+        );
+    });
+
+    let mut analyzer = PeakAnalyzer::new(reader, handler, 100);
+    std::thread::spawn(move || analyzer.run());
+
+    println!("[airlift] peak_console enabled");
+}
+
+fn start_peak_broadcast(agent: &agent::Agent) {
+    let reader = agent.ring.subscribe();
+
+    let broadcaster = BroadcastHttp::new(
+        "http://localhost:3006/api/broadcast".to_string(),
+        100,
+    );
+
+    let handler = Box::new(move |evt: &PeakEvent| {
+        broadcaster.handle(evt);
+    });
+
+    let mut analyzer = PeakAnalyzer::new(reader, handler, 0);
+    std::thread::spawn(move || analyzer.run());
+
+    println!("[airlift] broadcast_http enabled");
+}
+
+fn start_influx_and_broadcast(agent: &agent::Agent) {
+    let reader = agent.ring.subscribe();
+
+    let influx = InfluxOut::new(
+        "http://localhost:8086/write".to_string(),
+        "rfm_aircheck".to_string(),
+        100,
+    );
+
+    let broadcaster = BroadcastHttp::new(
+        "http://localhost:3006/api/broadcast".to_string(),
+        100,
+    );
+
+    let handler = Box::new(move |evt: &PeakEvent| {
+        influx.handle(evt);
+        broadcaster.handle(evt);
+    });
+
+    let mut analyzer = PeakAnalyzer::new(reader, handler, 0);
+    std::thread::spawn(move || analyzer.run());
+
+    println!("[airlift] influx_out + broadcast_http enabled");
+}
+
+fn start_recorder(cfg: &Config, agent: &agent::Agent) -> anyhow::Result<()> {
+    let Some(c) = &cfg.recorder else { return Ok(()); };
+    if !c.enabled { return Ok(()); }
+
+    let reader = agent.ring.subscribe();
+
+    let mut sinks: Vec<Box<dyn AudioSink>> = Vec::new();
+
+    let wav_dir = PathBuf::from(&c.wav_dir);
+    sinks.push(Box::new(WavSink::new(wav_dir.clone())?));
+
+    if let Some(mp3) = &c.mp3 {
+        sinks.push(Box::new(
+            Mp3Sink::new(
+                wav_dir.clone(),
+                PathBuf::from(&mp3.dir),
+                mp3.bitrate,
+            )?
+        ));
+    }
+
+    let retentions: Vec<Box<dyn recorder::RetentionPolicy>> = vec![
+        Box::new(FsRetention::new(
+            wav_dir.clone(),
+            c.retention_days,
+        ))
+    ];
+
+    let rec_cfg = RecorderConfig {
+        idle_sleep: Duration::from_millis(5),
+        retention_interval: Duration::from_secs(3600),
+    };
+
+    std::thread::spawn(move || {
+        if let Err(e) = run_recorder(reader, rec_cfg, sinks, retentions) {
+            eprintln!("[recorder] fatal: {}", e);
+        }
+    });
+
+    println!(
+        "[airlift] recorder enabled (wav{}, retention {}d)",
+        if c.mp3.is_some() { "+mp3" } else { "" },
+        c.retention_days
+    );
+
+    Ok(())
+}
+

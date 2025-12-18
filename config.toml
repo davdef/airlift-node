@@ -1,0 +1,60 @@
+[ring]
+slots = 6000
+prealloc_samples = 9600  # 100ms bei 48kHz stereo
+
+[alsa_in]
+enabled = true
+device = "default"
+period_size = 480
+buffer_size = 1920
+
+[recorder]
+enabled = true
+wav_dir = "/data/aircheck/wav"
+retention_days = 7
+
+[recorder.mp3]
+dir = "/data/aircheck/mp3"
+bitrate = 192
+
+[srt_out]
+enabled = true
+target = "212.227.204.179:9000"
+latency_ms = 200
+
+[icecast_out]
+enabled = true
+host = "192.168.0.20"
+port = 8000
+mount = "/rfm.ogg"
+user = "source"
+password = "secret"
+bitrate = 96000
+name = "RFM"
+description = "Radio Free Music - Airlift Node"
+genre = "Radio"
+public = false
+
+[monitoring]
+stats_interval = 5
+http_port = 8087
+log_level = "info"
+
+[metadata]
+default = "RFM - Radio Free Music"
+file = "/tmp/airlift-metadata.txt"
+update_interval = 10
+
+# MP3 Stream (mit Metadaten-Unterstützung)
+[mp3_out]
+enabled = true
+host = "192.168.0.20"
+port = 8000
+mount = "/rfm.mp3"
+user = "source"
+password = "secret"
+bitrate = 128
+name = "RFM MP3"
+description = "Radio Free Music - MP3 Stream"
+genre = "Radio"
+public = true
