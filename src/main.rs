@@ -87,11 +87,7 @@ fn main() -> anyhow::Result<()> {
 
     let ring = agent.ring.clone();
 
-    start_audio_http_server(
-        "0.0.0.0:3007",
-        PathBuf::from("/data/aircheck/wav"),
-        move || ring.subscribe(),
-    )?;
+    start_audio_http(&agent)?;
 
     // ------------------------------------------------------------
     // Main loop
@@ -336,6 +332,19 @@ fn start_influx_and_broadcast(agent: &agent::Agent) {
     std::thread::spawn(move || analyzer.run());
 
     info!("[airlift] influx_out + broadcast_http enabled");
+}
+
+fn start_audio_http(agent: &agent::Agent) -> anyhow::Result<()> {
+    let ring = agent.ring.clone();
+
+    start_audio_http_server(
+        "0.0.0.0:3007",
+        PathBuf::from("/data/aircheck/wav"),
+        move || ring.subscribe(),
+    )?;
+
+    info!("[airlift] audio_http enabled (0.0.0.0:3007)");
+    Ok(())
 }
 
 fn start_recorder(cfg: &Config, agent: &agent::Agent) -> anyhow::Result<()> {

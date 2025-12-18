@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use log::{debug, error, info, warn};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
@@ -31,11 +31,7 @@ pub fn start_audio_http_server(
 
     thread::spawn(move || {
         for req in server.incoming_requests() {
-            info!(
-                "[audio] incoming {} {}",
-                req.method(),
-                req.url()
-            );
+            info!("[audio] incoming {} {}", req.method(), req.url());
 
             if req.method() != &Method::Get {
                 let _ = req.respond(Response::empty(StatusCode(405)));
@@ -77,10 +73,8 @@ fn handle_timeshift(req: tiny_http::Request, wav_dir: Arc<PathBuf>) {
         Some(ts) => ts,
         None => {
             warn!("[audio] /audio/at missing ts");
-            let _ = req.respond(
-                Response::from_string("missing ts")
-                    .with_status_code(StatusCode(400)),
-            );
+            let _ =
+                req.respond(Response::from_string("missing ts").with_status_code(StatusCode(400)));
             return;
         }
     };
@@ -143,10 +137,7 @@ fn handle_timeshift(req: tiny_http::Request, wav_dir: Arc<PathBuf>) {
 // Live
 // ============================================================================
 
-fn handle_live(
-    req: tiny_http::Request,
-    ring_factory: Arc<dyn Fn() -> RingReader + Send + Sync>,
-) {
+fn handle_live(req: tiny_http::Request, ring_factory: Arc<dyn Fn() -> RingReader + Send + Sync>) {
     info!("[audio] live start");
 
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
@@ -170,9 +161,49 @@ fn handle_live(
 
     let mut ring_reader = ring_factory();
 
-info!("[audio] live waiting for first audio chunk…");
-ring_reader.wait_for_data();
-info!("[audio] live first audio chunk available");
+    let head_seq = ring_reader.head_seq();
+    let last_seq = ring_reader.last_seq();
+    let fill = ring_reader.fill();
+    info!(
+        "[audio] live subscribe state head_seq={} last_seq={} fill={}",
+        head_seq, last_seq, fill
+    );
+
+    info!("[audio] live waiting for first audio chunk…");
+
+    let wait_start = Instant::now();
+    let mut waits = 0u64;
+
+    loop {
+        match ring_reader.poll() {
+            RingRead::Chunk(_) => {
+                info!("[audio] live first audio chunk available");
+                break;
+            }
+            RingRead::Gap { missed } => {
+                warn!("[audio] live GAP while waiting missed={}", missed);
+            }
+            RingRead::Empty => {
+                waits += 1;
+
+                if waits % 200 == 0 {
+                    let head_seq = ring_reader.head_seq();
+                    let last_seq = ring_reader.last_seq();
+                    let fill = ring_reader.fill();
+                    info!(
+                        "[audio] live still waiting (elapsed={}ms head_seq={} last_seq={} fill={} waits={})",
+                        wait_start.elapsed().as_millis(),
+                        head_seq,
+                        last_seq,
+                        fill,
+                        waits,
+                    );
+                }
+
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
 
     thread::spawn(move || {
         let mut ffmpeg = match spawn_ffmpeg("live") {
@@ -184,32 +215,32 @@ info!("[audio] live first audio chunk available");
         let ff_stdout = ffmpeg.stdout.take().unwrap();
 
         let feeder = thread::spawn(move || {
-let mut empty = 0u64;
+            let mut empty = 0u64;
 
-loop {
-    match ring_reader.poll() {
-        RingRead::Chunk(slot) => {
-            info!(
-                "[audio] LIVE GOT CHUNK seq={} after {} empties",
-                slot.seq, empty
-            );
-            let bytes = bytemuck::cast_slice::<i16, u8>(&slot.pcm);
-            let _ = ff_stdin.write_all(bytes);
-            let _ = ff_stdin.flush();
-            empty = 0;
-        }
-        RingRead::Empty => {
-            empty += 1;
-            if empty % 1000 == 0 {
-                info!("[audio] live still empty ({})", empty);
+            loop {
+                match ring_reader.poll() {
+                    RingRead::Chunk(slot) => {
+                        info!(
+                            "[audio] LIVE GOT CHUNK seq={} after {} empties",
+                            slot.seq, empty
+                        );
+                        let bytes = bytemuck::cast_slice::<i16, u8>(&slot.pcm);
+                        let _ = ff_stdin.write_all(bytes);
+                        let _ = ff_stdin.flush();
+                        empty = 0;
+                    }
+                    RingRead::Empty => {
+                        empty += 1;
+                        if empty % 1000 == 0 {
+                            info!("[audio] live still empty ({})", empty);
+                        }
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    RingRead::Gap { missed } => {
+                        warn!("[audio] live GAP missed={}", missed);
+                    }
+                }
             }
-            thread::sleep(Duration::from_millis(5));
-        }
-        RingRead::Gap { missed } => {
-            warn!("[audio] live GAP missed={}", missed);
-        }
-    }
-}
         });
 
         debug!("[audio] live pumping ffmpeg stdout");
@@ -230,26 +261,38 @@ fn spawn_ffmpeg(tag: &str) -> Option<std::process::Child> {
 
     match Command::new("ffmpeg")
         .args([
-            "-loglevel", "error",
-
+            "-loglevel",
+            "error",
             // INPUT
-            "-f", "s16le",
-            "-ar", "48000",
-            "-ac", "2",
-            "-i", "pipe:0",
-
+            "-f",
+            "s16le",
+            "-ar",
+            "48000",
+            "-ac",
+            "2",
+            "-i",
+            "pipe:0",
             // LOW LATENCY OUTPUT
-            "-acodec", "libmp3lame",
-            "-b:a", "128k",
-            "-compression_level", "0",
-            "-flush_packets", "1",
-            "-fflags", "nobuffer",
-            "-flags", "low_delay",
-            "-max_delay", "0",
-            "-muxdelay", "0",
-            "-muxpreload", "0",
-
-            "-f", "mp3",
+            "-acodec",
+            "libmp3lame",
+            "-b:a",
+            "128k",
+            "-compression_level",
+            "0",
+            "-flush_packets",
+            "1",
+            "-fflags",
+            "nobuffer",
+            "-flags",
+            "low_delay",
+            "-max_delay",
+            "0",
+            "-muxdelay",
+            "0",
+            "-muxpreload",
+            "0",
+            "-f",
+            "mp3",
             "pipe:1",
         ])
         .stdin(Stdio::piped())
