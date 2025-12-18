@@ -7,6 +7,7 @@ mod io;
 mod monitoring;
 mod recorder;
 mod ring;
+mod web;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -16,9 +17,9 @@ use std::time::{Duration, Instant};
 use config::Config;
 use log::{debug, error, info};
 
-use crate::io::broadcast_http::BroadcastHttp;
-use crate::io::influx_out::InfluxOut;
 use crate::io::peak_analyzer::{PeakAnalyzer, PeakEvent};
+use crate::web::influx_service::InfluxService;
+use crate::web::peak_storage::PeakStorage;
 
 use crate::recorder::{AudioSink, FsRetention, Mp3Sink, RecorderConfig, WavSink, run_recorder};
 
@@ -78,8 +79,7 @@ fn main() -> anyhow::Result<()> {
     // Peaks / Influx / Broadcast
     // ------------------------------------------------------------
     start_peak_console(&agent);
-    start_peak_broadcast(&agent);
-    start_influx_and_broadcast(&agent);
+    start_web_layer(&agent);
     // ------------------------------------------------------------
     // Recorder (WAV / MP3 / Retention)
     // ------------------------------------------------------------
@@ -297,41 +297,39 @@ fn start_peak_console(agent: &agent::Agent) {
     info!("[airlift] peak_console enabled");
 }
 
-fn start_peak_broadcast(agent: &agent::Agent) {
-    let reader = agent.ring.subscribe();
-
-    let broadcaster = BroadcastHttp::new("http://localhost:3006/api/broadcast".to_string(), 100);
-
-    let handler = Box::new(move |evt: &PeakEvent| {
-        broadcaster.handle(evt);
-    });
-
-    let mut analyzer = PeakAnalyzer::new(reader, handler, 0);
-    std::thread::spawn(move || analyzer.run());
-
-    info!("[airlift] broadcast_http enabled");
-}
-
-fn start_influx_and_broadcast(agent: &agent::Agent) {
-    let reader = agent.ring.subscribe();
-
-    let influx = InfluxOut::new(
+fn start_web_layer(agent: &agent::Agent) {
+    let peaks = Arc::new(PeakStorage::new(1000));
+    let influx = Arc::new(InfluxService::new(
         "http://localhost:8086/write".to_string(),
         "rfm_aircheck".to_string(),
         100,
-    );
+    ));
 
-    let broadcaster = BroadcastHttp::new("http://localhost:3006/api/broadcast".to_string(), 100);
+    let state = web::AppState {
+        peaks: peaks.clone(),
+        influx: influx.clone(),
+    };
 
-    let handler = Box::new(move |evt: &PeakEvent| {
-        influx.handle(evt);
-        broadcaster.handle(evt);
+    let reader = agent.ring.subscribe();
+    let app_state = state.clone();
+    std::thread::spawn(move || {
+        let handler = Box::new(move |evt: &PeakEvent| {
+            web::merge_peak_into_state(&app_state, evt.clone());
+        });
+
+        let mut analyzer = PeakAnalyzer::new(reader, handler, 0);
+        analyzer.run();
     });
 
-    let mut analyzer = PeakAnalyzer::new(reader, handler, 0);
-    std::thread::spawn(move || analyzer.run());
+    std::thread::spawn(move || {
+        let addr = "0.0.0.0:3006".parse().unwrap();
+        let rt = tokio::runtime::Runtime::new().expect("web runtime");
+        if let Err(err) = rt.block_on(web::serve(state, addr)) {
+            error!("[web] server error: {}", err);
+        }
+    });
 
-    info!("[airlift] influx_out + broadcast_http enabled");
+    info!("[airlift] web layer enabled (0.0.0.0:3006)");
 }
 
 fn start_audio_http(agent: &agent::Agent) -> anyhow::Result<()> {
