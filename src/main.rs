@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use config::Config;
+use log::{debug, error, info};
 
 use crate::io::broadcast_http::BroadcastHttp;
 use crate::io::influx_out::InfluxOut;
@@ -24,6 +25,10 @@ use crate::recorder::{AudioSink, FsRetention, Mp3Sink, RecorderConfig, WavSink, 
 use crate::audio::http::start_audio_http_server;
 
 fn main() -> anyhow::Result<()> {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format_timestamp_millis()
+        .init();
+
     // ------------------------------------------------------------
     // Config
     // ------------------------------------------------------------
@@ -32,7 +37,7 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| "config.toml".into());
 
     let cfg: Config = config::load(&cfg_path)?;
-    println!("[airlift] loaded {}", cfg_path);
+    info!("[airlift] loaded {}", cfg_path);
 
     // ------------------------------------------------------------
     // Graceful shutdown
@@ -41,7 +46,7 @@ fn main() -> anyhow::Result<()> {
     {
         let r = running.clone();
         ctrlc::set_handler(move || {
-            println!("\n[airlift] shutdown requested");
+            info!("\n[airlift] shutdown requested");
             r.store(false, Ordering::SeqCst);
         })?;
     }
@@ -91,7 +96,7 @@ fn main() -> anyhow::Result<()> {
     // ------------------------------------------------------------
     // Main loop
     // ------------------------------------------------------------
-    println!("[airlift] running – Ctrl+C to stop");
+    info!("[airlift] running – Ctrl+C to stop");
 
     let mut last_stats = Instant::now();
 
@@ -102,7 +107,7 @@ fn main() -> anyhow::Result<()> {
             let stats = agent.ring.stats();
             let fill = stats.head_seq - stats.next_seq.wrapping_sub(1);
 
-            println!("[airlift] head_seq={} fill={}", stats.head_seq, fill);
+            debug!("[airlift] head_seq={} fill={}", stats.head_seq, fill);
 
             last_stats = Instant::now();
         }
@@ -111,10 +116,10 @@ fn main() -> anyhow::Result<()> {
     // ------------------------------------------------------------
     // Shutdown
     // ------------------------------------------------------------
-    println!("[airlift] shutting down…");
+    info!("[airlift] shutting down…");
     std::thread::sleep(Duration::from_secs(1));
     monitoring::update_health_status(false)?;
-    println!("[airlift] shutdown complete");
+    info!("[airlift] shutdown complete");
 
     Ok(())
 }
@@ -136,11 +141,11 @@ fn start_monitoring(
 
     std::thread::spawn(move || {
         if let Err(e) = monitoring::run_metrics_server(metrics, ring, port, running) {
-            eprintln!("[monitoring] error: {}", e);
+            error!("[monitoring] error: {}", e);
         }
     });
 
-    println!("[airlift] monitoring on port {}", port);
+    info!("[airlift] monitoring on port {}", port);
 }
 
 fn start_alsa_in(cfg: &Config, agent: &agent::Agent, metrics: Arc<monitoring::Metrics>) {
@@ -152,11 +157,11 @@ fn start_alsa_in(cfg: &Config, agent: &agent::Agent, metrics: Arc<monitoring::Me
         let ring = agent.ring.clone();
         std::thread::spawn(move || {
             if let Err(e) = io::alsa_in::run_alsa_in(ring, metrics) {
-                eprintln!("[alsa_in] fatal: {}", e);
+                error!("[alsa_in] fatal: {}", e);
             }
         });
 
-        println!("[airlift] alsa_in enabled ({})", c.device);
+        info!("[airlift] alsa_in enabled ({})", c.device);
     }
 }
 
@@ -171,11 +176,11 @@ fn start_udp_out(cfg: &Config, agent: &agent::Agent, metrics: Arc<monitoring::Me
 
         std::thread::spawn(move || {
             if let Err(e) = io::udp_out::run_udp_out(reader, &target, metrics) {
-                eprintln!("[udp_out] fatal: {}", e);
+                error!("[udp_out] fatal: {}", e);
             }
         });
 
-        println!("[airlift] udp_out → {}", c.target);
+        info!("[airlift] udp_out → {}", c.target);
     }
 }
 
@@ -202,11 +207,11 @@ fn start_icecast_out(cfg: &Config, agent: &agent::Agent) {
 
         std::thread::spawn(move || {
             if let Err(e) = io::icecast_out::run_icecast_out(reader, ice_cfg) {
-                eprintln!("[icecast_out] fatal: {}", e);
+                error!("[icecast_out] fatal: {}", e);
             }
         });
 
-        println!("[airlift] icecast_out → {}:{}{}", c.host, c.port, c.mount);
+        info!("[airlift] icecast_out → {}:{}{}", c.host, c.port, c.mount);
     }
 }
 
@@ -233,11 +238,11 @@ fn start_mp3_out(cfg: &Config, agent: &agent::Agent) {
 
         std::thread::spawn(move || {
             if let Err(e) = io::mp3_out::run_mp3_out(reader, mp3_cfg) {
-                eprintln!("[mp3_out] fatal: {}", e);
+                error!("[mp3_out] fatal: {}", e);
             }
         });
 
-        println!(
+        info!(
             "[airlift] mp3_out → {}:{}{} ({} kbps)",
             c.host, c.port, c.mount, c.bitrate
         );
@@ -256,11 +261,11 @@ fn start_srt_in(cfg: &Config, agent: &agent::Agent, running: Arc<AtomicBool>) {
 
         std::thread::spawn(move || {
             if let Err(e) = io::srt_in::run_srt_in(ring, cfg, running) {
-                eprintln!("[srt_in] fatal: {}", e);
+                error!("[srt_in] fatal: {}", e);
             }
         });
 
-        println!("[airlift] srt_in → {}", c.listen);
+        info!("[airlift] srt_in → {}", c.listen);
     }
 }
 
@@ -272,11 +277,11 @@ fn start_srt_out(cfg: &Config, agent: &agent::Agent, running: Arc<AtomicBool>) {
 
         std::thread::spawn(move || {
             if let Err(e) = io::srt_out::run_srt_out(reader, c, running) {
-                eprintln!("[srt_out] fatal: {}", e);
+                error!("[srt_out] fatal: {}", e);
             }
         });
 
-        println!("[airlift] srt_out → {}", target);
+        info!("[airlift] srt_out → {}", target);
     }
 }
 
@@ -284,7 +289,7 @@ fn start_peak_console(agent: &agent::Agent) {
     let reader = agent.ring.subscribe();
 
     let handler = Box::new(|evt: &PeakEvent| {
-        println!(
+        debug!(
             "[peak] seq={} L={:.3} R={:.3} lat={:.1}ms",
             evt.seq, evt.peak_l, evt.peak_r, evt.latency_ms
         );
@@ -293,7 +298,7 @@ fn start_peak_console(agent: &agent::Agent) {
     let mut analyzer = PeakAnalyzer::new(reader, handler, 100);
     std::thread::spawn(move || analyzer.run());
 
-    println!("[airlift] peak_console enabled");
+    info!("[airlift] peak_console enabled");
 }
 
 fn start_peak_broadcast(agent: &agent::Agent) {
@@ -308,7 +313,7 @@ fn start_peak_broadcast(agent: &agent::Agent) {
     let mut analyzer = PeakAnalyzer::new(reader, handler, 0);
     std::thread::spawn(move || analyzer.run());
 
-    println!("[airlift] broadcast_http enabled");
+    info!("[airlift] broadcast_http enabled");
 }
 
 fn start_influx_and_broadcast(agent: &agent::Agent) {
@@ -330,7 +335,7 @@ fn start_influx_and_broadcast(agent: &agent::Agent) {
     let mut analyzer = PeakAnalyzer::new(reader, handler, 0);
     std::thread::spawn(move || analyzer.run());
 
-    println!("[airlift] influx_out + broadcast_http enabled");
+    info!("[airlift] influx_out + broadcast_http enabled");
 }
 
 fn start_recorder(cfg: &Config, agent: &agent::Agent) -> anyhow::Result<()> {
@@ -368,11 +373,11 @@ fn start_recorder(cfg: &Config, agent: &agent::Agent) -> anyhow::Result<()> {
 
     std::thread::spawn(move || {
         if let Err(e) = run_recorder(reader, rec_cfg, sinks, retentions) {
-            eprintln!("[recorder] fatal: {}", e);
+            error!("[recorder] fatal: {}", e);
         }
     });
 
-    println!(
+    info!(
         "[airlift] recorder enabled (wav{}, retention {}d)",
         if c.mp3.is_some() { "+mp3" } else { "" },
         c.retention_days

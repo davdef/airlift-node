@@ -7,6 +7,7 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
 
+use log::{debug, error, info, warn};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
 
 use crate::audio::timeshift::stream_timeshift;
@@ -26,7 +27,7 @@ pub fn start_audio_http_server(
     let wav_dir = Arc::new(wav_dir);
     let ring_factory = Arc::new(ring_reader_factory);
 
-    println!("[audio] HTTP server on {}", bind);
+    info!("[audio] HTTP server on {}", bind);
 
     thread::spawn(move || {
         for req in server.incoming_requests() {
@@ -39,6 +40,7 @@ pub fn start_audio_http_server(
             // /audio/at?ts=...
             // ----------------------------------------------------------------
             if req.url().starts_with("/audio/at") {
+                debug!("[audio] /audio/at requested: {}", req.url());
                 handle_timeshift(req, wav_dir.clone());
                 continue;
             }
@@ -47,6 +49,7 @@ pub fn start_audio_http_server(
             // /audio/live
             // ----------------------------------------------------------------
             if req.url() == "/audio/live" {
+                debug!("[audio] /audio/live requested");
                 handle_live(req, ring_factory.clone());
                 continue;
             }
@@ -95,7 +98,7 @@ fn handle_timeshift(req: tiny_http::Request, wav_dir: Arc<PathBuf>) {
         let mut ffmpeg = match Command::new("ffmpeg")
             .args([
                 "-loglevel",
-                "quiet",
+                "error",
                 "-f",
                 "s16le",
                 "-ar",
@@ -113,7 +116,10 @@ fn handle_timeshift(req: tiny_http::Request, wav_dir: Arc<PathBuf>) {
             .spawn()
         {
             Ok(p) => p,
-            Err(_) => return,
+            Err(e) => {
+                error!("[audio] ffmpeg spawn failed (timeshift): {}", e);
+                return;
+            }
         };
 
         let mut ff_stdin = ffmpeg.stdin.take().unwrap();
@@ -123,10 +129,13 @@ fn handle_timeshift(req: tiny_http::Request, wav_dir: Arc<PathBuf>) {
         let feeder = thread::spawn({
             let wav_dir = (*wav_dir).clone();
             move || {
-                let _ = stream_timeshift(wav_dir, ts, |pcm| {
+                let res = stream_timeshift(wav_dir, ts, |pcm| {
                     ff_stdin.write_all(pcm)?;
                     Ok(())
                 });
+                if let Err(e) = res {
+                    warn!("[audio] timeshift streaming ended: {}", e);
+                }
             }
         });
 
@@ -135,6 +144,7 @@ fn handle_timeshift(req: tiny_http::Request, wav_dir: Arc<PathBuf>) {
 
         let _ = ffmpeg.kill();
         let _ = feeder.join();
+        debug!("[audio] timeshift handler finished");
     });
 }
 
@@ -167,7 +177,7 @@ fn handle_live(req: tiny_http::Request, ring_factory: Arc<dyn Fn() -> RingReader
         let mut ffmpeg = match Command::new("ffmpeg")
             .args([
                 "-loglevel",
-                "quiet",
+                "error",
                 "-f",
                 "s16le",
                 "-ar",
@@ -185,7 +195,10 @@ fn handle_live(req: tiny_http::Request, ring_factory: Arc<dyn Fn() -> RingReader
             .spawn()
         {
             Ok(p) => p,
-            Err(_) => return,
+            Err(e) => {
+                error!("[audio] ffmpeg spawn failed (live): {}", e);
+                return;
+            }
         };
 
         let mut ff_stdin = ffmpeg.stdin.take().unwrap();
@@ -198,6 +211,7 @@ fn handle_live(req: tiny_http::Request, ring_factory: Arc<dyn Fn() -> RingReader
                     RingRead::Chunk(slot) => {
                         let bytes = bytemuck::cast_slice::<i16, u8>(&slot.pcm);
                         if ff_stdin.write_all(bytes).is_err() {
+                            warn!("[audio] ffmpeg stdin closed (live)");
                             break;
                         }
                     }
@@ -214,6 +228,7 @@ fn handle_live(req: tiny_http::Request, ring_factory: Arc<dyn Fn() -> RingReader
 
         let _ = ffmpeg.kill();
         let _ = feeder.join();
+        debug!("[audio] live handler finished");
     });
 }
 
