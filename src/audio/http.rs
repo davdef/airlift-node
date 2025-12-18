@@ -82,7 +82,11 @@ fn handle_timeshift(req: tiny_http::Request, wav_dir: Arc<PathBuf>) {
     info!("[audio] timeshift start ts={}", ts);
 
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
-    let reader = ChannelReader { rx };
+    let reader = ChannelReader {
+        rx,
+        pending: Vec::new(),
+        pending_pos: 0,
+    };
 
     let response = Response::new(
         StatusCode(200),
@@ -157,7 +161,11 @@ fn handle_live(req: tiny_http::Request, ring_factory: Arc<dyn Fn() -> RingReader
 
     // Kanal ERSTELLEN (vor Thread-Spawn)
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
-    let reader = ChannelReader { rx };
+    let reader = ChannelReader {
+        rx,
+        pending: Vec::new(),
+        pending_pos: 0,
+    };
 
     // Response vorbereiten
     let response = Response::new(
@@ -283,7 +291,7 @@ fn handle_live(req: tiny_http::Request, ring_factory: Arc<dyn Fn() -> RingReader
     }
 
     info!("[audio] live HTTP response sent, streaming started");
-    
+
     // Worker-Thread nicht joinen (blockiert), aber wir behalten den Handle
     drop(worker_handle); // Handle verwerfen, Thread läuft unabhängig weiter
 }
@@ -373,17 +381,50 @@ fn pump_ffmpeg_stdout(mut ff_stdout: impl Read, tx: mpsc::Sender<Vec<u8>>) {
 
 struct ChannelReader {
     rx: mpsc::Receiver<Vec<u8>>,
+    /// Buffer für nicht vollständig gelesene Chunks
+    pending: Vec<u8>,
+    pending_pos: usize,
 }
 
 impl Read for ChannelReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let mut written = 0;
+
+        // Solange der Puffer noch Daten hat, zuerst diese bedienen
+        if self.pending_pos < self.pending.len() {
+            let available = self.pending.len() - self.pending_pos;
+            let n = available.min(buf.len());
+            buf[..n].copy_from_slice(&self.pending[self.pending_pos..self.pending_pos + n]);
+            self.pending_pos += n;
+            written += n;
+
+            if self.pending_pos >= self.pending.len() {
+                self.pending.clear();
+                self.pending_pos = 0;
+            }
+
+            if written == buf.len() {
+                return Ok(written);
+            }
+        }
+
+        // Falls noch Platz im Ziel-Buffer ist, neuen Chunk holen
         match self.rx.recv() {
             Ok(chunk) => {
-                let n = chunk.len().min(buf.len());
-                buf[..n].copy_from_slice(&chunk[..n]);
-                Ok(n)
+                let n = (buf.len() - written).min(chunk.len());
+                buf[written..written + n].copy_from_slice(&chunk[..n]);
+                written += n;
+
+                // Rest für nächste Reads merken
+                if n < chunk.len() {
+                    self.pending.clear();
+                    self.pending.extend_from_slice(&chunk[n..]);
+                    self.pending_pos = 0;
+                }
+
+                Ok(written)
             }
-            Err(_) => Ok(0),
+            Err(_) => Ok(written),
         }
     }
 }
