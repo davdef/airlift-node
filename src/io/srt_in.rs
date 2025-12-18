@@ -46,17 +46,13 @@ async fn async_run(ring: AudioRing, cfg: SrtInConfig, running: Arc<AtomicBool>) 
 
         while running.load(Ordering::Relaxed) {
             match timeout(INACTIVITY_TIMEOUT, rx.try_next()).await {
-                Ok(Ok(Some((_instant, msg)))) => {
+                Ok(Some((_instant, msg))) => {
                     if let Err(e) = handle_rfma(&ring, &msg) {
                         eprintln!("[srt_in] frame error: {e}");
                     }
                 }
-                Ok(Ok(None)) => {
+                Ok(None) => {
                     println!("[srt_in] client disconnected");
-                    break;
-                }
-                Ok(Err(e)) => {
-                    eprintln!("[srt_in] receive error: {e}");
                     break;
                 }
                 Err(_) => {
