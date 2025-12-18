@@ -81,16 +81,12 @@ fn handle_timeshift(req: tiny_http::Request, wav_dir: Arc<PathBuf>) {
 
     info!("[audio] timeshift start ts={}", ts);
 
-    let mut ffmpeg = match spawn_ffmpeg("timeshift") {
-        Some(p) => p,
-        None => {
-            warn!("[audio] timeshift ffmpeg spawn failed");
-            let _ = req.respond(Response::empty(StatusCode(500)));
-            return;
-        }
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let reader = ChannelReader {
+        rx,
+        pending: Vec::new(),
+        pending_pos: 0,
     };
-    let ff_stdin = ffmpeg.stdin.take().unwrap();
-    let ff_stdout = ffmpeg.stdout.take().unwrap();
 
     let response = Response::new(
         StatusCode(200),
@@ -123,16 +119,13 @@ fn handle_timeshift(req: tiny_http::Request, wav_dir: Arc<PathBuf>) {
 fn handle_live(req: tiny_http::Request, ring_factory: Arc<dyn Fn() -> RingReader + Send + Sync>) {
     info!("[audio] live start");
 
-    let mut ffmpeg = match spawn_ffmpeg("live") {
-        Some(p) => p,
-        None => {
-            warn!("[audio] live ffmpeg spawn failed");
-            let _ = req.respond(Response::empty(StatusCode(500)));
-            return;
-        }
+    // Kanal ERSTELLEN (vor Thread-Spawn)
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let reader = ChannelReader {
+        rx,
+        pending: Vec::new(),
+        pending_pos: 0,
     };
-    let ff_stdin = ffmpeg.stdin.take().unwrap();
-    let ff_stdout = ffmpeg.stdout.take().unwrap();
 
     // Response vorbereiten
     let response = Response::new(
@@ -156,6 +149,9 @@ fn handle_live(req: tiny_http::Request, ring_factory: Arc<dyn Fn() -> RingReader
     }
 
     info!("[audio] live HTTP response sent, streaming started");
+
+    // Worker-Thread nicht joinen (blockiert), aber wir behalten den Handle
+    drop(worker_handle); // Handle verwerfen, Thread läuft unabhängig weiter
 }
 
 // ============================================================================
@@ -326,10 +322,11 @@ fn spawn_live_feeder(
     })
 }
 
-struct FfmpegBody {
-    stdout: ChildStdout,
-    child: Option<Child>,
-    feeder: Option<thread::JoinHandle<()>>,
+struct ChannelReader {
+    rx: mpsc::Receiver<Vec<u8>>,
+    /// Buffer für nicht vollständig gelesene Chunks
+    pending: Vec<u8>,
+    pending_pos: usize,
 }
 
 impl FfmpegBody {
@@ -344,18 +341,43 @@ impl FfmpegBody {
 
 impl Read for FfmpegBody {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.stdout.read(buf)
-    }
-}
+        let mut written = 0;
 
-impl Drop for FfmpegBody {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
+        // Solange der Puffer noch Daten hat, zuerst diese bedienen
+        if self.pending_pos < self.pending.len() {
+            let available = self.pending.len() - self.pending_pos;
+            let n = available.min(buf.len());
+            buf[..n].copy_from_slice(&self.pending[self.pending_pos..self.pending_pos + n]);
+            self.pending_pos += n;
+            written += n;
+
+            if self.pending_pos >= self.pending.len() {
+                self.pending.clear();
+                self.pending_pos = 0;
+            }
+
+            if written == buf.len() {
+                return Ok(written);
+            }
         }
 
-        if let Some(handle) = self.feeder.take() {
-            let _ = handle.join();
+        // Falls noch Platz im Ziel-Buffer ist, neuen Chunk holen
+        match self.rx.recv() {
+            Ok(chunk) => {
+                let n = (buf.len() - written).min(chunk.len());
+                buf[written..written + n].copy_from_slice(&chunk[..n]);
+                written += n;
+
+                // Rest für nächste Reads merken
+                if n < chunk.len() {
+                    self.pending.clear();
+                    self.pending.extend_from_slice(&chunk[n..]);
+                    self.pending_pos = 0;
+                }
+
+                Ok(written)
+            }
+            Err(_) => Ok(written),
         }
     }
 }
