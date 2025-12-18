@@ -19,8 +19,10 @@ bitrate = 192
 
 [srt_out]
 enabled = true
+mode = "caller"
 target = "212.227.204.179:9000"
 latency_ms = 200
+streamid = "airlift"
 
 [icecast_out]
 enabled = true
