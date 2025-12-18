@@ -1,47 +1,78 @@
-use anyhow::{Result, anyhow};
-use crate::ring::AudioRing;
 use crate::config::SrtInConfig;
+use crate::ring::AudioRing;
+use anyhow::{Result, anyhow};
 
 use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use std::io::{Cursor, Read};
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use tokio::runtime::Runtime;
-use srt_tokio::SrtSocket;
 use futures_util::TryStreamExt;
+use srt_tokio::SrtSocket;
+use tokio::runtime::Runtime;
+use tokio::time::{sleep, timeout};
 
 const MAGIC: &[u8; 4] = b"RFMA";
+const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(5);
+const SHUTDOWN_POLL_MS: u64 = 100;
 
-pub fn run_srt_in(ring: AudioRing, cfg: SrtInConfig) -> Result<()> {
+pub fn run_srt_in(ring: AudioRing, cfg: SrtInConfig, running: Arc<AtomicBool>) -> Result<()> {
     let rt = Runtime::new()?;
-    rt.block_on(async move { async_run(ring, cfg).await })
+    rt.block_on(async move { async_run(ring, cfg, running).await })
 }
 
-async fn async_run(ring: AudioRing, cfg: SrtInConfig) -> Result<()> {
+async fn async_run(ring: AudioRing, cfg: SrtInConfig, running: Arc<AtomicBool>) -> Result<()> {
     let addr: SocketAddr = cfg.listen.parse()?;
-    let port = addr.port();
 
-    println!("[srt_in] listening on {} (port {})", cfg.listen, port);
+    println!("[srt_in] listening on {}", cfg.listen);
 
-    loop {
+    while running.load(Ordering::Relaxed) {
         println!("[srt_in] waiting for client …");
 
-        let mut rx = SrtSocket::builder()
+        let listen_fut = SrtSocket::builder()
             .latency(Duration::from_millis(cfg.latency_ms as u64))
-            .listen_on(port)
-            .await?;
+            .listen_on(addr);
+
+        let mut rx = tokio::select! {
+            res = listen_fut => res?,
+            _ = wait_for_shutdown(running.clone()) => {
+                break;
+            }
+        };
 
         println!("[srt_in] client connected");
 
-        while let Some((_instant, msg)) = rx.try_next().await? {
-            if let Err(e) = handle_rfma(&ring, &msg) {
-                eprintln!("[srt_in] frame error: {e}");
+        while running.load(Ordering::Relaxed) {
+            match timeout(INACTIVITY_TIMEOUT, rx.try_next()).await {
+                Ok(Ok(Some((_instant, msg)))) => {
+                    if let Err(e) = handle_rfma(&ring, &msg) {
+                        eprintln!("[srt_in] frame error: {e}");
+                    }
+                }
+                Ok(Ok(None)) => {
+                    println!("[srt_in] client disconnected");
+                    break;
+                }
+                Ok(Err(e)) => {
+                    eprintln!("[srt_in] receive error: {e}");
+                    break;
+                }
+                Err(_) => {
+                    eprintln!(
+                        "[srt_in] receive timeout after {:?}, dropping client",
+                        INACTIVITY_TIMEOUT
+                    );
+                    break;
+                }
             }
         }
 
         println!("[srt_in] client disconnected");
     }
+
+    Ok(())
 }
 
 fn handle_rfma(ring: &AudioRing, buf: &[u8]) -> Result<()> {
@@ -69,4 +100,10 @@ fn handle_rfma(ring: &AudioRing, buf: &[u8]) -> Result<()> {
 
     ring.writer_push(utc_ns, pcm);
     Ok(())
+}
+
+async fn wait_for_shutdown(running: Arc<AtomicBool>) {
+    while running.load(Ordering::Relaxed) {
+        sleep(Duration::from_millis(SHUTDOWN_POLL_MS)).await;
+    }
 }

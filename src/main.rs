@@ -1,32 +1,25 @@
 // src/main.rs
 
 mod agent;
-mod ring;
-mod io;
+mod audio;
 mod config;
+mod io;
 mod monitoring;
 mod recorder;
-mod audio;
+mod ring;
 
 use std::path::PathBuf;
-use std::sync::{Arc};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use config::Config;
 
-use crate::io::peak_analyzer::{PeakAnalyzer, PeakEvent};
 use crate::io::broadcast_http::BroadcastHttp;
 use crate::io::influx_out::InfluxOut;
+use crate::io::peak_analyzer::{PeakAnalyzer, PeakEvent};
 
-use crate::recorder::{
-    run_recorder,
-    RecorderConfig,
-    WavSink,
-    Mp3Sink,
-    FsRetention,
-    AudioSink,
-};
+use crate::recorder::{AudioSink, FsRetention, Mp3Sink, RecorderConfig, WavSink, run_recorder};
 
 use crate::audio::http::start_audio_http_server;
 
@@ -56,10 +49,7 @@ fn main() -> anyhow::Result<()> {
     // ------------------------------------------------------------
     // Agent / Ring
     // ------------------------------------------------------------
-    let agent = agent::Agent::new(
-        cfg.ring.slots,
-        cfg.ring.prealloc_samples,
-    );
+    let agent = agent::Agent::new(cfg.ring.slots, cfg.ring.prealloc_samples);
 
     // ------------------------------------------------------------
     // Monitoring
@@ -76,8 +66,8 @@ fn main() -> anyhow::Result<()> {
     start_udp_out(&cfg, &agent, metrics.clone());
     start_icecast_out(&cfg, &agent);
     start_mp3_out(&cfg, &agent);
-    start_srt_in(&cfg, &agent);
-    start_srt_out(&cfg, &agent);
+    start_srt_in(&cfg, &agent, running.clone());
+    start_srt_out(&cfg, &agent, running.clone());
 
     // ------------------------------------------------------------
     // Peaks / Influx / Broadcast
@@ -90,13 +80,13 @@ fn main() -> anyhow::Result<()> {
     // ------------------------------------------------------------
     start_recorder(&cfg, &agent)?;
 
-let ring = agent.ring.clone();
+    let ring = agent.ring.clone();
 
-start_audio_http_server(
-    "0.0.0.0:3007",
-    PathBuf::from("/data/aircheck/wav"),
-    move || ring.subscribe(),
-)?;
+    start_audio_http_server(
+        "0.0.0.0:3007",
+        PathBuf::from("/data/aircheck/wav"),
+        move || ring.subscribe(),
+    )?;
 
     // ------------------------------------------------------------
     // Main loop
@@ -112,11 +102,7 @@ start_audio_http_server(
             let stats = agent.ring.stats();
             let fill = stats.head_seq - stats.next_seq.wrapping_sub(1);
 
-            println!(
-                "[airlift] head_seq={} fill={}",
-                stats.head_seq,
-                fill
-            );
+            println!("[airlift] head_seq={} fill={}", stats.head_seq, fill);
 
             last_stats = Instant::now();
         }
@@ -149,12 +135,7 @@ fn start_monitoring(
     let port = cfg.monitoring.http_port;
 
     std::thread::spawn(move || {
-        if let Err(e) = monitoring::run_metrics_server(
-            metrics,
-            ring,
-            port,
-            running,
-        ) {
+        if let Err(e) = monitoring::run_metrics_server(metrics, ring, port, running) {
             eprintln!("[monitoring] error: {}", e);
         }
     });
@@ -162,13 +143,11 @@ fn start_monitoring(
     println!("[airlift] monitoring on port {}", port);
 }
 
-fn start_alsa_in(
-    cfg: &Config,
-    agent: &agent::Agent,
-    metrics: Arc<monitoring::Metrics>,
-) {
+fn start_alsa_in(cfg: &Config, agent: &agent::Agent, metrics: Arc<monitoring::Metrics>) {
     if let Some(c) = &cfg.alsa_in {
-        if !c.enabled { return; }
+        if !c.enabled {
+            return;
+        }
 
         let ring = agent.ring.clone();
         std::thread::spawn(move || {
@@ -181,13 +160,11 @@ fn start_alsa_in(
     }
 }
 
-fn start_udp_out(
-    cfg: &Config,
-    agent: &agent::Agent,
-    metrics: Arc<monitoring::Metrics>,
-) {
+fn start_udp_out(cfg: &Config, agent: &agent::Agent, metrics: Arc<monitoring::Metrics>) {
     if let Some(c) = &cfg.udp_out {
-        if !c.enabled { return; }
+        if !c.enabled {
+            return;
+        }
 
         let reader = agent.ring.subscribe();
         let target = c.target.clone();
@@ -204,7 +181,9 @@ fn start_udp_out(
 
 fn start_icecast_out(cfg: &Config, agent: &agent::Agent) {
     if let Some(c) = &cfg.icecast_out {
-        if !c.enabled { return; }
+        if !c.enabled {
+            return;
+        }
 
         let reader = agent.ring.subscribe();
 
@@ -233,7 +212,9 @@ fn start_icecast_out(cfg: &Config, agent: &agent::Agent) {
 
 fn start_mp3_out(cfg: &Config, agent: &agent::Agent) {
     if let Some(c) = &cfg.mp3_out {
-        if !c.enabled { return; }
+        if !c.enabled {
+            return;
+        }
 
         let reader = agent.ring.subscribe();
 
@@ -263,15 +244,18 @@ fn start_mp3_out(cfg: &Config, agent: &agent::Agent) {
     }
 }
 
-fn start_srt_in(cfg: &Config, agent: &agent::Agent) {
+fn start_srt_in(cfg: &Config, agent: &agent::Agent, running: Arc<AtomicBool>) {
     if let Some(c) = &cfg.srt_in {
-        if !c.enabled { return; }
+        if !c.enabled {
+            return;
+        }
 
         let ring = agent.ring.clone();
         let cfg = c.clone();
+        let running = running.clone();
 
         std::thread::spawn(move || {
-            if let Err(e) = io::srt_in::run_srt_in(ring, cfg) {
+            if let Err(e) = io::srt_in::run_srt_in(ring, cfg, running) {
                 eprintln!("[srt_in] fatal: {}", e);
             }
         });
@@ -280,13 +264,14 @@ fn start_srt_in(cfg: &Config, agent: &agent::Agent) {
     }
 }
 
-fn start_srt_out(cfg: &Config, agent: &agent::Agent) {
+fn start_srt_out(cfg: &Config, agent: &agent::Agent, running: Arc<AtomicBool>) {
     if let Some(c) = cfg.srt_out.clone() {
         let reader = agent.ring.subscribe();
         let target = c.target.clone();
+        let running = running.clone();
 
         std::thread::spawn(move || {
-            if let Err(e) = io::srt_out::run_srt_out(reader, c) {
+            if let Err(e) = io::srt_out::run_srt_out(reader, c, running) {
                 eprintln!("[srt_out] fatal: {}", e);
             }
         });
@@ -314,10 +299,7 @@ fn start_peak_console(agent: &agent::Agent) {
 fn start_peak_broadcast(agent: &agent::Agent) {
     let reader = agent.ring.subscribe();
 
-    let broadcaster = BroadcastHttp::new(
-        "http://localhost:3006/api/broadcast".to_string(),
-        100,
-    );
+    let broadcaster = BroadcastHttp::new("http://localhost:3006/api/broadcast".to_string(), 100);
 
     let handler = Box::new(move |evt: &PeakEvent| {
         broadcaster.handle(evt);
@@ -338,10 +320,7 @@ fn start_influx_and_broadcast(agent: &agent::Agent) {
         100,
     );
 
-    let broadcaster = BroadcastHttp::new(
-        "http://localhost:3006/api/broadcast".to_string(),
-        100,
-    );
+    let broadcaster = BroadcastHttp::new("http://localhost:3006/api/broadcast".to_string(), 100);
 
     let handler = Box::new(move |evt: &PeakEvent| {
         influx.handle(evt);
@@ -355,8 +334,12 @@ fn start_influx_and_broadcast(agent: &agent::Agent) {
 }
 
 fn start_recorder(cfg: &Config, agent: &agent::Agent) -> anyhow::Result<()> {
-    let Some(c) = &cfg.recorder else { return Ok(()); };
-    if !c.enabled { return Ok(()); }
+    let Some(c) = &cfg.recorder else {
+        return Ok(());
+    };
+    if !c.enabled {
+        return Ok(());
+    }
 
     let reader = agent.ring.subscribe();
 
@@ -366,21 +349,17 @@ fn start_recorder(cfg: &Config, agent: &agent::Agent) -> anyhow::Result<()> {
     sinks.push(Box::new(WavSink::new(wav_dir.clone())?));
 
     if let Some(mp3) = &c.mp3 {
-        sinks.push(Box::new(
-            Mp3Sink::new(
-                wav_dir.clone(),
-                PathBuf::from(&mp3.dir),
-                mp3.bitrate,
-            )?
-        ));
+        sinks.push(Box::new(Mp3Sink::new(
+            wav_dir.clone(),
+            PathBuf::from(&mp3.dir),
+            mp3.bitrate,
+        )?));
     }
 
-    let retentions: Vec<Box<dyn recorder::RetentionPolicy>> = vec![
-        Box::new(FsRetention::new(
-            wav_dir.clone(),
-            c.retention_days,
-        ))
-    ];
+    let retentions: Vec<Box<dyn recorder::RetentionPolicy>> = vec![Box::new(FsRetention::new(
+        wav_dir.clone(),
+        c.retention_days,
+    ))];
 
     let rec_cfg = RecorderConfig {
         idle_sleep: Duration::from_millis(5),
@@ -401,4 +380,3 @@ fn start_recorder(cfg: &Config, agent: &agent::Agent) -> anyhow::Result<()> {
 
     Ok(())
 }
-
