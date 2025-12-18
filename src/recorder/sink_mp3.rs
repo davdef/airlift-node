@@ -1,74 +1,101 @@
-// src/recorder/sink_mp3.rs
+// src/recorder/sink_mp3.rs - MIT Send + Sync
 use crate::recorder::AudioSink;
 use crate::ring::audio_ring::AudioSlot;
 
-use std::path::PathBuf;
-use std::process::Command;
-use std::fs;
+use std::fs::{create_dir_all};
+use std::path::{PathBuf};
+use std::process::{Command, Stdio};
+use std::io::Write;
 
 pub struct Mp3Sink {
     wav_dir: PathBuf,
     mp3_dir: PathBuf,
     bitrate: u32,
-    last_hour: Option<u64>,
+    current_hour: Option<u64>,
+    ffmpeg: Option<std::process::Child>,
 }
 
+// Explizit Send + Sync
+unsafe impl Send for Mp3Sink {}
+unsafe impl Sync for Mp3Sink {}
+
 impl Mp3Sink {
-    pub fn new(
-        wav_dir: PathBuf,
-        mp3_dir: PathBuf,
-        bitrate: u32,
-    ) -> anyhow::Result<Self> {
-        fs::create_dir_all(&mp3_dir)?;
+    pub fn new(wav_dir: PathBuf, mp3_dir: PathBuf, bitrate: u32) -> anyhow::Result<Self> {
+        create_dir_all(&mp3_dir)?;
         Ok(Self {
             wav_dir,
             mp3_dir,
             bitrate,
-            last_hour: None,
+            current_hour: None,
+            ffmpeg: None,
         })
     }
 
-    fn transcode_hour(&self, hour: u64) -> anyhow::Result<()> {
-        let wav = self.wav_dir.join(format!("{}.wav", hour));
-        let mp3 = self.mp3_dir.join(format!("{}.mp3", hour));
-
-        if !wav.exists() || mp3.exists() {
-            return Ok(()); // nichts zu tun
+    fn start_ffmpeg(&mut self, hour: u64) -> anyhow::Result<()> {
+        if let Some(mut child) = self.ffmpeg.take() {
+            let _ = child.kill();
+            let _ = child.wait();
         }
 
-        eprintln!("[mp3_sink] ffmpeg {} → {}", wav.display(), mp3.display());
+        let mut mp3_path = self.mp3_dir.clone();
+        mp3_path.push(format!("{}.mp3", hour));
 
-        let status = Command::new("ffmpeg")
-            .args([
-                "-y",
-                "-loglevel", "quiet",
-                "-i", wav.to_str().unwrap(),
-                "-codec:a", "libmp3lame",
+        let child = Command::new("ffmpeg")
+            .args(&[
+                "-loglevel", "error",
+                "-f", "s16le",
+                "-ar", "48000",
+                "-ac", "2",
+                "-i", "pipe:0",
+                "-acodec", "libmp3lame",
                 "-b:a", &format!("{}k", self.bitrate),
-                mp3.to_str().unwrap(),
+                "-y",
+                mp3_path.to_str().unwrap(),
             ])
-            .status()?;
+            .stdin(Stdio::piped())
+            .spawn()?;
 
-        if !status.success() {
-            anyhow::bail!("ffmpeg failed for hour {}", hour);
-        }
-
+        self.ffmpeg = Some(child);
+        self.current_hour = Some(hour);
         Ok(())
     }
 }
 
 impl AudioSink for Mp3Sink {
     fn on_hour_change(&mut self, hour: u64) -> anyhow::Result<()> {
-        // vorherige Stunde transkodieren
-        if let Some(prev) = self.last_hour {
-            self.transcode_hour(prev)?;
+        if self.current_hour != Some(hour) {
+            self.start_ffmpeg(hour)?;
         }
-        self.last_hour = Some(hour);
         Ok(())
     }
 
-    fn on_chunk(&mut self, _slot: &AudioSlot) -> anyhow::Result<()> {
-        // bewusst leer
+    fn on_chunk(&mut self, slot: &AudioSlot) -> anyhow::Result<()> {
+        let hour = slot.utc_ns / 1_000_000_000 / 3600;
+        if self.current_hour != Some(hour) {
+            self.on_hour_change(hour)?;
+        }
+
+        if let Some(ref mut child) = self.ffmpeg {
+            if let Some(ref mut stdin) = child.stdin {
+                let bytes = bytemuck::cast_slice::<i16, u8>(&slot.pcm);
+                stdin.write_all(bytes)?;
+                stdin.flush()?;
+            }
+        }
+
         Ok(())
+    }
+    
+    fn maintain_continuity(&mut self) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+impl Drop for Mp3Sink {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.ffmpeg.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }

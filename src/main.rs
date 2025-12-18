@@ -21,9 +21,15 @@ use crate::io::peak_analyzer::{PeakAnalyzer, PeakEvent};
 use crate::web::influx_service::InfluxService;
 use crate::web::peak_storage::PeakStorage;
 
-use crate::recorder::{AudioSink, FsRetention, Mp3Sink, RecorderConfig, WavSink, run_recorder};
+use crate::recorder::{AudioSink, Mp3Sink, WavSink, run_recorder};
+use crate::recorder::RecorderConfig;
+use crate::recorder::FsRetention;
 
 use crate::audio::http::start_audio_http_server;
+
+use crate::web::run_web_server;
+use crate::web::peaks::{PeakStorage, PeakPoint};
+use crate::web::influx_service::InfluxService;
 
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
@@ -66,6 +72,40 @@ fn main() -> anyhow::Result<()> {
     start_monitoring(&cfg, &agent, metrics.clone(), running.clone());
 
     // ------------------------------------------------------------
+    // Peak Storage und Web Server
+    // ------------------------------------------------------------
+    let peak_store = Arc::new(PeakStorage::new());
+    
+    // Web Server starten (auf anderem Port, z.B. 3008)
+    let peak_store_web = peak_store.clone();
+    std::thread::spawn(move || {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            if let Err(e) = run_web_server(peak_store_web, 3008).await {
+                error!("[web] server error: {}", e);
+            }
+        });
+    });
+    
+    info!("[airlift] web player enabled (http://localhost:3008/player)");
+
+let influx_service = Arc::new(InfluxService::new(
+    "http://localhost:8086".to_string(),
+    "".to_string(), // Token - anpassen falls benötigt
+    "rfm_aircheck".to_string(),
+    "rfm_aircheck".to_string(),
+));
+
+let peak_store_web = peak_store.clone();
+let influx_service_web = influx_service.clone();
+std::thread::spawn(move || {
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        if let Err(e) = run_web_server(peak_store_web, 3008).await {
+            error!("[web] server error: {}", e);
+        }
+    });
+});
+
+    // ------------------------------------------------------------
     // IO NODES
     // ------------------------------------------------------------
     start_alsa_in(&cfg, &agent, metrics.clone());
@@ -79,7 +119,52 @@ fn main() -> anyhow::Result<()> {
     // Peaks / Influx / Broadcast
     // ------------------------------------------------------------
     start_peak_console(&agent);
+<<<<<<< HEAD
     start_web_layer(&agent);
+=======
+    start_peak_broadcast(&agent);
+    
+    // Combined handler mit Peak Storage
+    {
+        let reader = agent.ring.subscribe();
+        let peak_store_handler = peak_store.clone();
+        
+        // Handler mit lokaler Erstellung der Handler
+        let handler = Box::new(move |evt: &PeakEvent| {
+            // Peak in Storage speichern (konvertiere PeakEvent zu PeakPoint)
+            let peak = PeakPoint {
+                timestamp: evt.utc_ns,
+                peak_l: evt.peak_l,
+                peak_r: evt.peak_r,
+                rms: None,
+                lufs: None,
+                silence: evt.silence,
+            };
+            peak_store_handler.add_peak(peak);
+            
+            // Lokale Handler erstellen (da Clone nicht verfügbar)
+            let influx = InfluxOut::new(
+                "http://localhost:8086/write".to_string(),
+                "rfm_aircheck".to_string(),
+                100,
+            );
+            
+            let broadcaster = BroadcastHttp::new(
+                "http://localhost:3006/api/broadcast".to_string(),
+                100,
+            );
+            
+            influx.handle(evt);
+            broadcaster.handle(evt);
+        });
+
+        let mut analyzer = PeakAnalyzer::new(reader, handler, 0);
+        std::thread::spawn(move || analyzer.run());
+
+        info!("[airlift] influx_out + broadcast_http + peak_storage enabled");
+    }
+
+>>>>>>> ffd6f69 (Frontend integration)
     // ------------------------------------------------------------
     // Recorder (WAV / MP3 / Retention)
     // ------------------------------------------------------------
@@ -297,6 +382,7 @@ fn start_peak_console(agent: &agent::Agent) {
     info!("[airlift] peak_console enabled");
 }
 
+<<<<<<< HEAD
 fn start_web_layer(agent: &agent::Agent) {
     let peaks = Arc::new(PeakStorage::new(1000));
     let influx = Arc::new(InfluxService::new(
@@ -330,6 +416,21 @@ fn start_web_layer(agent: &agent::Agent) {
     });
 
     info!("[airlift] web layer enabled (0.0.0.0:3006)");
+=======
+fn start_peak_broadcast(agent: &agent::Agent) {
+    let reader = agent.ring.subscribe();
+
+    let broadcaster = BroadcastHttp::new("http://localhost:3006/api/broadcast".to_string(), 100);
+
+    let handler = Box::new(move |evt: &PeakEvent| {
+        broadcaster.handle(evt);
+    });
+
+    let mut analyzer = PeakAnalyzer::new(reader, handler, 0);
+    std::thread::spawn(move || analyzer.run());
+
+    info!("[airlift] broadcast_http enabled");
+>>>>>>> ffd6f69 (Frontend integration)
 }
 
 fn start_audio_http(agent: &agent::Agent) -> anyhow::Result<()> {
@@ -376,6 +477,7 @@ fn start_recorder(cfg: &Config, agent: &agent::Agent) -> anyhow::Result<()> {
     let rec_cfg = RecorderConfig {
         idle_sleep: Duration::from_millis(5),
         retention_interval: Duration::from_secs(3600),
+        continuity_interval: Duration::from_millis(100),
     };
 
     std::thread::spawn(move || {

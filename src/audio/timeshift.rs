@@ -1,22 +1,20 @@
-// src/audio/timeshift.rs
+// src/audio/timeshift.rs - KORRIGIERT (hound 3.5.1 compatible)
 
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::thread::sleep;
 use std::time::Duration;
 
+use hound::WavReader;
 use log::{debug, info, warn};
 
 /// Audio-Parameter (müssen zu Recorder passen)
-const SAMPLE_RATE: u64 = 48_000;
-const CHANNELS: u64 = 2;
-const BYTES_PER_SAMPLE: u64 = 2;
-const FRAME_BYTES: u64 = CHANNELS * BYTES_PER_SAMPLE;
+const SAMPLE_RATE: u32 = 48_000;
+const CHANNELS: u16 = 2;
+const BYTES_PER_SAMPLE: u16 = 2;
+const FRAME_BYTES: usize = (CHANNELS * BYTES_PER_SAMPLE) as usize;
 
-/// Blockierender Timeshift-Reader.
+/// Blockierender Timeshift-Reader mit hound.
 /// Ruft `on_pcm(bytes)` für jedes gelesene PCM-Chunk auf.
-/// Kehrt **nur** bei Fehler oder Abbruch zurück.
 pub fn stream_timeshift(
     wav_dir: PathBuf,
     start_ts_ms: u64,
@@ -45,115 +43,145 @@ pub fn stream_timeshift(
             sleep(Duration::from_millis(200));
         }
         
-        info!("[timeshift] opening {:?}", wav_path);
+        info!("[timeshift] opening {:?} with hound", wav_path);
         
-        // Datei MANUELL öffnen und parsen
-        let mut file = match File::open(&wav_path) {
-            Ok(f) => f,
+        // WAV mit hound öffnen
+        let mut reader = match WavReader::open(&wav_path) {
+            Ok(r) => r,
             Err(e) => {
-                warn!("[timeshift] failed to open {:?}: {}", wav_path, e);
+                warn!("[timeshift] hound open failed: {}", e);
                 sleep(Duration::from_millis(1000));
                 continue;
             }
         };
         
-        // 1. WAV-Header parsen
-        let (data_start, file_size) = match parse_wav_header(&mut file) {
-            Ok((start, size)) => {
-                info!("[timeshift] WAV data starts at byte {}, file size {}", start, size);
-                (start, size)
-            }
-            Err(e) => {
-                warn!("[timeshift] invalid WAV header in {:?}: {}", wav_path, e);
-                sleep(Duration::from_millis(1000));
-                continue;
-            }
-        };
+        let spec = reader.spec();
+        debug!("[timeshift] WAV spec: {:?}", spec);
         
-        // 2. Byte-Offset innerhalb dieser Stunde berechnen
-        let offset_ms = cur_ts_ms.saturating_sub(hour_start_ms);
-        let offset_frames = offset_ms * SAMPLE_RATE / 1000;
-        let offset_bytes = offset_frames * FRAME_BYTES;
-        
-        info!("[timeshift] offset: {} ms = {} frames = {} bytes", 
-              offset_ms, offset_frames, offset_bytes);
-        
-        // 3. Zu den Audio-Daten springen
-        let target_pos = data_start + offset_bytes;
-        let clamped_pos = if target_pos >= file_size {
-            warn!("[timeshift] offset beyond file end, clamping");
-            data_start
-        } else {
-            target_pos
-        };
-        
-        if let Err(e) = file.seek(SeekFrom::Start(clamped_pos)) {
-            warn!("[timeshift] seek failed: {}", e);
+        // Validate format
+        if spec.sample_rate != SAMPLE_RATE {
+            warn!("[timeshift] wrong sample rate: {} (expected {})", 
+                  spec.sample_rate, SAMPLE_RATE);
+            continue;
+        }
+        if spec.channels != CHANNELS {
+            warn!("[timeshift] wrong channels: {} (expected {})", 
+                  spec.channels, CHANNELS);
+            continue;
+        }
+        if spec.bits_per_sample != 16 {
+            warn!("[timeshift] wrong bits per sample: {} (expected 16)", 
+                  spec.bits_per_sample);
+            continue;
+        }
+        if spec.sample_format != hound::SampleFormat::Int {
+            warn!("[timeshift] wrong sample format (expected Int16)");
             continue;
         }
         
-        info!("[timeshift] seeking to byte {}", clamped_pos);
+        // Byte-Offset innerhalb dieser Stunde berechnen
+        let offset_ms = cur_ts_ms.saturating_sub(hour_start_ms);
+        let offset_frames = (offset_ms * SAMPLE_RATE as u64 / 1000) as u32;
         
-        // 4. Streaming-Loop für diese Stunde
+        info!("[timeshift] seeking to frame {} ({} ms offset)", 
+              offset_frames, offset_ms);
+        
+        // Seek mit hound (in Frames/Samples, nicht Bytes!)
+        if let Err(e) = reader.seek(offset_frames) {
+            warn!("[timeshift] hound seek failed: {}", e);
+            
+            // Fallback: Zum Dateianfang
+            if let Err(e) = reader.seek(0) {
+                warn!("[timeshift] fallback seek also failed: {}", e);
+                continue;
+            }
+        }
+        
+        // Streaming-Loop für diese Stunde
         let mut bytes_read_total = 0;
         let mut chunk_count = 0;
+        let mut samples_buf = vec![0i16; 4096]; // 2KB Samples = 4KB Bytes
         
         loop {
-            let mut buf = [0u8; 8192];
-            let n = match file.read(&mut buf) {
-                Ok(0) => {
-                    // EOF erreicht
-                    debug!("[timeshift] EOF for hour {}", hour);
-                    
-                    // Stundenwechsel erreicht?
-                    if cur_ts_ms >= hour_start_ms + 3600 * 1000 {
-                        info!("[timeshift] hour {} completed", hour);
-                        break; // nächste Stunde öffnen
+            // Samples mit hound lesen - KORRIGIERT für hound 3.5.1
+            let mut samples_read = 0;
+            {
+                let mut samples_iter = reader.samples::<i16>();
+                
+                while samples_read < samples_buf.len() {
+                    match samples_iter.next() {
+                        Some(Ok(sample)) => {
+                            samples_buf[samples_read] = sample;
+                            samples_read += 1;
+                        }
+                        Some(Err(e)) => {
+                            warn!("[timeshift] sample read error: {}", e);
+                            break;
+                        }
+                        None => break,
                     }
-                    
-                    // Sonst warten und von vorne lesen
-                    sleep(Duration::from_millis(100));
-                    
-                    // Zurück zum Datenanfang dieser Datei
-                    if let Err(e) = file.seek(SeekFrom::Start(data_start)) {
-                        warn!("[timeshift] re-seek failed: {}", e);
-                        break;
-                    }
-                    continue;
                 }
-                Ok(n) => n,
-                Err(e) => {
-                    warn!("[timeshift] read error: {}", e);
-                    sleep(Duration::from_millis(100));
-                    continue;
-                }
-            };
+            }
             
-            if n > 0 {
-                bytes_read_total += n;
-                chunk_count += 1;
+            if samples_read == 0 {
+                // EOF erreicht
+                debug!("[timeshift] EOF for hour {}", hour);
                 
-                // Nur alle 100 Chunks loggen
-                if chunk_count % 100 == 0 {
-                    info!("[timeshift] read {} bytes total ({} chunks)", 
-                          bytes_read_total, chunk_count);
+                // Stundenwechsel erreicht?
+                if cur_ts_ms >= hour_start_ms + 3600 * 1000 {
+                    info!("[timeshift] hour {} completed ({} bytes total)", 
+                          hour, bytes_read_total);
+                    break; // nächste Stunde
                 }
                 
-                // PCM-Daten an Callback übergeben
-                if let Err(e) = on_pcm(&buf[..n]) {
-                    warn!("[timeshift] callback error: {}", e);
-                    return Ok(());
-                }
+                // Sonst warten und von vorne lesen
+                sleep(Duration::from_millis(100));
                 
-                // Zeit fortschreiben
-                let frames = n as u64 / FRAME_BYTES;
-                let ms = frames * 1000 / SAMPLE_RATE;
-                cur_ts_ms += ms;
-                
-                // Kleine Pause um CPU zu schonen
-                if ms < 10 {
-                    sleep(Duration::from_millis(1));
+                // Zurück zum Anfang dieser Datei
+                if let Err(e) = reader.seek(0) {
+                    warn!("[timeshift] re-seek failed: {}", e);
+                    break;
                 }
+                continue;
+            }
+            
+            // i16 Samples zu u8 Bytes konvertieren
+            let samples_slice = &samples_buf[..samples_read];
+            let bytes = bytemuck::cast_slice::<i16, u8>(samples_slice);
+            
+            bytes_read_total += bytes.len();
+            chunk_count += 1;
+            
+            // Debug: Ersten Chunk analysieren
+            if chunk_count == 1 {
+                debug!("[timeshift] first chunk: {} samples = {} bytes", 
+                      samples_read, bytes.len());
+                if samples_read >= 4 {
+                    debug!("[timeshift] first few samples: {:?}", 
+                          &samples_slice[0..4]);
+                }
+            }
+            
+            // Nur alle 100 Chunks loggen
+            if chunk_count % 100 == 0 {
+                info!("[timeshift] read {} bytes total ({} chunks)", 
+                      bytes_read_total, chunk_count);
+            }
+            
+            // PCM-Daten an Callback übergeben
+            if let Err(e) = on_pcm(bytes) {
+                warn!("[timeshift] callback error: {}", e);
+                return Ok(());
+            }
+            
+            // Zeit fortschreiben (in Frames, nicht Bytes!)
+            let frames_read = samples_read as u64 / CHANNELS as u64;
+            let ms_advanced = frames_read * 1000 / SAMPLE_RATE as u64;
+            cur_ts_ms += ms_advanced;
+            
+            // Kleine Pause um CPU zu schonen
+            if ms_advanced < 10 {
+                sleep(Duration::from_millis(1));
             }
         }
         
@@ -162,85 +190,24 @@ pub fn stream_timeshift(
     }
 }
 
-/// Parst WAV-Header und gibt (data_start, file_size) zurück
-fn parse_wav_header(file: &mut File) -> anyhow::Result<(u64, u64)> {
-    file.seek(SeekFrom::Start(0))?;
+/// Hilfsfunktion: Prüft ob eine WAV-Datei das richtige Format hat
+pub fn validate_wav_format(path: &PathBuf) -> anyhow::Result<()> {
+    let reader = WavReader::open(path)?;
+    let spec = reader.spec();
     
-    let mut riff = [0u8; 12];
-    file.read_exact(&mut riff)?;
-    
-    // Check "RIFF" header
-    if &riff[0..4] != b"RIFF" {
-        anyhow::bail!("Not a RIFF file");
+    if spec.sample_rate != SAMPLE_RATE {
+        anyhow::bail!("Wrong sample rate: {} (expected {})", 
+                      spec.sample_rate, SAMPLE_RATE);
+    }
+    if spec.channels != CHANNELS {
+        anyhow::bail!("Wrong channels: {} (expected {})", 
+                      spec.channels, CHANNELS);
+    }
+    if spec.bits_per_sample != 16 {
+        anyhow::bail!("Wrong bits per sample: {} (expected 16)", 
+                      spec.bits_per_sample);
     }
     
-    if &riff[8..12] != b"WAVE" {
-        anyhow::bail!("Not a WAVE file");
-    }
-    
-    // Chunks durchsuchen
-    loop {
-        let mut chunk_hdr = [0u8; 8];
-        
-        if file.read_exact(&mut chunk_hdr).is_err() {
-            anyhow::bail!("Unexpected EOF while looking for 'data' chunk");
-        }
-        
-        let id = &chunk_hdr[0..4];
-        let len = u32::from_le_bytes(chunk_hdr[4..8].try_into()?) as u64;
-        
-        debug!("[timeshift] found chunk: {} ({} bytes)", 
-               String::from_utf8_lossy(id), len);
-        
-        if id == b"fmt " {
-            // fmt chunk lesen und validieren
-            let mut fmt_buf = vec![0u8; len as usize];
-            file.read_exact(&mut fmt_buf)?;
-            
-            let format = u16::from_le_bytes(fmt_buf[0..2].try_into()?);
-            let channels = u16::from_le_bytes(fmt_buf[2..4].try_into()?);
-            let sample_rate = u32::from_le_bytes(fmt_buf[4..8].try_into()?);
-            let bits_per_sample = u16::from_le_bytes(fmt_buf[14..16].try_into()?);
-            
-            debug!("[timeshift] WAV format: format={}, channels={}, sample_rate={}, bits={}",
-                   format, channels, sample_rate, bits_per_sample);
-            
-            if format != 1 { // PCM
-                anyhow::bail!("Not PCM format (format={})", format);
-            }
-            if channels as u64 != CHANNELS {
-                anyhow::bail!("Expected {} channels, got {}", CHANNELS, channels);
-            }
-            if sample_rate as u64 != SAMPLE_RATE {
-                anyhow::bail!("Expected {} Hz, got {}", SAMPLE_RATE, sample_rate);
-            }
-            if bits_per_sample as u64 != BYTES_PER_SAMPLE * 8 {
-                anyhow::bail!("Expected 16-bit, got {}-bit", bits_per_sample);
-            }
-            
-            // Padding beachten (WAV chunks sind word-aligned)
-            if len % 2 == 1 {
-                let mut pad = [0u8; 1];
-                file.read_exact(&mut pad)?;
-            }
-            
-        } else if id == b"data" {
-            // data chunk gefunden!
-            let data_start = file.seek(SeekFrom::Current(0))?;
-            let file_size = file.metadata()?.len();
-            
-            debug!("[timeshift] data chunk at byte {}, size {} bytes", data_start, len);
-            
-            // Wir bleiben HIER stehen - der nächste read() liefert Audio-Daten
-            return Ok((data_start, file_size));
-            
-        } else {
-            // Anderen Chunk überspringen
-            debug!("[timeshift] skipping chunk '{}' ({} bytes)", 
-                   String::from_utf8_lossy(id), len);
-            
-            let skip = if len % 2 == 1 { len + 1 } else { len };
-            file.seek(SeekFrom::Current(skip as i64))?;
-        }
-    }
+    info!("[timeshift] WAV validated: {:?}", path);
+    Ok(())
 }

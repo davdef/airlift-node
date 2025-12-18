@@ -1,0 +1,1034 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <title>RFM Aircheck – UI-Entwurf</title>
+  <style>
+    :root {
+      --bg: #0b1120;
+      --bg-elevated: #020617;
+      --bg-panel: #020617;
+      --accent: #38bdf8;
+      --accent-soft: rgba(56, 189, 248, 0.3);
+      --accent-strong: #0ea5e9;
+      --text: #e5e7eb;
+      --text-muted: #9ca3af;
+      --border: #1f2937;
+      --danger: #ef4444;
+      --schedule: #22c55e;
+      --playout: #f97316;
+      --marker-radioboss: #facc15;
+      --marker-mairlist: #a855f7;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top, #1f2937 0, #020617 35%, #000 100%);
+      color: var(--text);
+    }
+
+    .app {
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+    }
+
+    /* Header */
+
+    .app-header {
+      padding: 0.75rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: linear-gradient(to right, rgba(15,23,42,0.95), rgba(15,23,42,0.7));
+      backdrop-filter: blur(6px);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    .app-title {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+
+    .app-title span.logo-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: conic-gradient(from 180deg, #22c55e, #22c55e 30%, #f97316 30%, #f97316 60%, #38bdf8 60%, #38bdf8 100%);
+      box-shadow: 0 0 12px rgba(56, 189, 248, 0.7);
+    }
+
+    .header-controls {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+
+    .field-group {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+
+    .field-group label {
+      white-space: nowrap;
+    }
+
+    .field-group input,
+    .field-group select {
+      background: rgba(15,23,42,0.9);
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.25rem 0.75rem;
+      font-size: 0.8rem;
+      min-width: 150px;
+    }
+
+    .field-group input::placeholder {
+      color: #4b5563;
+    }
+
+    .btn {
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: rgba(15,23,42,0.9);
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      padding: 0.35rem 0.9rem;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      white-space: nowrap;
+    }
+
+    .btn-primary {
+      background: linear-gradient(to right, var(--accent-strong), #22c55e);
+      color: #0b1120;
+      border-color: transparent;
+      font-weight: 500;
+      box-shadow: 0 0 16px rgba(56, 189, 248, 0.4);
+    }
+
+    .btn-live {
+      border-radius: 999px;
+      padding-inline: 0.8rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .btn-live-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--danger);
+      box-shadow: 0 0 10px rgba(239,68,68,0.8);
+    }
+
+    /* Main layout */
+
+    .app-main {
+      display: grid;
+      grid-template-columns: minmax(0, 3fr) minmax(280px, 1fr);
+      gap: 0.75rem;
+      padding: 0.75rem 1rem 0.5rem;
+      flex: 1;
+      min-height: 0;
+    }
+
+    @media (max-width: 960px) {
+      .app-main {
+        grid-template-columns: minmax(0, 1fr);
+      }
+    }
+
+    /* Timeline area */
+
+    .timeline-area {
+      background: radial-gradient(circle at top left, rgba(15,23,42,0.9), rgba(15,23,42,0.98));
+      border-radius: 1rem;
+      border: 1px solid var(--border);
+      padding: 0.75rem 0.75rem 0.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      box-shadow: 0 20px 45px rgba(15,23,42,0.7);
+      min-height: 0;
+    }
+
+    .toolbar-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      flex-wrap: wrap;
+    }
+
+    .toolbar-group {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      flex-wrap: wrap;
+    }
+
+    .toolbar-group .btn {
+      padding: 0.25rem 0.6rem;
+      font-size: 0.75rem;
+    }
+
+    .toolbar-group span.label {
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 0.7rem;
+      color: #6b7280;
+    }
+
+    /* Overview mini timeline */
+
+    .overview {
+      padding: 0.5rem 0.6rem;
+      border-radius: 0.75rem;
+      background: radial-gradient(circle at top, rgba(15,23,42,0.9), rgba(15,23,42,1));
+      border: 1px solid rgba(31,41,55,0.9);
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+    }
+
+    .overview-label-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .overview-range {
+      position: relative;
+      height: 26px;
+      border-radius: 999px;
+      background: linear-gradient(to right, rgba(15,23,42,0.9), rgba(15,23,42,0.95));
+      border: 1px solid rgba(31,41,55,0.9);
+      overflow: hidden;
+    }
+
+    .overview-window {
+      position: absolute;
+      top: 2px;
+      bottom: 2px;
+      left: 15%;
+      right: 40%;
+      border-radius: 999px;
+      background: linear-gradient(to right, rgba(56,189,248,0.18), rgba(129,140,248,0.18));
+      border: 1px solid rgba(56,189,248,0.7);
+      box-shadow: 0 0 16px rgba(56,189,248,0.4);
+    }
+
+    .overview-mark {
+      position: absolute;
+      top: 3px;
+      bottom: 3px;
+      width: 2px;
+      background: rgba(148,163,184,0.8);
+      opacity: 0.7;
+    }
+
+    .overview-mark.schedule {
+      background: rgba(34,197,94,0.9);
+    }
+
+    .overview-mark.news {
+      background: rgba(248,250,252,0.8);
+    }
+
+    .overview-playhead {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: var(--accent-strong);
+      box-shadow: 0 0 8px rgba(56,189,248,0.9);
+      left: 58%;
+    }
+
+    .overview-playhead::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      right: -3px;
+      width: 6px;
+      height: 6px;
+      border-radius: 999px;
+      background: var(--accent-strong);
+      transform: translateY(-50%);
+    }
+
+    /* Lanes */
+
+    .lanes {
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+      margin-top: 0.25rem;
+      min-height: 0;
+    }
+
+    .lane {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      min-height: 0;
+    }
+
+    .lane-header {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #6b7280;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-inline: 0.2rem;
+    }
+
+    .lane-header span.badge {
+      font-size: 0.7rem;
+      padding: 0.1rem 0.4rem;
+      border-radius: 999px;
+      border: 1px solid rgba(55,65,81,0.9);
+      color: #9ca3af;
+    }
+
+    .lane-content {
+      position: relative;
+      height: 42px;
+      border-radius: 0.6rem;
+      background: linear-gradient(to right, rgba(15,23,42,0.95), rgba(15,23,42,0.98));
+      border: 1px solid rgba(31,41,55,0.9);
+      overflow: hidden;
+    }
+
+    .lane-schedule .lane-content {
+      height: 40px;
+    }
+
+    .lane-playout .lane-content {
+      height: 38px;
+    }
+
+    .lane-waveform .lane-content {
+      height: 120px;
+      margin-top: 0.1rem;
+    }
+
+    /* Schedule blocks */
+
+    .schedule-block {
+      position: absolute;
+      top: 4px;
+      bottom: 4px;
+      border-radius: 999px;
+      background: linear-gradient(to right, rgba(34,197,94,0.2), rgba(34,197,94,0.1));
+      border: 1px solid rgba(34,197,94,0.7);
+      display: flex;
+      align-items: center;
+      padding-inline: 0.6rem;
+      font-size: 0.75rem;
+      color: var(--text);
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .schedule-block.secondary {
+      background: linear-gradient(to right, rgba(56,189,248,0.12), rgba(16,185,129,0.1));
+      border-color: rgba(56,189,248,0.7);
+    }
+
+    .schedule-block small {
+      opacity: 0.7;
+      margin-left: 0.3rem;
+    }
+
+    /* Playout markers */
+
+    .playout-marker {
+      position: absolute;
+      top: 6px;
+      bottom: 6px;
+      width: 3px;
+      border-radius: 999px;
+      background: var(--playout);
+    }
+
+    .playout-marker.jingle {
+      background: #facc15;
+    }
+
+    .playout-marker.news {
+      background: #e5e7eb;
+    }
+
+    .playout-marker::after {
+      content: "";
+      position: absolute;
+      top: -2px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: inherit;
+      box-shadow: 0 0 8px rgba(249,115,22,0.8);
+    }
+
+    /* Waveform */
+
+    .waveform {
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at top, rgba(15,23,42,0.95), rgba(15,23,42,1));
+      overflow: hidden;
+    }
+
+    .waveform-grid {
+      position: absolute;
+      inset: 0;
+      background-image: linear-gradient(to right, rgba(31,41,55,0.5) 1px, transparent 1px),
+                        linear-gradient(to top, rgba(15,23,42,1) 0, rgba(15,23,42,1) 50%, rgba(31,41,55,0.4) 50%, rgba(15,23,42,1) 100%);
+      background-size: 40px 100%, 100% 8px;
+      opacity: 0.45;
+    }
+
+    .waveform-body {
+      position: absolute;
+      inset: 0;
+      padding-inline: 2px;
+      display: flex;
+      align-items: center;
+      gap: 1px;
+    }
+
+    .waveform-bar {
+      flex: 0 0 3px;
+      border-radius: 999px;
+      background: linear-gradient(to top, rgba(56,189,248,0.05), rgba(56,189,248,0.9));
+      transform-origin: bottom;
+      opacity: 0.7;
+    }
+
+    .waveform-bar.soft {
+      background: linear-gradient(to top, rgba(15,23,42,1), rgba(56,189,248,0.4));
+      opacity: 0.45;
+    }
+
+    .waveform-playing-region {
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(to right, rgba(56,189,248,0.16), transparent 55%);
+      mix-blend-mode: screen;
+      pointer-events: none;
+    }
+
+    /* Markierungen in der Waveform */
+
+    .wf-marker {
+      position: absolute;
+      top: 6px;
+      bottom: 6px;
+      width: 2px;
+      border-radius: 999px;
+      background: var(--marker-radioboss);
+    }
+
+    .wf-marker-label {
+      position: absolute;
+      top: 4px;
+      padding: 0.1rem 0.35rem;
+      border-radius: 999px;
+      font-size: 0.68rem;
+      background: rgba(15,23,42,0.96);
+      border: 1px solid rgba(31,41,55,0.9);
+      white-space: nowrap;
+      color: var(--text-muted);
+    }
+
+    .wf-marker.mairlist {
+      background: var(--marker-mairlist);
+    }
+
+    .wf-marker.program {
+      background: var(--schedule);
+    }
+
+    .wf-marker.radioboss {
+      background: var(--marker-radioboss);
+    }
+
+    .wf-range {
+      position: absolute;
+      top: 40px;
+      height: 10px;
+      border-radius: 999px;
+      background: rgba(34,197,94,0.12);
+      border: 1px solid rgba(34,197,94,0.7);
+    }
+
+    /* Playhead */
+
+    .playhead {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: var(--accent);
+      left: 55%;
+      box-shadow: 0 0 18px rgba(56,189,248,0.9);
+    }
+
+    .playhead::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 50%;
+      transform: translate(-50%, -60%);
+      border-left: 5px solid transparent;
+      border-right: 5px solid transparent;
+      border-bottom: 7px solid var(--accent);
+    }
+
+    .playhead-time {
+      position: absolute;
+      bottom: 4px;
+      left: 55%;
+      transform: translateX(-50%);
+      padding: 0.1rem 0.4rem;
+      border-radius: 999px;
+      background: rgba(15,23,42,0.98);
+      border: 1px solid rgba(31,41,55,0.9);
+      font-size: 0.68rem;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+
+    /* Details panel */
+
+    .details-panel {
+      background: radial-gradient(circle at top right, rgba(15,23,42,0.95), rgba(15,23,42,1));
+      border-radius: 1rem;
+      border: 1px solid var(--border);
+      padding: 0.75rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.6rem;
+      box-shadow: 0 20px 45px rgba(15,23,42,0.7);
+      min-height: 0;
+    }
+
+    .details-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .details-title {
+      font-size: 0.9rem;
+      font-weight: 500;
+    }
+
+    .details-subtitle {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .pill {
+      padding: 0.1rem 0.5rem;
+      border-radius: 999px;
+      font-size: 0.7rem;
+      border: 1px solid rgba(55,65,81,0.9);
+      color: #9ca3af;
+    }
+
+    .details-section {
+      border-radius: 0.75rem;
+      border: 1px solid rgba(31,41,55,0.9);
+      padding: 0.5rem 0.6rem;
+      background: rgba(15,23,42,0.96);
+      font-size: 0.8rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.35rem;
+    }
+
+    .details-section h3 {
+      margin: 0;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #6b7280;
+    }
+
+    .details-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 0.4rem;
+      color: var(--text-muted);
+    }
+
+    .details-row span.value {
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.3rem;
+    }
+
+    .chip {
+      font-size: 0.72rem;
+      padding: 0.15rem 0.5rem;
+      border-radius: 999px;
+      border: 1px solid rgba(55,65,81,0.9);
+      color: #9ca3af;
+    }
+
+    .chip.green {
+      border-color: rgba(34,197,94,0.7);
+      color: #a7f3d0;
+    }
+
+    .chip.orange {
+      border-color: rgba(249,115,22,0.7);
+      color: #fed7aa;
+    }
+
+    .details-actions {
+      display: flex;
+      gap: 0.4rem;
+      flex-wrap: wrap;
+    }
+
+    /* Transport bar */
+
+    .transport-bar {
+      margin: 0.5rem 1rem 0.75rem;
+      padding: 0.4rem 0.75rem;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: linear-gradient(to right, rgba(15,23,42,0.98), rgba(15,23,42,0.95));
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem;
+      font-size: 0.8rem;
+    }
+
+    .transport-controls {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+
+    .btn-icon {
+      width: 26px;
+      height: 26px;
+      border-radius: 999px;
+      border: 1px solid rgba(31,41,55,0.9);
+      background: rgba(15,23,42,1);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 0.85rem;
+      color: #9ca3af;
+    }
+
+    .btn-icon.main {
+      width: 32px;
+      height: 32px;
+      border-color: transparent;
+      background: radial-gradient(circle at top, var(--accent-strong), #22c55e);
+      color: #0b1120;
+      box-shadow: 0 0 16px rgba(56,189,248,0.7);
+    }
+
+    .transport-info {
+      display: flex;
+      flex-direction: column;
+      gap: 0.15rem;
+      color: var(--text-muted);
+    }
+
+    .transport-info strong {
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+      font-weight: 500;
+    }
+
+    .speed-selector {
+      display: flex;
+      align-items: center;
+      gap: 0.2rem;
+    }
+
+    .speed-pill {
+      padding: 0.1rem 0.45rem;
+      border-radius: 999px;
+      border: 1px solid rgba(55,65,81,0.9);
+      font-size: 0.72rem;
+      color: #9ca3af;
+      cursor: pointer;
+    }
+
+    .speed-pill.active {
+      border-color: var(--accent-strong);
+      color: #e0f2fe;
+      background: rgba(56,189,248,0.12);
+    }
+
+    .transport-live {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .transport-live .btn-live {
+      border-color: rgba(55,65,81,0.9);
+      background: rgba(15,23,42,0.98);
+      color: #e5e7eb;
+    }
+
+    .transport-live small {
+      color: #9ca3af;
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Header -->
+  <header class="app-header">
+    <div class="app-title">
+      <span class="logo-dot"></span>
+      <span>RFM Aircheck Console</span>
+    </div>
+    <div class="header-controls">
+      <div class="field-group">
+        <label for="date">Datum</label>
+        <input id="date" type="date" value="2025-11-23">
+      </div>
+      <div class="field-group">
+        <label for="time">Zeit</label>
+        <input id="time" type="time" value="09:12">
+      </div>
+      <div class="field-group">
+        <label for="range">Bereich</label>
+        <select id="range">
+          <option>Jetzt (letzte 30 min)</option>
+          <option>Letzte 2 Stunden</option>
+          <option>Heute</option>
+          <option>7 Tage zurück</option>
+        </select>
+      </div>
+      <div class="field-group">
+        <input type="search" placeholder="Sendung / Titel / Moderator suchen…">
+      </div>
+      <button class="btn btn-primary">
+        ⟳ Aktualisieren
+      </button>
+      <button class="btn btn-live">
+        <span class="btn-live-dot"></span>
+        Live
+      </button>
+    </div>
+  </header>
+
+  <!-- Main -->
+  <main class="app-main">
+
+    <!-- Timeline area -->
+    <section class="timeline-area">
+
+      <!-- Toolbar -->
+      <div class="toolbar-top">
+        <div class="toolbar-group">
+          <span class="label">Navigation</span>
+          <button class="btn">⟲ −10s</button>
+          <button class="btn">⟲ −1m</button>
+          <button class="btn">⟳ +1m</button>
+          <button class="btn">⟳ +10s</button>
+          <button class="btn">🔍+</button>
+          <button class="btn">🔍−</button>
+        </div>
+        <div class="toolbar-group">
+          <span class="label">Übersicht</span>
+          <span style="font-size:0.75rem;color:#9ca3af;">7 Tage Mitschnitt • Segmentierte Ansicht</span>
+        </div>
+      </div>
+
+      <!-- 7-Tage Overview -->
+      <div class="overview">
+        <div class="overview-label-row">
+          <span>Letzte 7 Tage Aircheck</span>
+          <span style="font-size:0.7rem;color:#6b7280;">Geplante Sendungen ▬   Playout-Events | |</span>
+        </div>
+        <div class="overview-range">
+          <!-- Beispielhafte Markierungen -->
+          <div class="overview-mark schedule" style="left:10%;"></div>
+          <div class="overview-mark" style="left:25%;"></div>
+          <div class="overview-mark news" style="left:50%;"></div>
+          <div class="overview-mark schedule" style="left:72%;"></div>
+          <!-- Fenster für aktuellen Ausschnitt -->
+          <div class="overview-window"></div>
+          <!-- Playhead -->
+          <div class="overview-playhead"></div>
+        </div>
+      </div>
+
+      <!-- Lanes -->
+      <div class="lanes">
+
+        <!-- Programmplan-Lane -->
+        <div class="lane lane-schedule">
+          <div class="lane-header">
+            <span>Programmplan (geplant)</span>
+            <span class="badge">Quelle: Programmdatenbank</span>
+          </div>
+          <div class="lane-content">
+            <div class="schedule-block" style="left:5%;right:55%;">
+              Morgensendung
+              <small>08:00–10:00</small>
+            </div>
+            <div class="schedule-block secondary" style="left:45%;right:15%;">
+              Mittagsmagazin
+              <small>10:00–12:00</small>
+            </div>
+          </div>
+        </div>
+
+        <!-- Playout-Lane -->
+        <div class="lane lane-playout">
+          <div class="lane-header">
+            <span>Playout-Events (RadioBoss / mAirList)</span>
+            <span class="badge">Quelle: HTTP NowPlaying / Events</span>
+          </div>
+          <div class="lane-content">
+            <!-- Track-Start -->
+            <div class="playout-marker" style="left:18%;"></div>
+            <!-- Jingle -->
+            <div class="playout-marker jingle" style="left:28%;"></div>
+            <!-- News -->
+            <div class="playout-marker news" style="left:50%;"></div>
+            <!-- mAirList Fallback -->
+            <div class="playout-marker" style="left:67%;"></div>
+          </div>
+        </div>
+
+        <!-- Waveform-Lane -->
+        <div class="lane lane-waveform">
+          <div class="lane-header">
+            <span>Aircheck-Waveform (kontinuierlicher Mitschnitt)</span>
+            <span class="badge">7 Tage Retention • Segmentweise geladen</span>
+          </div>
+          <div class="lane-content">
+            <div class="waveform">
+              <div class="waveform-grid"></div>
+              <div class="waveform-body">
+                <!-- Dummy-Balken (nur fürs Gefühl) -->
+                <!-- In echt würdest du das natürlich mit Wavesurfer / Canvas o.ä. machen -->
+                <div class="waveform-bar soft" style="height:24%;"></div>
+                <div class="waveform-bar" style="height:60%;"></div>
+                <div class="waveform-bar soft" style="height:35%;"></div>
+                <div class="waveform-bar" style="height:80%;"></div>
+                <div class="waveform-bar soft" style="height:40%;"></div>
+                <div class="waveform-bar" style="height:70%;"></div>
+                <div class="waveform-bar soft" style="height:30%;"></div>
+                <div class="waveform-bar" style="height:55%;"></div>
+                <div class="waveform-bar" style="height:72%;"></div>
+                <div class="waveform-bar soft" style="height:25%;"></div>
+                <div class="waveform-bar" style="height:65%;"></div>
+                <div class="waveform-bar soft" style="height:28%;"></div>
+                <div class="waveform-bar" style="height:73%;"></div>
+                <div class="waveform-bar soft" style="height:32%;"></div>
+                <div class="waveform-bar" style="height:58%;"></div>
+                <div class="waveform-bar" style="height:82%;"></div>
+                <div class="waveform-bar soft" style="height:35%;"></div>
+                <div class="waveform-bar soft" style="height:22%;"></div>
+                <div class="waveform-bar" style="height:66%;"></div>
+                <div class="waveform-bar soft" style="height:30%;"></div>
+                <div class="waveform-bar" style="height:74%;"></div>
+                <div class="waveform-bar soft" style="height:26%;"></div>
+                <div class="waveform-bar" style="height:68%;"></div>
+                <div class="waveform-bar soft" style="height:24%;"></div>
+                <div class="waveform-bar" style="height:77%;"></div>
+                <div class="waveform-bar soft" style="height:33%;"></div>
+                <div class="waveform-bar" style="height:62%;"></div>
+                <div class="waveform-bar soft" style="height:28%;"></div>
+                <div class="waveform-bar" style="height:70%;"></div>
+                <div class="waveform-bar soft" style="height:36%;"></div>
+              </div>
+
+              <!-- Bereich, der aktuell abgespielt wird -->
+              <div class="waveform-playing-region"></div>
+
+              <!-- Markierung: geplante Sendung -->
+              <div class="wf-range" style="left:10%;right:50%;"></div>
+              <div class="wf-marker program" style="left:10%;"></div>
+              <div class="wf-marker-label" style="left:10%;transform:translateX(-50%);">
+                Sendungsstart (Plan)
+              </div>
+
+              <!-- Markierung: RadioBoss Start -->
+              <div class="wf-marker radioboss" style="left:18%;"></div>
+              <div class="wf-marker-label" style="left:18%;top:20px;transform:translateX(-50%);">
+                RadioBoss: Titelstart
+              </div>
+
+              <!-- Markierung: mAirList -->
+              <div class="wf-marker mairlist" style="left:67%;"></div>
+              <div class="wf-marker-label" style="left:67%;top:20px;transform:translateX(-50%);">
+                mAirList: Fallback
+              </div>
+
+              <!-- Playhead -->
+              <div class="playhead"></div>
+              <div class="playhead-time">
+                09:12:34 • +00:12:34 seit Sendungsbeginn
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- Details Panel -->
+    <aside class="details-panel">
+      <div class="details-header">
+        <div>
+          <div class="details-title">Morgensendung – Stunde 1</div>
+          <div class="details-subtitle">Geplante Sendung laut Programmplan • 08:00–10:00</div>
+        </div>
+        <span class="pill">Status: Live-Ausstrahlung</span>
+      </div>
+
+      <div class="details-section">
+        <h3>Basisdaten</h3>
+        <div class="details-row">
+          <span>Geplanter Beginn</span>
+          <span class="value">08:00:00</span>
+        </div>
+        <div class="details-row">
+          <span>Geplantes Ende</span>
+          <span class="value">10:00:00</span>
+        </div>
+        <div class="details-row">
+          <span>Realer Start (Playout)</span>
+          <span class="value">08:02:14 (RadioBoss)</span>
+        </div>
+        <div class="details-row">
+          <span>Abweichung</span>
+          <span class="value">+00:02:14</span>
+        </div>
+      </div>
+
+      <div class="details-section">
+        <h3>Inhalt</h3>
+        <div class="details-row">
+          <span>Moderation</span>
+          <span class="value">Max Mustermann</span>
+        </div>
+        <div class="details-row">
+          <span>Rubriken</span>
+          <span class="value">Verkehr, Wetter, Lokales</span>
+        </div>
+        <div class="chip-row">
+          <span class="chip green">Musikstrecke</span>
+          <span class="chip green">Magazin</span>
+          <span class="chip orange">Live</span>
+          <span class="chip">Studio A</span>
+        </div>
+      </div>
+
+      <div class="details-section">
+        <h3>Playout-Quellen</h3>
+        <div class="details-row">
+          <span>Primär</span>
+          <span class="value">RadioBoss</span>
+        </div>
+        <div class="details-row">
+          <span>Fallback</span>
+          <span class="value">mAirList (2 Events)</span>
+        </div>
+        <div class="details-row">
+          <span>Aircheck-Referenz</span>
+          <span class="value">mitschnitt_20251123_080001.mp3</span>
+        </div>
+      </div>
+
+      <div class="details-actions">
+        <button class="btn">▶ Ab Sendungsbeginn abspielen</button>
+        <button class="btn">▶ 5 min vor Beginn</button>
+        <button class="btn">▶ An Playhead-Position</button>
+      </div>
+    </aside>
+
+  </main>
+
+  <!-- Transport-Leiste -->
+  <footer class="transport-bar">
+    <div class="transport-controls">
+      <button class="btn-icon">«</button>
+      <button class="btn-icon">⟲</button>
+      <button class="btn-icon main">▶</button>
+      <button class="btn-icon">⟳</button>
+      <button class="btn-icon">»</button>
+    </div>
+    <div class="transport-info">
+      <span><strong>09:12:34</strong> • +00:12:34 seit Sendungsbeginn • 2025-11-23</span>
+      <span style="font-size:0.75rem;">Segment: mitschnitt_20251123_090001.mp3 • Offset: 00:11:33</span>
+    </div>
+    <div class="transport-live">
+      <div class="speed-selector">
+        <span style="font-size:0.7rem;color:#6b7280;">Speed</span>
+        <span class="speed-pill">0.5×</span>
+        <span class="speed-pill active">1.0×</span>
+        <span class="speed-pill">1.5×</span>
+      </div>
+      <button class="btn btn-live">
+        <span class="btn-live-dot"></span>
+        Live
+      </button>
+      <small>Timeshift aktiv (−32s)</small>
+    </div>
+  </footer>
+
+</div>
+</body>
+</html>

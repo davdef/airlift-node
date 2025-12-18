@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <title>Audio I/O Test – RFM</title>
+  <style>
+    body { font-family: sans-serif; margin: 1rem 2rem; }
+    label { display: block; margin-top: 0.5rem; }
+    select, button { margin-top: 0.25rem; }
+    #meter {
+      width: 300px;
+      height: 20px;
+      background: #ddd;
+      margin-top: 0.5rem;
+      position: relative;
+    }
+    #meter-fill {
+      height: 100%;
+      width: 0%;
+      background: #4caf50;
+    }
+    #status { margin-top: 0.5rem; color: #444; }
+    fieldset { margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>Audio I/O Test (Browser)</h1>
+
+  <p>
+    1. Erlaube dem Browser Mikrofonzugriff.<br>
+    2. Wähle einen Eingangs- und (optional) Ausgangskanal.<br>
+    3. Starte die Aufnahme, sprich ins Mikro und beobachte den Pegel.
+  </p>
+
+  <fieldset>
+    <legend>Eingangsgerät (audioinput)</legend>
+    <label for="inputSelect">Eingang wählen:</label>
+    <select id="inputSelect"></select>
+
+    <label>
+      <input type="checkbox" id="echoCancellation" checked>
+      echoCancellation
+    </label>
+    <label>
+      <input type="checkbox" id="noiseSuppression" checked>
+      noiseSuppression
+    </label>
+    <label>
+      <input type="checkbox" id="autoGainControl" checked>
+      autoGainControl
+    </label>
+
+    <button id="startBtn">Start Capture</button>
+    <button id="stopBtn" disabled>Stop</button>
+
+    <div id="meter">
+      <div id="meter-fill"></div>
+    </div>
+    <div id="status">Status: Idle</div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Ausgangsgerät (audiooutput, sofern unterstützt)</legend>
+    <label for="outputSelect">Ausgang wählen:</label>
+    <select id="outputSelect"></select>
+    <p>
+      <small>
+        Hinweis: Die Auswahl des Ausgabegeräts funktioniert nur in manchen Browsern (z. B. Chrome) 
+        und nur über HTTPS. Sonst wird einfach das Standardgerät verwendet.
+      </small>
+    </p>
+    <audio id="monitor" autoplay controls></audio>
+  </fieldset>
+
+  <script>
+    const inputSelect = document.getElementById('inputSelect');
+    const outputSelect = document.getElementById('outputSelect');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const statusEl = document.getElementById('status');
+    const meterFill = document.getElementById('meter-fill');
+    const monitorAudio = document.getElementById('monitor');
+
+    const echoCancellation = document.getElementById('echoCancellation');
+    const noiseSuppression = document.getElementById('noiseSuppression');
+    const autoGainControl = document.getElementById('autoGainControl');
+
+    let currentStream = null;
+    let audioContext = null;
+    let analyser = null;
+    let animationId = null;
+
+    async function initDevices() {
+      try {
+        // Erst einmal irgendeinen Audiozugriff erfragen, damit Device-Namen sichtbar werden
+        const tmpStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        tmpStream.getTracks().forEach(t => t.stop());
+
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const inputs = devices.filter(d => d.kind === 'audioinput');
+        const outputs = devices.filter(d => d.kind === 'audiooutput');
+
+        inputSelect.innerHTML = '';
+        inputs.forEach(d => {
+          const opt = document.createElement('option');
+          opt.value = d.deviceId;
+          opt.textContent = d.label || `Input ${inputSelect.length + 1}`;
+          inputSelect.appendChild(opt);
+        });
+
+        outputSelect.innerHTML = '';
+        outputs.forEach(d => {
+          const opt = document.createElement('option');
+          opt.value = d.deviceId;
+          opt.textContent = d.label || `Output ${outputSelect.length + 1}`;
+          outputSelect.appendChild(opt);
+        });
+
+        statusEl.textContent = 'Status: Geräte geladen.';
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = 'Fehler beim Zugriff auf Geräte: ' + err.message;
+      }
+    }
+
+    async function startCapture() {
+      try {
+        const deviceId = inputSelect.value || undefined;
+        const constraints = {
+          audio: {
+            deviceId: deviceId ? { exact: deviceId } : undefined,
+            echoCancellation: echoCancellation.checked,
+            noiseSuppression: noiseSuppression.checked,
+            autoGainControl: autoGainControl.checked,
+            channelCount: 2,
+            sampleRate: 48000
+          }
+        };
+
+        if (currentStream) {
+          currentStream.getTracks().forEach(t => t.stop());
+          currentStream = null;
+        }
+
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        currentStream = stream;
+
+        // Lokale Wiedergabe zum Monitoring
+        monitorAudio.srcObject = stream;
+
+        // Ausgabegerät setzen, falls möglich
+        const outId = outputSelect.value;
+        if (monitorAudio.setSinkId && outId) {
+          try {
+            await monitorAudio.setSinkId(outId);
+          } catch (e) {
+            console.warn('setSinkId fehlgeschlagen:', e);
+          }
+        }
+
+        // AudioContext + Analyser für Pegelmeter
+        if (!audioContext) {
+          audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        const source = audioContext.createMediaStreamSource(stream);
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 2048;
+        source.connect(analyser);
+
+        drawMeter();
+
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        statusEl.textContent = 'Status: Aufnahme läuft.';
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = 'Fehler beim Start der Aufnahme: ' + err.message;
+      }
+    }
+
+    function stopCapture() {
+      if (currentStream) {
+        currentStream.getTracks().forEach(t => t.stop());
+        currentStream = null;
+      }
+      if (animationId) {
+        cancelAnimationFrame(animationId);
+        animationId = null;
+      }
+      meterFill.style.width = '0%';
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      statusEl.textContent = 'Status: Gestoppt.';
+    }
+
+    function drawMeter() {
+      const bufferLength = analyser.fftSize;
+      const dataArray = new Uint8Array(bufferLength);
+
+      function update() {
+        analyser.getByteTimeDomainData(dataArray);
+        // Einfacher RMS-Ansatz
+        let sum = 0;
+        for (let i = 0; i < bufferLength; i++) {
+          const v = (dataArray[i] - 128) / 128.0;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / bufferLength);
+        const level = Math.min(1, rms * 4); // etwas verstärken
+
+        meterFill.style.width = (level * 100).toFixed(1) + '%';
+        animationId = requestAnimationFrame(update);
+      }
+      update();
+    }
+
+    startBtn.addEventListener('click', startCapture);
+    stopBtn.addEventListener('click', stopCapture);
+
+    outputSelect.addEventListener('change', async () => {
+      if (monitorAudio.setSinkId && outputSelect.value) {
+        try {
+          await monitorAudio.setSinkId(outputSelect.value);
+        } catch (e) {
+          console.warn('setSinkId fehlgeschlagen:', e);
+        }
+      }
+    });
+
+    // Beim Laden Geräte initialisieren
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      initDevices();
+    } else {
+      statusEl.textContent = 'getUserMedia wird von diesem Browser nicht unterstützt.';
+    }
+  </script>
+</body>
+</html>

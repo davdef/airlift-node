@@ -1,9 +1,9 @@
-// src/audio/http.rs
+// src/audio/http.rs - KORRIGIERTE VERSION
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::Arc;
+use std::process::{Command, Stdio};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -65,7 +65,7 @@ pub fn start_audio_http_server(
 }
 
 // ============================================================================
-// Timeshift
+// Timeshift - KORRIGIERT
 // ============================================================================
 
 fn handle_timeshift(req: tiny_http::Request, wav_dir: Arc<PathBuf>) {
@@ -81,51 +81,9 @@ fn handle_timeshift(req: tiny_http::Request, wav_dir: Arc<PathBuf>) {
 
     info!("[audio] timeshift start ts={}", ts);
 
+    // Kanal ERSTELLEN
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
-    let reader = ChannelReader {
-        rx,
-        pending: Vec::new(),
-        pending_pos: 0,
-    };
-
-    let response = Response::new(
-        StatusCode(200),
-        vec![
-            Header::from_bytes("Content-Type", "audio/mpeg").unwrap(),
-            Header::from_bytes("Cache-Control", "no-store").unwrap(),
-        ],
-        FfmpegBody::new(
-            ffmpeg,
-            ff_stdout,
-            spawn_timeshift_feeder(wav_dir.clone(), ts, ff_stdin),
-        ),
-        None,
-        None,
-    );
-
-    // ===== ARBEITSTHREAD ZUERST STARTEN =====
-    if req.respond(response).is_err() {
-        warn!("[audio] timeshift client vanished early");
-        return;
-    }
-
-    info!("[audio] timeshift HTTP response sent, streaming started");
-}
-
-// ============================================================================
-// Live - KORRIGIERTE VERSION
-// ============================================================================
-
-fn handle_live(req: tiny_http::Request, ring_factory: Arc<dyn Fn() -> RingReader + Send + Sync>) {
-    info!("[audio] live start");
-
-    // Kanal ERSTELLEN (vor Thread-Spawn)
-    let (tx, rx) = mpsc::channel::<Vec<u8>>();
-    let reader = ChannelReader {
-        rx,
-        pending: Vec::new(),
-        pending_pos: 0,
-    };
+    let reader = ChannelReader { rx };
 
     // Response vorbereiten
     let response = Response::new(
@@ -134,24 +92,205 @@ fn handle_live(req: tiny_http::Request, ring_factory: Arc<dyn Fn() -> RingReader
             Header::from_bytes("Content-Type", "audio/mpeg").unwrap(),
             Header::from_bytes("Cache-Control", "no-store").unwrap(),
         ],
-        FfmpegBody::new(
-            ffmpeg,
-            ff_stdout,
-            spawn_live_feeder(ring_factory.clone(), ff_stdin),
-        ),
+        reader,
         None,
         None,
     );
 
+    // ===== ARBEITSTHREAD ZUERST STARTEN =====
+    let worker_handle = thread::spawn({
+        let tx = tx.clone();
+        let wav_dir = wav_dir.clone();
+        move || {
+            info!("[audio] timeshift worker thread started for ts={}", ts);
+
+            let mut ffmpeg = match spawn_ffmpeg("timeshift") {
+                Some(p) => p,
+                None => {
+                    warn!("[audio] timeshift ffmpeg spawn failed");
+                    return;
+                }
+            };
+
+            let mut ff_stdin = ffmpeg.stdin.take().unwrap();
+            let ff_stdout = ffmpeg.stdout.take().unwrap();
+
+            let feeder = thread::spawn({
+                let wav_dir = (*wav_dir).clone();
+                move || {
+                    info!("[audio] timeshift feeder starting");
+                    
+                    let res = stream_timeshift(wav_dir, ts, |pcm| {
+                        debug!("[audio] timeshift writing {} bytes PCM", pcm.len());
+                        ff_stdin.write_all(pcm)?;
+                        ff_stdin.flush()?;
+                        Ok(())
+                    });
+
+                    match res {
+                        Ok(_) => info!("[audio] timeshift feeder completed"),
+                        Err(e) => warn!("[audio] timeshift feeder ended: {}", e),
+                    }
+                }
+            });
+
+            debug!("[audio] timeshift pumping ffmpeg stdout");
+            pump_ffmpeg_stdout(ff_stdout, tx);
+
+            let _ = ffmpeg.kill();
+            let _ = feeder.join();
+            info!("[audio] timeshift worker finished for ts={}", ts);
+        }
+    });
+
+    // ===== ERST JETZT die HTTP-Response senden =====
+    if req.respond(response).is_err() {
+        warn!("[audio] timeshift client vanished early");
+        return;
+    }
+
+    info!("[audio] timeshift HTTP response sent, streaming started");
+    drop(worker_handle);
+}
+
+// ============================================================================
+// Live - KORRIGIERT
+// ============================================================================
+
+fn handle_live(req: tiny_http::Request, ring_factory: Arc<dyn Fn() -> RingReader + Send + Sync>) {
+    info!("[audio] live start");
+
+    // Kanal ERSTELLEN
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let reader = ChannelReader { rx };
+
+    // Response vorbereiten
+    let response = Response::new(
+        StatusCode(200),
+        vec![
+            Header::from_bytes("Content-Type", "audio/mpeg").unwrap(),
+            Header::from_bytes("Cache-Control", "no-store").unwrap(),
+        ],
+        reader,
+        None,
+        None,
+    );
+
+    // ===== ARBEITSTHREAD ZUERST STARTEN =====
+    let worker_handle = thread::spawn({
+        let tx = tx.clone();
+        let ring_factory = ring_factory.clone();
+        move || {
+            info!("[audio] live worker thread started");
+
+            let mut ring_reader = ring_factory();
+
+            let head_seq = ring_reader.head_seq();
+            let last_seq = ring_reader.last_seq();
+            let fill = ring_reader.fill();
+            info!(
+                "[audio] live subscribe state head_seq={} last_seq={} fill={}",
+                head_seq, last_seq, fill
+            );
+
+            info!("[audio] live waiting for first audio chunk…");
+
+            let wait_start = Instant::now();
+            let mut waits = 0u64;
+
+            loop {
+                match ring_reader.poll() {
+                    RingRead::Chunk(_) => {
+                        info!("[audio] live first audio chunk available");
+                        break;
+                    }
+                    RingRead::Gap { missed } => {
+                        warn!("[audio] live GAP while waiting missed={}", missed);
+                    }
+                    RingRead::Empty => {
+                        waits += 1;
+
+                        if waits % 200 == 0 {
+                            let head_seq = ring_reader.head_seq();
+                            let last_seq = ring_reader.last_seq();
+                            let fill = ring_reader.fill();
+                            info!(
+                                "[audio] live still waiting (elapsed={}ms head_seq={} last_seq={} fill={} waits={})",
+                                wait_start.elapsed().as_millis(),
+                                head_seq,
+                                last_seq,
+                                fill,
+                                waits,
+                            );
+                        }
+
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                }
+            }
+
+            // FFmpeg starten
+            let mut ffmpeg = match spawn_ffmpeg("live") {
+                Some(p) => p,
+                None => {
+                    warn!("[audio] live ffmpeg spawn failed");
+                    return;
+                }
+            };
+
+            let mut ff_stdin = ffmpeg.stdin.take().unwrap();
+            let ff_stdout = ffmpeg.stdout.take().unwrap();
+
+            let feeder = thread::spawn(move || {
+                let mut empty = 0u64;
+
+                loop {
+                    match ring_reader.poll() {
+                        RingRead::Chunk(slot) => {
+                            debug!(
+                                "[audio] LIVE GOT CHUNK seq={} after {} empties",
+                                slot.seq, empty
+                            );
+                            let bytes = bytemuck::cast_slice::<i16, u8>(&slot.pcm);
+                            if ff_stdin.write_all(bytes).is_err() {
+                                break;
+                            }
+                            if ff_stdin.flush().is_err() {
+                                break;
+                            }
+                            empty = 0;
+                        }
+                        RingRead::Empty => {
+                            empty += 1;
+                            if empty % 1000 == 0 {
+                                debug!("[audio] live still empty ({})", empty);
+                            }
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        RingRead::Gap { missed } => {
+                            warn!("[audio] live GAP missed={}", missed);
+                        }
+                    }
+                }
+            });
+
+            debug!("[audio] live pumping ffmpeg stdout");
+            pump_ffmpeg_stdout(ff_stdout, tx);
+
+            let _ = ffmpeg.kill();
+            let _ = feeder.join();
+            info!("[audio] live worker finished");
+        }
+    });
+
+    // ===== ERST JETZT die HTTP-Response senden =====
     if req.respond(response).is_err() {
         warn!("[audio] live client vanished early");
         return;
     }
 
     info!("[audio] live HTTP response sent, streaming started");
-
-    // Worker-Thread nicht joinen (blockiert), aber wir behalten den Handle
-    drop(worker_handle); // Handle verwerfen, Thread läuft unabhängig weiter
+    drop(worker_handle);
 }
 
 // ============================================================================
@@ -213,171 +352,68 @@ fn spawn_ffmpeg(tag: &str) -> Option<std::process::Child> {
 // Helpers
 // ============================================================================
 
-fn spawn_timeshift_feeder(
-    wav_dir: Arc<PathBuf>,
-    ts: u64,
-    mut ff_stdin: ChildStdin,
-) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        info!("[audio] timeshift worker thread started for ts={}", ts);
+fn pump_ffmpeg_stdout(mut ff_stdout: impl Read, tx: mpsc::Sender<Vec<u8>>) {
+    let mut buf = [0u8; 8192];
+    let mut first = true;
+    let mut total_bytes = 0;
+    let mut chunk_count = 0;
 
-        let res = stream_timeshift((*wav_dir).clone(), ts, |pcm| {
-            ff_stdin.write_all(pcm)?;
-            ff_stdin.flush()?;
-            Ok(())
-        });
-
-        match res {
-            Ok(_) => info!("[audio] timeshift feeder completed"),
-            Err(e) => warn!("[audio] timeshift feeder ended: {}", e),
-        }
-    })
-}
-
-fn spawn_live_feeder(
-    ring_factory: Arc<dyn Fn() -> RingReader + Send + Sync>,
-    mut ff_stdin: ChildStdin,
-) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
-        info!("[audio] live worker thread started");
-
-        let mut ring_reader = ring_factory();
-
-        let head_seq = ring_reader.head_seq();
-        let last_seq = ring_reader.last_seq();
-        let fill = ring_reader.fill();
-        info!(
-            "[audio] live subscribe state head_seq={} last_seq={} fill={}",
-            head_seq, last_seq, fill
-        );
-
-        info!("[audio] live waiting for first audio chunk…");
-
-        let wait_start = Instant::now();
-        let mut waits = 0u64;
-
-        loop {
-            match ring_reader.poll() {
-                RingRead::Chunk(_) => {
-                    info!("[audio] live first audio chunk available");
+    loop {
+        match ff_stdout.read(&mut buf) {
+            Ok(0) => {
+                info!("[audio] ffmpeg stdout EOF (total: {} bytes, {} chunks)", 
+                      total_bytes, chunk_count);
+                break;
+            }
+            Ok(n) => {
+                total_bytes += n;
+                chunk_count += 1;
+                
+                if first {
+                    info!("[audio] ffmpeg produced first {} bytes", n);
+                    // Check MP3 magic bytes
+                    if n >= 2 && buf[0] == 0xFF && (buf[1] & 0xE0) == 0xE0 {
+                        info!("[audio] Output looks like MP3 (magic: 0xFF{:02x})", buf[1]);
+                    } else {
+                        warn!("[audio] Output doesn't look like MP3! First bytes: {:02x?}", 
+                              &buf[..n.min(4)]);
+                    }
+                    first = false;
+                }
+                
+                // Log every 100 chunks (~800KB)
+                if chunk_count % 100 == 0 {
+                    info!("[audio] ffmpeg: {} bytes total ({} chunks)", 
+                          total_bytes, chunk_count);
+                }
+                
+                if tx.send(buf[..n].to_vec()).is_err() {
+                    info!("[audio] client disconnected after {} bytes", total_bytes);
                     break;
                 }
-                RingRead::Gap { missed } => {
-                    warn!("[audio] live GAP while waiting missed={}", missed);
-                }
-                RingRead::Empty => {
-                    waits += 1;
-
-                    if waits % 200 == 0 {
-                        let head_seq = ring_reader.head_seq();
-                        let last_seq = ring_reader.last_seq();
-                        let fill = ring_reader.fill();
-                        info!(
-                            "[audio] live still waiting (elapsed={}ms head_seq={} last_seq={} fill={} waits={})",
-                            wait_start.elapsed().as_millis(),
-                            head_seq,
-                            last_seq,
-                            fill,
-                            waits,
-                        );
-                    }
-
-                    thread::sleep(Duration::from_millis(5));
-                }
             }
-        }
-
-        let mut empty = 0u64;
-
-        loop {
-            match ring_reader.poll() {
-                RingRead::Chunk(slot) => {
-                    debug!(
-                        "[audio] LIVE GOT CHUNK seq={} after {} empties",
-                        slot.seq, empty
-                    );
-                    let bytes = bytemuck::cast_slice::<i16, u8>(&slot.pcm);
-                    if ff_stdin.write_all(bytes).is_err() {
-                        break;
-                    }
-                    if ff_stdin.flush().is_err() {
-                        break;
-                    }
-                    empty = 0;
-                }
-                RingRead::Empty => {
-                    empty += 1;
-                    if empty % 1000 == 0 {
-                        debug!("[audio] live still empty ({})", empty);
-                    }
-                    thread::sleep(Duration::from_millis(5));
-                }
-                RingRead::Gap { missed } => {
-                    warn!("[audio] live GAP missed={}", missed);
-                }
+            Err(e) => {
+                warn!("[audio] ffmpeg stdout read error: {} (total: {} bytes)", 
+                      e, total_bytes);
+                break;
             }
-        }
-
-        info!("[audio] live feeder ended");
-    })
-}
-
-struct ChannelReader {
-    rx: mpsc::Receiver<Vec<u8>>,
-    /// Buffer für nicht vollständig gelesene Chunks
-    pending: Vec<u8>,
-    pending_pos: usize,
-}
-
-impl FfmpegBody {
-    fn new(child: Child, stdout: ChildStdout, feeder: thread::JoinHandle<()>) -> Self {
-        Self {
-            stdout,
-            child: Some(child),
-            feeder: Some(feeder),
         }
     }
 }
 
-impl Read for FfmpegBody {
+struct ChannelReader {
+    rx: mpsc::Receiver<Vec<u8>>,
+}
+
+impl Read for ChannelReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let mut written = 0;
-
-        // Solange der Puffer noch Daten hat, zuerst diese bedienen
-        if self.pending_pos < self.pending.len() {
-            let available = self.pending.len() - self.pending_pos;
-            let n = available.min(buf.len());
-            buf[..n].copy_from_slice(&self.pending[self.pending_pos..self.pending_pos + n]);
-            self.pending_pos += n;
-            written += n;
-
-            if self.pending_pos >= self.pending.len() {
-                self.pending.clear();
-                self.pending_pos = 0;
-            }
-
-            if written == buf.len() {
-                return Ok(written);
-            }
-        }
-
-        // Falls noch Platz im Ziel-Buffer ist, neuen Chunk holen
         match self.rx.recv() {
             Ok(chunk) => {
-                let n = (buf.len() - written).min(chunk.len());
-                buf[written..written + n].copy_from_slice(&chunk[..n]);
-                written += n;
-
-                // Rest für nächste Reads merken
-                if n < chunk.len() {
-                    self.pending.clear();
-                    self.pending.extend_from_slice(&chunk[n..]);
-                    self.pending_pos = 0;
-                }
-
-                Ok(written)
+                let n = chunk.len().min(buf.len());
+                buf[..n].copy_from_slice(&chunk[..n]);
+                Ok(n)
             }
-            Err(_) => Ok(written),
+            Err(_) => Ok(0),
         }
     }
 }
