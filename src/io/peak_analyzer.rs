@@ -1,9 +1,11 @@
-use crate::ring::{RingReader, RingRead};
+use crate::ring::{RingRead, RingReader};
 
-use std::time::{Instant};
+use serde::{Deserialize, Serialize};
+
+use std::time::Instant;
 
 /// Ergebnis wie im Python-Receiver
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeakEvent {
     pub seq: u64,
     pub utc_ns: u64,
@@ -45,8 +47,7 @@ impl PeakAnalyzer {
             match self.reader.poll() {
                 RingRead::Chunk(slot) => {
                     let now = Instant::now();
-                    if now.duration_since(self.last_emit).as_millis()
-                        < self.min_interval_ms as u128
+                    if now.duration_since(self.last_emit).as_millis() < self.min_interval_ms as u128
                     {
                         continue;
                     }
@@ -54,12 +55,12 @@ impl PeakAnalyzer {
 
                     let (peak_l, peak_r, silence) = scan_peaks(&slot.pcm);
 
-                    let latency_ms =
-                        (std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_nanos() as i128
-                         - slot.utc_ns as i128) as f32 / 1e6;
+                    let latency_ms = (std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_nanos() as i128
+                        - slot.utc_ns as i128) as f32
+                        / 1e6;
 
                     let evt = PeakEvent {
                         seq: slot.seq,
@@ -94,8 +95,12 @@ fn scan_peaks(pcm: &[i16]) -> (f32, f32, bool) {
     while let (Some(l), Some(r)) = (it.next(), it.next()) {
         let fl = (*l as f32).abs() / 32768.0;
         let fr = (*r as f32).abs() / 32768.0;
-        if fl > peak_l { peak_l = fl; }
-        if fr > peak_r { peak_r = fr; }
+        if fl > peak_l {
+            peak_l = fl;
+        }
+        if fr > peak_r {
+            peak_r = fr;
+        }
     }
 
     let silence = peak_l < 0.01 && peak_r < 0.01;
