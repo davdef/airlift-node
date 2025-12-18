@@ -1,6 +1,7 @@
 // src/audio/live.rs
 use std::process::{Command, Stdio};
 use crate::ring::{RingRead, RingReader};
+use std::io::Write;
 
 pub fn stream_live(mut reader: RingReader) -> anyhow::Result<()> {
     let mut ffmpeg = Command::new("ffmpeg")
