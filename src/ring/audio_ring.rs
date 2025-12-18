@@ -147,6 +147,15 @@ impl RingReader {
             None => RingRead::Empty, // kurz Race/Overwrite; poll später nochmal
         }
     }
+
+    pub fn wait_for_data(&mut self) {
+        loop {
+            match self.poll() {
+                RingRead::Chunk(_) => break,
+                _ => std::thread::sleep(std::time::Duration::from_millis(5)),
+            }
+        }
+    }
     
     /// Letzte gelesene Sequenznummer
     pub fn last_seq(&self) -> u64 {

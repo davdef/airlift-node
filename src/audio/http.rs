@@ -31,29 +31,36 @@ pub fn start_audio_http_server(
 
     thread::spawn(move || {
         for req in server.incoming_requests() {
+            info!(
+                "[audio] incoming {} {}",
+                req.method(),
+                req.url()
+            );
+
             if req.method() != &Method::Get {
                 let _ = req.respond(Response::empty(StatusCode(405)));
                 continue;
             }
 
-            // ----------------------------------------------------------------
+            // ------------------------------------------------------------
             // /audio/at?ts=...
-            // ----------------------------------------------------------------
+            // ------------------------------------------------------------
             if req.url().starts_with("/audio/at") {
-                debug!("[audio] /audio/at requested: {}", req.url());
+                debug!("[audio] dispatching /audio/at");
                 handle_timeshift(req, wav_dir.clone());
                 continue;
             }
 
-            // ----------------------------------------------------------------
+            // ------------------------------------------------------------
             // /audio/live
-            // ----------------------------------------------------------------
-            if req.url() == "/audio/live" {
-                debug!("[audio] /audio/live requested");
+            // ------------------------------------------------------------
+            if req.url().starts_with("/audio/live") {
+                debug!("[audio] dispatching /audio/live");
                 handle_live(req, ring_factory.clone());
                 continue;
             }
 
+            warn!("[audio] 404 for {}", req.url());
             let _ = req.respond(Response::empty(StatusCode(404)));
         }
     });
@@ -69,11 +76,16 @@ fn handle_timeshift(req: tiny_http::Request, wav_dir: Arc<PathBuf>) {
     let ts = match extract_ts(req.url()) {
         Some(ts) => ts,
         None => {
-            let _ =
-                req.respond(Response::from_string("missing ts").with_status_code(StatusCode(400)));
+            warn!("[audio] /audio/at missing ts");
+            let _ = req.respond(
+                Response::from_string("missing ts")
+                    .with_status_code(StatusCode(400)),
+            );
             return;
         }
     };
+
+    info!("[audio] timeshift start ts={}", ts);
 
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     let reader = ChannelReader { rx };
@@ -90,61 +102,40 @@ fn handle_timeshift(req: tiny_http::Request, wav_dir: Arc<PathBuf>) {
     );
 
     if req.respond(response).is_err() {
+        warn!("[audio] timeshift client vanished early");
         return;
     }
 
     thread::spawn(move || {
-        // ffmpeg: PCM -> MP3
-        let mut ffmpeg = match Command::new("ffmpeg")
-            .args([
-                "-loglevel",
-                "error",
-                "-f",
-                "s16le",
-                "-ar",
-                "48000",
-                "-ac",
-                "2",
-                "-i",
-                "pipe:0",
-                "-f",
-                "mp3",
-                "pipe:1",
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-        {
-            Ok(p) => p,
-            Err(e) => {
-                error!("[audio] ffmpeg spawn failed (timeshift): {}", e);
-                return;
-            }
+        let mut ffmpeg = match spawn_ffmpeg("timeshift") {
+            Some(p) => p,
+            None => return,
         };
 
         let mut ff_stdin = ffmpeg.stdin.take().unwrap();
         let ff_stdout = ffmpeg.stdout.take().unwrap();
 
-        // WAV follow-the-writer -> ffmpeg stdin
         let feeder = thread::spawn({
             let wav_dir = (*wav_dir).clone();
             move || {
                 let res = stream_timeshift(wav_dir, ts, |pcm| {
                     ff_stdin.write_all(pcm)?;
+                    ff_stdin.flush()?; // WICHTIG
                     Ok(())
                 });
+
                 if let Err(e) = res {
-                    warn!("[audio] timeshift streaming ended: {}", e);
+                    warn!("[audio] timeshift feeder ended: {}", e);
                 }
             }
         });
 
-        // ffmpeg stdout -> HTTP
+        debug!("[audio] timeshift pumping ffmpeg stdout");
         pump_ffmpeg_stdout(ff_stdout, tx);
 
         let _ = ffmpeg.kill();
         let _ = feeder.join();
-        debug!("[audio] timeshift handler finished");
+        info!("[audio] timeshift finished");
     });
 }
 
@@ -152,7 +143,12 @@ fn handle_timeshift(req: tiny_http::Request, wav_dir: Arc<PathBuf>) {
 // Live
 // ============================================================================
 
-fn handle_live(req: tiny_http::Request, ring_factory: Arc<dyn Fn() -> RingReader + Send + Sync>) {
+fn handle_live(
+    req: tiny_http::Request,
+    ring_factory: Arc<dyn Fn() -> RingReader + Send + Sync>,
+) {
+    info!("[audio] live start");
+
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     let reader = ChannelReader { rx };
 
@@ -168,68 +164,104 @@ fn handle_live(req: tiny_http::Request, ring_factory: Arc<dyn Fn() -> RingReader
     );
 
     if req.respond(response).is_err() {
+        warn!("[audio] live client vanished early");
         return;
     }
 
     let mut ring_reader = ring_factory();
 
+info!("[audio] live waiting for first audio chunk…");
+ring_reader.wait_for_data();
+info!("[audio] live first audio chunk available");
+
     thread::spawn(move || {
-        let mut ffmpeg = match Command::new("ffmpeg")
-            .args([
-                "-loglevel",
-                "error",
-                "-f",
-                "s16le",
-                "-ar",
-                "48000",
-                "-ac",
-                "2",
-                "-i",
-                "pipe:0",
-                "-f",
-                "mp3",
-                "pipe:1",
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-        {
-            Ok(p) => p,
-            Err(e) => {
-                error!("[audio] ffmpeg spawn failed (live): {}", e);
-                return;
-            }
+        let mut ffmpeg = match spawn_ffmpeg("live") {
+            Some(p) => p,
+            None => return,
         };
 
         let mut ff_stdin = ffmpeg.stdin.take().unwrap();
         let ff_stdout = ffmpeg.stdout.take().unwrap();
 
-        // Ring -> ffmpeg stdin
         let feeder = thread::spawn(move || {
-            loop {
-                match ring_reader.poll() {
-                    RingRead::Chunk(slot) => {
-                        let bytes = bytemuck::cast_slice::<i16, u8>(&slot.pcm);
-                        if ff_stdin.write_all(bytes).is_err() {
-                            warn!("[audio] ffmpeg stdin closed (live)");
-                            break;
-                        }
-                    }
-                    RingRead::Empty => {
-                        thread::sleep(Duration::from_millis(5));
-                    }
-                    RingRead::Gap { .. } => {}
-                }
+let mut empty = 0u64;
+
+loop {
+    match ring_reader.poll() {
+        RingRead::Chunk(slot) => {
+            info!(
+                "[audio] LIVE GOT CHUNK seq={} after {} empties",
+                slot.seq, empty
+            );
+            let bytes = bytemuck::cast_slice::<i16, u8>(&slot.pcm);
+            let _ = ff_stdin.write_all(bytes);
+            let _ = ff_stdin.flush();
+            empty = 0;
+        }
+        RingRead::Empty => {
+            empty += 1;
+            if empty % 1000 == 0 {
+                info!("[audio] live still empty ({})", empty);
             }
+            thread::sleep(Duration::from_millis(5));
+        }
+        RingRead::Gap { missed } => {
+            warn!("[audio] live GAP missed={}", missed);
+        }
+    }
+}
         });
 
-        // ffmpeg stdout -> HTTP
+        debug!("[audio] live pumping ffmpeg stdout");
         pump_ffmpeg_stdout(ff_stdout, tx);
 
         let _ = ffmpeg.kill();
         let _ = feeder.join();
-        debug!("[audio] live handler finished");
+        info!("[audio] live finished");
     });
+}
+
+// ============================================================================
+// ffmpeg helper
+// ============================================================================
+
+fn spawn_ffmpeg(tag: &str) -> Option<std::process::Child> {
+    debug!("[audio] spawning ffmpeg ({})", tag);
+
+    match Command::new("ffmpeg")
+        .args([
+            "-loglevel", "error",
+
+            // INPUT
+            "-f", "s16le",
+            "-ar", "48000",
+            "-ac", "2",
+            "-i", "pipe:0",
+
+            // LOW LATENCY OUTPUT
+            "-acodec", "libmp3lame",
+            "-b:a", "128k",
+            "-compression_level", "0",
+            "-flush_packets", "1",
+            "-fflags", "nobuffer",
+            "-flags", "low_delay",
+            "-max_delay", "0",
+            "-muxdelay", "0",
+            "-muxpreload", "0",
+
+            "-f", "mp3",
+            "pipe:1",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+    {
+        Ok(p) => Some(p),
+        Err(e) => {
+            error!("[audio] ffmpeg spawn failed ({}): {}", tag, e);
+            None
+        }
+    }
 }
 
 // ============================================================================
@@ -238,15 +270,24 @@ fn handle_live(req: tiny_http::Request, ring_factory: Arc<dyn Fn() -> RingReader
 
 fn pump_ffmpeg_stdout(mut ff_stdout: impl Read, tx: mpsc::Sender<Vec<u8>>) {
     let mut buf = [0u8; 8192];
+    let mut first = true;
+
     loop {
         match ff_stdout.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
+                if first {
+                    info!("[audio] ffmpeg produced first {} bytes", n);
+                    first = false;
+                }
                 if tx.send(buf[..n].to_vec()).is_err() {
-                    break; // client gone
+                    break;
                 }
             }
-            Err(_) => break,
+            Err(e) => {
+                warn!("[audio] ffmpeg stdout error: {}", e);
+                break;
+            }
         }
     }
 }

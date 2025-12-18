@@ -16,7 +16,11 @@ pub fn stream_live(mut reader: RingReader) -> anyhow::Result<()> {
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .spawn()?;
+        .spawn()
+        .map_err(|e| {
+            eprintln!("[audio] ffmpeg spawn failed: {}", e);
+            e
+        })?;
 
     let mut stdin = ffmpeg.stdin.take().unwrap();
 
