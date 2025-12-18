@@ -10,31 +10,33 @@ mod ring;
 mod web;
 
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::{Duration, Instant};
 
-use config::Config;
 use log::{debug, error, info};
 
-use crate::io::peak_analyzer::{PeakAnalyzer, PeakEvent};
-use crate::web::influx_service::InfluxService;
-use crate::web::peak_storage::PeakStorage;
+use config::Config;
 
-use crate::recorder::{AudioSink, Mp3Sink, WavSink, run_recorder};
-use crate::recorder::RecorderConfig;
-use crate::recorder::FsRetention;
+use crate::io::peak_analyzer::{PeakAnalyzer, PeakEvent};
+use crate::web::peaks::{PeakPoint, PeakStorage};
+
+use crate::recorder::{
+    run_recorder, AudioSink, Mp3Sink, WavSink,
+    RecorderConfig, FsRetention,
+};
 
 use crate::audio::http::start_audio_http_server;
-
 use crate::web::run_web_server;
-use crate::web::peaks::{PeakStorage, PeakPoint};
-use crate::web::influx_service::InfluxService;
 
 fn main() -> anyhow::Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .format_timestamp_millis()
-        .init();
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("info"),
+    )
+    .format_timestamp_millis()
+    .init();
 
     // ------------------------------------------------------------
     // Config
@@ -68,70 +70,34 @@ fn main() -> anyhow::Result<()> {
     // ------------------------------------------------------------
     monitoring::create_health_file()?;
     let metrics = Arc::new(monitoring::Metrics::new());
-
     start_monitoring(&cfg, &agent, metrics.clone(), running.clone());
 
     // ------------------------------------------------------------
-    // Peak Storage und Web Server
+    // Peak storage + Web
     // ------------------------------------------------------------
     let peak_store = Arc::new(PeakStorage::new());
-    
-    // Web Server starten (auf anderem Port, z.B. 3008)
-    let peak_store_web = peak_store.clone();
-    std::thread::spawn(move || {
-        tokio::runtime::Runtime::new().unwrap().block_on(async {
-            if let Err(e) = run_web_server(peak_store_web, 3008).await {
+
+    {
+        let peak_store_web = peak_store.clone();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new()
+                .expect("web runtime");
+            if let Err(e) = rt.block_on(run_web_server(peak_store_web, 3008)) {
                 error!("[web] server error: {}", e);
             }
         });
-    });
-    
-    info!("[airlift] web player enabled (http://localhost:3008/player)");
+    }
 
-let influx_service = Arc::new(InfluxService::new(
-    "http://localhost:8086".to_string(),
-    "".to_string(), // Token - anpassen falls benötigt
-    "rfm_aircheck".to_string(),
-    "rfm_aircheck".to_string(),
-));
-
-let peak_store_web = peak_store.clone();
-let influx_service_web = influx_service.clone();
-std::thread::spawn(move || {
-    tokio::runtime::Runtime::new().unwrap().block_on(async {
-        if let Err(e) = run_web_server(peak_store_web, 3008).await {
-            error!("[web] server error: {}", e);
-        }
-    });
-});
+    info!("[airlift] web enabled (http://localhost:3008)");
 
     // ------------------------------------------------------------
-    // IO NODES
+    // Peaks → Storage
     // ------------------------------------------------------------
-    start_alsa_in(&cfg, &agent, metrics.clone());
-    start_udp_out(&cfg, &agent, metrics.clone());
-    start_icecast_out(&cfg, &agent);
-    start_mp3_out(&cfg, &agent);
-    start_srt_in(&cfg, &agent, running.clone());
-    start_srt_out(&cfg, &agent, running.clone());
-
-    // ------------------------------------------------------------
-    // Peaks / Influx / Broadcast
-    // ------------------------------------------------------------
-    start_peak_console(&agent);
-<<<<<<< HEAD
-    start_web_layer(&agent);
-=======
-    start_peak_broadcast(&agent);
-    
-    // Combined handler mit Peak Storage
     {
         let reader = agent.ring.subscribe();
-        let peak_store_handler = peak_store.clone();
-        
-        // Handler mit lokaler Erstellung der Handler
+        let store = peak_store.clone();
+
         let handler = Box::new(move |evt: &PeakEvent| {
-            // Peak in Storage speichern (konvertiere PeakEvent zu PeakPoint)
             let peak = PeakPoint {
                 timestamp: evt.utc_ns,
                 peak_l: evt.peak_l,
@@ -140,38 +106,23 @@ std::thread::spawn(move || {
                 lufs: None,
                 silence: evt.silence,
             };
-            peak_store_handler.add_peak(peak);
-            
-            // Lokale Handler erstellen (da Clone nicht verfügbar)
-            let influx = InfluxOut::new(
-                "http://localhost:8086/write".to_string(),
-                "rfm_aircheck".to_string(),
-                100,
-            );
-            
-            let broadcaster = BroadcastHttp::new(
-                "http://localhost:3006/api/broadcast".to_string(),
-                100,
-            );
-            
-            influx.handle(evt);
-            broadcaster.handle(evt);
+            store.add_peak(peak);
         });
 
         let mut analyzer = PeakAnalyzer::new(reader, handler, 0);
         std::thread::spawn(move || analyzer.run());
 
-        info!("[airlift] influx_out + broadcast_http + peak_storage enabled");
+        info!("[airlift] peak_storage enabled");
     }
 
->>>>>>> ffd6f69 (Frontend integration)
     // ------------------------------------------------------------
-    // Recorder (WAV / MP3 / Retention)
+    // Recorder (optional, aber stabil)
     // ------------------------------------------------------------
     start_recorder(&cfg, &agent)?;
 
-    let ring = agent.ring.clone();
-
+    // ------------------------------------------------------------
+    // Audio HTTP
+    // ------------------------------------------------------------
     start_audio_http(&agent)?;
 
     // ------------------------------------------------------------
@@ -187,9 +138,7 @@ std::thread::spawn(move || {
         if last_stats.elapsed() >= Duration::from_secs(5) {
             let stats = agent.ring.stats();
             let fill = stats.head_seq - stats.next_seq.wrapping_sub(1);
-
             debug!("[airlift] head_seq={} fill={}", stats.head_seq, fill);
-
             last_stats = Instant::now();
         }
     }
@@ -207,7 +156,7 @@ std::thread::spawn(move || {
 
 //
 // ============================================================
-// START_* HELPERS
+// Helpers
 // ============================================================
 //
 
@@ -221,216 +170,14 @@ fn start_monitoring(
     let port = cfg.monitoring.http_port;
 
     std::thread::spawn(move || {
-        if let Err(e) = monitoring::run_metrics_server(metrics, ring, port, running) {
+        if let Err(e) =
+            monitoring::run_metrics_server(metrics, ring, port, running)
+        {
             error!("[monitoring] error: {}", e);
         }
     });
 
     info!("[airlift] monitoring on port {}", port);
-}
-
-fn start_alsa_in(cfg: &Config, agent: &agent::Agent, metrics: Arc<monitoring::Metrics>) {
-    if let Some(c) = &cfg.alsa_in {
-        if !c.enabled {
-            return;
-        }
-
-        let ring = agent.ring.clone();
-        std::thread::spawn(move || {
-            if let Err(e) = io::alsa_in::run_alsa_in(ring, metrics) {
-                error!("[alsa_in] fatal: {}", e);
-            }
-        });
-
-        info!("[airlift] alsa_in enabled ({})", c.device);
-    }
-}
-
-fn start_udp_out(cfg: &Config, agent: &agent::Agent, metrics: Arc<monitoring::Metrics>) {
-    if let Some(c) = &cfg.udp_out {
-        if !c.enabled {
-            return;
-        }
-
-        let reader = agent.ring.subscribe();
-        let target = c.target.clone();
-
-        std::thread::spawn(move || {
-            if let Err(e) = io::udp_out::run_udp_out(reader, &target, metrics) {
-                error!("[udp_out] fatal: {}", e);
-            }
-        });
-
-        info!("[airlift] udp_out → {}", c.target);
-    }
-}
-
-fn start_icecast_out(cfg: &Config, agent: &agent::Agent) {
-    if let Some(c) = &cfg.icecast_out {
-        if !c.enabled {
-            return;
-        }
-
-        let reader = agent.ring.subscribe();
-
-        let ice_cfg = io::icecast_out::IcecastConfig {
-            host: c.host.clone(),
-            port: c.port,
-            mount: c.mount.clone(),
-            user: c.user.clone(),
-            password: c.password.clone(),
-            name: c.name.clone(),
-            description: c.description.clone(),
-            genre: c.genre.clone(),
-            public: c.public,
-            opus_bitrate: c.bitrate,
-        };
-
-        std::thread::spawn(move || {
-            if let Err(e) = io::icecast_out::run_icecast_out(reader, ice_cfg) {
-                error!("[icecast_out] fatal: {}", e);
-            }
-        });
-
-        info!("[airlift] icecast_out → {}:{}{}", c.host, c.port, c.mount);
-    }
-}
-
-fn start_mp3_out(cfg: &Config, agent: &agent::Agent) {
-    if let Some(c) = &cfg.mp3_out {
-        if !c.enabled {
-            return;
-        }
-
-        let reader = agent.ring.subscribe();
-
-        let mp3_cfg = io::mp3_out::Mp3Config {
-            host: c.host.clone(),
-            port: c.port,
-            mount: c.mount.clone(),
-            user: c.user.clone(),
-            password: c.password.clone(),
-            name: c.name.clone(),
-            description: c.description.clone(),
-            genre: c.genre.clone(),
-            public: c.public,
-            bitrate: c.bitrate,
-        };
-
-        std::thread::spawn(move || {
-            if let Err(e) = io::mp3_out::run_mp3_out(reader, mp3_cfg) {
-                error!("[mp3_out] fatal: {}", e);
-            }
-        });
-
-        info!(
-            "[airlift] mp3_out → {}:{}{} ({} kbps)",
-            c.host, c.port, c.mount, c.bitrate
-        );
-    }
-}
-
-fn start_srt_in(cfg: &Config, agent: &agent::Agent, running: Arc<AtomicBool>) {
-    if let Some(c) = &cfg.srt_in {
-        if !c.enabled {
-            return;
-        }
-
-        let ring = agent.ring.clone();
-        let cfg = c.clone();
-        let running = running.clone();
-
-        std::thread::spawn(move || {
-            if let Err(e) = io::srt_in::run_srt_in(ring, cfg, running) {
-                error!("[srt_in] fatal: {}", e);
-            }
-        });
-
-        info!("[airlift] srt_in → {}", c.listen);
-    }
-}
-
-fn start_srt_out(cfg: &Config, agent: &agent::Agent, running: Arc<AtomicBool>) {
-    if let Some(c) = cfg.srt_out.clone() {
-        let reader = agent.ring.subscribe();
-        let target = c.target.clone();
-        let running = running.clone();
-
-        std::thread::spawn(move || {
-            if let Err(e) = io::srt_out::run_srt_out(reader, c, running) {
-                error!("[srt_out] fatal: {}", e);
-            }
-        });
-
-        info!("[airlift] srt_out → {}", target);
-    }
-}
-
-fn start_peak_console(agent: &agent::Agent) {
-    let reader = agent.ring.subscribe();
-
-    let handler = Box::new(|evt: &PeakEvent| {
-        debug!(
-            "[peak] seq={} L={:.3} R={:.3} lat={:.1}ms",
-            evt.seq, evt.peak_l, evt.peak_r, evt.latency_ms
-        );
-    });
-
-    let mut analyzer = PeakAnalyzer::new(reader, handler, 100);
-    std::thread::spawn(move || analyzer.run());
-
-    info!("[airlift] peak_console enabled");
-}
-
-<<<<<<< HEAD
-fn start_web_layer(agent: &agent::Agent) {
-    let peaks = Arc::new(PeakStorage::new(1000));
-    let influx = Arc::new(InfluxService::new(
-        "http://localhost:8086/write".to_string(),
-        "rfm_aircheck".to_string(),
-        100,
-    ));
-
-    let state = web::AppState {
-        peaks: peaks.clone(),
-        influx: influx.clone(),
-    };
-
-    let reader = agent.ring.subscribe();
-    let app_state = state.clone();
-    std::thread::spawn(move || {
-        let handler = Box::new(move |evt: &PeakEvent| {
-            web::merge_peak_into_state(&app_state, evt.clone());
-        });
-
-        let mut analyzer = PeakAnalyzer::new(reader, handler, 0);
-        analyzer.run();
-    });
-
-    std::thread::spawn(move || {
-        let addr = "0.0.0.0:3006".parse().unwrap();
-        let rt = tokio::runtime::Runtime::new().expect("web runtime");
-        if let Err(err) = rt.block_on(web::serve(state, addr)) {
-            error!("[web] server error: {}", err);
-        }
-    });
-
-    info!("[airlift] web layer enabled (0.0.0.0:3006)");
-=======
-fn start_peak_broadcast(agent: &agent::Agent) {
-    let reader = agent.ring.subscribe();
-
-    let broadcaster = BroadcastHttp::new("http://localhost:3006/api/broadcast".to_string(), 100);
-
-    let handler = Box::new(move |evt: &PeakEvent| {
-        broadcaster.handle(evt);
-    });
-
-    let mut analyzer = PeakAnalyzer::new(reader, handler, 0);
-    std::thread::spawn(move || analyzer.run());
-
-    info!("[airlift] broadcast_http enabled");
->>>>>>> ffd6f69 (Frontend integration)
 }
 
 fn start_audio_http(agent: &agent::Agent) -> anyhow::Result<()> {
@@ -469,10 +216,11 @@ fn start_recorder(cfg: &Config, agent: &agent::Agent) -> anyhow::Result<()> {
         )?));
     }
 
-    let retentions: Vec<Box<dyn recorder::RetentionPolicy>> = vec![Box::new(FsRetention::new(
-        wav_dir.clone(),
-        c.retention_days,
-    ))];
+    let retentions: Vec<Box<dyn recorder::RetentionPolicy>> =
+        vec![Box::new(FsRetention::new(
+            wav_dir.clone(),
+            c.retention_days,
+        ))];
 
     let rec_cfg = RecorderConfig {
         idle_sleep: Duration::from_millis(5),
@@ -481,7 +229,9 @@ fn start_recorder(cfg: &Config, agent: &agent::Agent) -> anyhow::Result<()> {
     };
 
     std::thread::spawn(move || {
-        if let Err(e) = run_recorder(reader, rec_cfg, sinks, retentions) {
+        if let Err(e) =
+            run_recorder(reader, rec_cfg, sinks, retentions)
+        {
             error!("[recorder] fatal: {}", e);
         }
     });
