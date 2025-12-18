@@ -1,6 +1,5 @@
 // src/audio/http.rs
 
-use std::fs::File;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -8,11 +7,10 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
 
-use tiny_http::{Server, Response, Header, Method, StatusCode};
+use tiny_http::{Header, Method, Response, Server, StatusCode};
 
 use crate::audio::timeshift::stream_timeshift;
 use crate::ring::{RingRead, RingReader};
-
 
 // ============================================================================
 // Public entry point
@@ -23,9 +21,7 @@ pub fn start_audio_http_server(
     wav_dir: PathBuf,
     ring_reader_factory: impl Fn() -> RingReader + Send + Sync + 'static,
 ) -> anyhow::Result<()> {
-
-    let server = Server::http(bind)
-        .map_err(|e| anyhow::anyhow!(e))?;
+    let server = Server::http(bind).map_err(|e| anyhow::anyhow!(e))?;
 
     let wav_dir = Arc::new(wav_dir);
     let ring_factory = Arc::new(ring_reader_factory);
@@ -34,7 +30,6 @@ pub fn start_audio_http_server(
 
     thread::spawn(move || {
         for req in server.incoming_requests() {
-
             if req.method() != &Method::Get {
                 let _ = req.respond(Response::empty(StatusCode(405)));
                 continue;
@@ -63,22 +58,16 @@ pub fn start_audio_http_server(
     Ok(())
 }
 
-
 // ============================================================================
 // Timeshift
 // ============================================================================
 
-fn handle_timeshift(
-    req: tiny_http::Request,
-    wav_dir: Arc<PathBuf>,
-) {
+fn handle_timeshift(req: tiny_http::Request, wav_dir: Arc<PathBuf>) {
     let ts = match extract_ts(req.url()) {
         Some(ts) => ts,
         None => {
-            let _ = req.respond(
-                Response::from_string("missing ts")
-                    .with_status_code(StatusCode(400))
-            );
+            let _ =
+                req.respond(Response::from_string("missing ts").with_status_code(StatusCode(400)));
             return;
         }
     };
@@ -105,12 +94,18 @@ fn handle_timeshift(
         // ffmpeg: PCM -> MP3
         let mut ffmpeg = match Command::new("ffmpeg")
             .args([
-                "-loglevel", "quiet",
-                "-f", "s16le",
-                "-ar", "48000",
-                "-ac", "2",
-                "-i", "pipe:0",
-                "-f", "mp3",
+                "-loglevel",
+                "quiet",
+                "-f",
+                "s16le",
+                "-ar",
+                "48000",
+                "-ac",
+                "2",
+                "-i",
+                "pipe:0",
+                "-f",
+                "mp3",
                 "pipe:1",
             ])
             .stdin(Stdio::piped())
@@ -122,7 +117,7 @@ fn handle_timeshift(
         };
 
         let mut ff_stdin = ffmpeg.stdin.take().unwrap();
-        let mut ff_stdout = ffmpeg.stdout.take().unwrap();
+        let ff_stdout = ffmpeg.stdout.take().unwrap();
 
         // WAV follow-the-writer -> ffmpeg stdin
         let feeder = thread::spawn({
@@ -143,15 +138,11 @@ fn handle_timeshift(
     });
 }
 
-
 // ============================================================================
 // Live
 // ============================================================================
 
-fn handle_live(
-    req: tiny_http::Request,
-    ring_factory: Arc<dyn Fn() -> RingReader + Send + Sync>,
-) {
+fn handle_live(req: tiny_http::Request, ring_factory: Arc<dyn Fn() -> RingReader + Send + Sync>) {
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
     let reader = ChannelReader { rx };
 
@@ -175,12 +166,18 @@ fn handle_live(
     thread::spawn(move || {
         let mut ffmpeg = match Command::new("ffmpeg")
             .args([
-                "-loglevel", "quiet",
-                "-f", "s16le",
-                "-ar", "48000",
-                "-ac", "2",
-                "-i", "pipe:0",
-                "-f", "mp3",
+                "-loglevel",
+                "quiet",
+                "-f",
+                "s16le",
+                "-ar",
+                "48000",
+                "-ac",
+                "2",
+                "-i",
+                "pipe:0",
+                "-f",
+                "mp3",
                 "pipe:1",
             ])
             .stdin(Stdio::piped())
@@ -192,7 +189,7 @@ fn handle_live(
         };
 
         let mut ff_stdin = ffmpeg.stdin.take().unwrap();
-        let mut ff_stdout = ffmpeg.stdout.take().unwrap();
+        let ff_stdout = ffmpeg.stdout.take().unwrap();
 
         // Ring -> ffmpeg stdin
         let feeder = thread::spawn(move || {
@@ -220,15 +217,11 @@ fn handle_live(
     });
 }
 
-
 // ============================================================================
 // Helpers
 // ============================================================================
 
-fn pump_ffmpeg_stdout(
-    mut ff_stdout: impl Read,
-    tx: mpsc::Sender<Vec<u8>>,
-) {
+fn pump_ffmpeg_stdout(mut ff_stdout: impl Read, tx: mpsc::Sender<Vec<u8>>) {
     let mut buf = [0u8; 8192];
     loop {
         match ff_stdout.read(&mut buf) {

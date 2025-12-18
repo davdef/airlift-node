@@ -22,7 +22,6 @@ pub fn stream_timeshift(
     start_ts_ms: u64,
     mut on_pcm: impl FnMut(&[u8]) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
-
     let mut cur_ts_ms = start_ts_ms;
 
     loop {
@@ -38,7 +37,7 @@ pub fn stream_timeshift(
         }
 
         // WAV öffnen
-        let mut reader = WavReader::open(&wav_path)?;
+        let reader = WavReader::open(&wav_path)?;
         let spec = reader.spec();
 
         // sanity check (bewusst hart)
@@ -56,25 +55,17 @@ pub fn stream_timeshift(
         let mut file = pcm_start;
         let data_start = wav_data_start(&mut file)?;
 
-// Offset berechnen
-let offset_ms = cur_ts_ms.saturating_sub(hour_start_ms);
-let offset_frames = offset_ms * SAMPLE_RATE / 1000;
-let offset_bytes = offset_frames * FRAME_BYTES;
+        // Clamp: nicht hinter Dateiende springen
+        let file_len = file.metadata()?.len();
+        let wanted = data_start + offset_bytes;
 
-// Start der PCM-Daten
-let data_start = wav_data_start(&mut file)?;
+        let start_pos = if wanted >= file_len {
+            data_start
+        } else {
+            wanted
+        };
 
-// Clamp: nicht hinter Dateiende springen
-let file_len = file.metadata()?.len();
-let wanted = data_start + offset_bytes;
-
-let start_pos = if wanted >= file_len {
-    data_start
-} else {
-    wanted
-};
-
-file.seek(SeekFrom::Start(start_pos))?;
+        file.seek(SeekFrom::Start(start_pos))?;
 
         // Streaming-Loop für diese Stunde
         loop {
