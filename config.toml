@@ -28,6 +28,13 @@ url = "http://localhost:8086/write"
 db = "rfm_aircheck"
 interval_ms = 100
 
+[influx_history]
+enabled = true
+base_url = "http://localhost:8086"
+token = ""
+org = ""
+bucket = "rfm_aircheck"
+
 # ===== Recorder optional =====
 [recorder]
 enabled = true

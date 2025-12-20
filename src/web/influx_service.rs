@@ -1,9 +1,7 @@
-use crate::io::influx_out::InfluxOut;
-use crate::io::peak_analyzer::PeakEvent;
+// src/web/influx_service.rs - VOLLSTÄNDIG KORRIGIERT FÜR INFLUXDB 1.x
 
 use serde::Serialize;
-use serde_json::json;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::HashMap;
 
 //
 // ============================================================
@@ -12,24 +10,24 @@ use std::time::{SystemTime, UNIX_EPOCH};
 //
 
 pub struct InfluxService {
-    inner: InfluxOut,
+    inner: crate::io::influx_out::InfluxOut,
 }
 
 impl InfluxService {
     pub fn new(url: String, db: String, min_interval_ms: u64) -> Self {
         Self {
-            inner: InfluxOut::new(url, db, min_interval_ms),
+            inner: crate::io::influx_out::InfluxOut::new(url, db, min_interval_ms),
         }
     }
 
-    pub fn handle_peak(&self, evt: &PeakEvent) {
+    pub fn handle_peak(&self, evt: &crate::io::peak_analyzer::PeakEvent) {
         self.inner.handle(evt);
     }
 }
 
 //
 // ============================================================
-// READ SIDE – History API (InfluxDB 2.x)
+// READ SIDE – History API (InfluxDB 1.x)
 // ============================================================
 //
 
@@ -65,32 +63,19 @@ impl InfluxHistoryService {
         from_ms: u64,
         to_ms: u64,
     ) -> Result<Vec<HistoryPoint>, String> {
-        let flux_query = format!(
-            r#"
-            from(bucket: "{}")
-              |> range(start: {}, stop: {})
-              |> filter(fn: (r) => r._measurement == "peaks")
-              |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
-              |> keep(columns: ["_time", "peakL", "peakR", "silence"])
-            "#,
-            self.bucket,
-            from_ms * 1_000_000,
-            to_ms * 1_000_000
+        // INFLUXQL QUERY für InfluxDB 1.x
+        let query = format!(
+            "SELECT peakL, peakR, silence FROM peaks WHERE time >= {}ms AND time <= {}ms",
+            from_ms, to_ms
         );
 
-        let query_url = format!("{}/api/v2/query?org={}", self.base_url, self.org);
-
+        let query_url = format!("{}/query", self.base_url);
+        
         let response = match ureq::post(&query_url)
-            .set("Authorization", &format!("Token {}", self.token))
-            .set("Content-Type", "application/json")
-            .set("Accept", "application/csv")
-            .send_string(
-                &serde_json::to_string(&json!({
-                    "query": flux_query,
-                    "type": "flux"
-                }))
-                .unwrap(),
-            ) {
+            .query("db", &self.bucket)  // DB Parameter für 1.x
+            .query("q", &query)         // Query Parameter
+            .set("Accept", "application/json")
+            .call() {
             Ok(resp) => resp,
             Err(ureq::Error::Status(status, resp)) => {
                 return Err(format!(
@@ -102,11 +87,13 @@ impl InfluxHistoryService {
             Err(e) => return Err(format!("Request error: {}", e)),
         };
 
-        let csv = response
-            .into_string()
+        let json_text = response.into_string()
             .map_err(|e| format!("Read error: {}", e))?;
+        
+        let json: serde_json::Value = serde_json::from_str(&json_text)
+            .map_err(|e| format!("JSON parse error: {}", e))?;
 
-        parse_flux_csv(&csv)
+        parse_influxql_json(&json)
     }
 }
 
@@ -116,56 +103,76 @@ impl InfluxHistoryService {
 // ============================================================
 //
 
-fn parse_flux_csv(csv_text: &str) -> Result<Vec<HistoryPoint>, String> {
-    use std::collections::HashMap;
-
-    let mut map: HashMap<u64, HistoryPoint> = HashMap::new();
-
-    for line in csv_text.lines() {
-        if line.starts_with('#') || line.trim().is_empty() {
-            continue;
-        }
-
-        let parts: Vec<&str> = line.split(',').collect();
-        if parts.len() < 9 {
-            continue;
-        }
-
-        let ts = parse_rfc3339_to_ms(parts[4].trim_matches('"'))?;
-        let field = parts[5].trim_matches('"');
-        let value = parts[8].trim_matches('"').parse::<f64>().unwrap_or(0.0);
-
-        let entry = map.entry(ts).or_insert(HistoryPoint {
-            ts,
-            peak_l: 0.0,
-            peak_r: 0.0,
-            silence: false,
-        });
-
-        match field {
-            "peakL" => entry.peak_l = value as f32,
-            "peakR" => entry.peak_r = value as f32,
-            "silence" => entry.silence = value == 1.0,
-            _ => {}
+fn parse_influxql_json(json: &serde_json::Value) -> Result<Vec<HistoryPoint>, String> {
+    let mut points = Vec::new();
+    
+    if let Some(results) = json.get("results").and_then(|r| r.as_array()) {
+        for result in results {
+            if let Some(series) = result.get("series").and_then(|s| s.as_array()) {
+                for serie in series {
+                    let columns = serie.get("columns")
+                        .and_then(|c| c.as_array())
+                        .ok_or("No columns")?;
+                    
+                    let values = serie.get("values")
+                        .and_then(|v| v.as_array())
+                        .ok_or("No values")?;
+                    
+                    // Finde Spaltenindizes
+                    let time_idx = columns.iter().position(|c| c.as_str() == Some("time"))
+                        .ok_or("No time column")?;
+                    let peakl_idx = columns.iter().position(|c| c.as_str() == Some("peakL"))
+                        .ok_or("No peakL column")?;
+                    let peakr_idx = columns.iter().position(|c| c.as_str() == Some("peakR"))
+                        .ok_or("No peakR column")?;
+                    let silence_idx = columns.iter().position(|c| c.as_str() == Some("silence"))
+                        .ok_or("No silence column")?;
+                    
+                    for row in values {
+                        if let Some(row_arr) = row.as_array() {
+                            if row_arr.len() > silence_idx {
+                                let timestamp_str = row_arr[time_idx].as_str()
+                                    .ok_or("Invalid timestamp")?;
+                                
+                                // Konvertiere RFC3339 zu ms
+                                let ts = parse_rfc3339_to_ms(timestamp_str)?;
+                                
+                                let peak_l = row_arr[peakl_idx].as_f64()
+                                    .unwrap_or(0.0) as f32;
+                                let peak_r = row_arr[peakr_idx].as_f64()
+                                    .unwrap_or(0.0) as f32;
+                                let silence = row_arr[silence_idx].as_i64()
+                                    .map(|v| v == 1)
+                                    .unwrap_or(false);
+                                
+                                points.push(HistoryPoint {
+                                    ts,
+                                    peak_l,
+                                    peak_r,
+                                    silence,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
-
-    let mut out: Vec<_> = map.into_values().collect();
-    out.sort_by_key(|p| p.ts);
-    Ok(out)
+    
+    points.sort_by_key(|p| p.ts);
+    Ok(points)
 }
 
 fn parse_rfc3339_to_ms(s: &str) -> Result<u64, String> {
     let s = s.trim_end_matches('Z');
     let (base, frac) = s.split_once('.').unwrap_or((s, "0"));
 
-    let parsed =
-        chrono::NaiveDateTime::parse_from_str(base, "%Y-%m-%dT%H:%M:%S")
-            .map_err(|e| e.to_string())?;
+    let parsed = chrono::NaiveDateTime::parse_from_str(base, "%Y-%m-%dT%H:%M:%S")
+        .map_err(|e| e.to_string())?;
 
     let nanos: i64 = frac.chars().take(9).collect::<String>().parse().unwrap_or(0);
 
-    Ok((chrono::Duration::seconds(parsed.timestamp())
+    Ok((chrono::Duration::seconds(parsed.and_utc().timestamp())  // FIXED: nicht deprecated
         + chrono::Duration::nanoseconds(nanos))
     .num_milliseconds() as u64)
 }
