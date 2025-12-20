@@ -1,6 +1,7 @@
 // src/io/mp3_out.rs
 use crate::ring::{RingRead, RingReader};
 use anyhow::{Result, anyhow};
+#[cfg(feature = "mp3")]
 use lame::Lame;
 use log::info;
 use std::io::Write;
