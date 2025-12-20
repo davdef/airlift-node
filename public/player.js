@@ -1,18 +1,3 @@
-use axum::{
-    extract::State,
-    response::Html,
-};
-use std::sync::Arc;
-
-use crate::web::peaks::PeakStorage;
-use crate::web::influx_service::InfluxService;
-
-pub async fn index(
-    State((_peak_store, _influx_service)): State<Arc<PeakStorage>>
-) -> impl axum::response::IntoResponse {
-    Html(include_str!("../../public/index.html"))
-}
-
 class AircheckPlayer {
     constructor() {
         this.canvas = document.getElementById("waveform");
