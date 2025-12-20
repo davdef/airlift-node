@@ -1,5 +1,6 @@
 // src/web/influx_service.rs - VOLLSTÄNDIG KORRIGIERT FÜR INFLUXDB 1.x
 
+use log::{debug, warn};
 use serde::Serialize;
 use std::collections::HashMap;
 
@@ -63,10 +64,12 @@ impl InfluxHistoryService {
         from_ms: u64,
         to_ms: u64,
     ) -> Result<Vec<HistoryPoint>, String> {
+        let from_ns = from_ms.saturating_mul(1_000_000);
+        let to_ns = to_ms.saturating_mul(1_000_000);
         // INFLUXQL QUERY für InfluxDB 1.x
         let query = format!(
-            "SELECT peakL, peakR, silence FROM peaks WHERE time >= {}ms AND time <= {}ms",
-            from_ms, to_ms
+            "SELECT peakL, peakR, silence FROM peaks WHERE time >= {} AND time <= {}",
+            from_ns, to_ns
         );
 
         let query_url = format!("{}/query", self.base_url);
@@ -93,7 +96,9 @@ impl InfluxHistoryService {
         let json: serde_json::Value = serde_json::from_str(&json_text)
             .map_err(|e| format!("JSON parse error: {}", e))?;
 
-        parse_influxql_json(&json)
+        let points = parse_influxql_json(&json)?;
+        debug!("[influx] history query returned {} points", points.len());
+        Ok(points)
     }
 }
 
@@ -155,8 +160,12 @@ fn parse_influxql_json(json: &serde_json::Value) -> Result<Vec<HistoryPoint>, St
                         }
                     }
                 }
+            } else {
+                warn!("[influx] query returned no series");
             }
         }
+    } else {
+        warn!("[influx] query returned no results array");
     }
     
     points.sort_by_key(|p| p.ts);
