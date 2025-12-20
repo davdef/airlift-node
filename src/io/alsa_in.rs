@@ -1,15 +1,14 @@
 // src/io/alsa_in.rs
-use alsa::pcm::{Access, Format, HwParams, PCM};
-use alsa::{Direction, ValueOr};
 
-use std::time::{SystemTime, UNIX_EPOCH};
+#![cfg(any(feature = "audio", feature = "mock-audio"))]
+
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::ring::AudioRing;
 use crate::monitoring::Metrics;
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 const RATE: usize = 48_000;
 const CHANNELS: usize = 2;
@@ -22,10 +21,20 @@ fn utc_ns_now() -> u64 {
     d.as_secs() * 1_000_000_000 + d.subsec_nanos() as u64
 }
 
-pub fn run_alsa_in(ring: AudioRing, metrics: Arc<Metrics>) -> anyhow::Result<()> {
-    // ------------------------------------------------------------
-    // PCM öffnen
-    // ------------------------------------------------------------
+// ============================================================
+// REAL ALSA INPUT
+// ============================================================
+
+#[cfg(feature = "audio")]
+use alsa::pcm::{Access, Format, HwParams, PCM};
+#[cfg(feature = "audio")]
+use alsa::{Direction, ValueOr};
+
+#[cfg(feature = "audio")]
+pub fn run_alsa_in(
+    ring: AudioRing,
+    metrics: Arc<Metrics>,
+) -> anyhow::Result<()> {
     let pcm = PCM::new("default", Direction::Capture, false)?;
 
     let period_frames: usize;
@@ -38,7 +47,6 @@ pub fn run_alsa_in(ring: AudioRing, metrics: Arc<Metrics>) -> anyhow::Result<()>
         hwp.set_channels(CHANNELS as u32)?;
         hwp.set_rate(RATE as u32, ValueOr::Nearest)?;
 
-        // Wunsch: kleine Perioden (z.B. ~10 ms)
         let period = hwp.set_period_size_near(480, ValueOr::Nearest)?;
         let buffer = hwp.set_buffer_size_near(period * 4)?;
 
@@ -55,9 +63,6 @@ pub fn run_alsa_in(ring: AudioRing, metrics: Arc<Metrics>) -> anyhow::Result<()>
     pcm.prepare()?;
     let io = pcm.io_i16()?;
 
-    // ------------------------------------------------------------
-    // FIFO + Arbeitsbuffer
-    // ------------------------------------------------------------
     let mut fifo: Vec<i16> = Vec::with_capacity(TARGET_FRAMES * CHANNELS * 2);
     let mut period_buf = vec![0i16; period_frames * CHANNELS];
 
@@ -72,27 +77,45 @@ pub fn run_alsa_in(ring: AudioRing, metrics: Arc<Metrics>) -> anyhow::Result<()>
                         eprintln!("[alsa] fifo overrun, dropping");
                         fifo.clear();
                     }
+
                     let pcm_chunk: Vec<i16> =
                         fifo.drain(..TARGET_FRAMES * CHANNELS).collect();
 
-                    let utc = utc_ns_now() - 100_000_000; // 100 ms
+                    let utc = utc_ns_now() - 100_000_000;
                     let seq = ring.writer_push(utc, pcm_chunk);
 
-                    // Update metrics
-                    metrics.alsa_samples.fetch_add(TARGET_FRAMES as u64 * CHANNELS as u64, Ordering::Relaxed);
-                    
+                    metrics.alsa_samples.fetch_add(
+                        TARGET_FRAMES as u64 * CHANNELS as u64,
+                        Ordering::Relaxed,
+                    );
+
                     if seq % 10 == 0 {
                         println!("[alsa] pushed seq={}", seq);
                     }
                 }
             }
-            Ok(_) => {
-                thread::sleep(Duration::from_millis(1));
-            }
+            Ok(_) => thread::sleep(Duration::from_millis(1)),
             Err(e) => {
                 eprintln!("[alsa] read error: {}", e);
                 thread::sleep(Duration::from_millis(10));
             }
         }
+    }
+}
+
+// ============================================================
+// MOCK INPUT (for Codex / CI / non-ALSA builds)
+// ============================================================
+
+#[cfg(feature = "mock-audio")]
+pub fn run_alsa_in(
+    _ring: AudioRing,
+    _metrics: Arc<Metrics>,
+) -> anyhow::Result<()> {
+    log::warn!("[mock-audio] ALSA input disabled (no audio source)");
+
+    // absichtlich nichts tun
+    loop {
+        thread::sleep(Duration::from_secs(1));
     }
 }
