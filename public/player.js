@@ -106,10 +106,10 @@ class AircheckPlayer {
     getCurrentPlaybackTime() {
         if (this.isLiveAudio) {
             // Live: wir definieren "jetzt" als Live-Referenz
-            return this.latestWsTs || Date.now();
+            return this.latestWsTs ?? this.bufferEnd ?? Date.now();
         }
         if (this.playbackServerStartTime == null) {
-            return this.latestWsTs || Date.now();
+            return this.latestWsTs ?? this.bufferEnd ?? Date.now();
         }
         return this.playbackServerStartTime + this.audio.currentTime * 1000;
     }
@@ -201,14 +201,26 @@ class AircheckPlayer {
 
             const ts = data.timestamp;
             this.latestWsTs = ts;
+            this.bufferEnd = ts;
 
-            // Live-Sample als History-Point anfügen (für nahtlosen Übergang)
-            const avg = data.peaks.reduce((a,b)=>a+b,0) / data.peaks.length;
-            const entry = { ts, peaks: [avg] };
+            if (!this.followLive) {
+                return;
+            }
 
-            this.history.push(entry);
-            // Sortieren, nur falls nötig
-            this.history.sort((a,b)=>a.ts - b.ts);
+            const entry = {
+                ts,
+                peaks: [data.peaks[0], data.peaks[1]],
+                silence: !!data.silence
+            };
+
+            const last = this.history[this.history.length - 1];
+            if (last && ts < last.ts) {
+                this.history.push(entry);
+                this.history.sort((a,b)=>a.ts - b.ts);
+            } else {
+                this.history.push(entry);
+            }
+            this.trimHistory();
 
         };
     }
@@ -264,7 +276,7 @@ class AircheckPlayer {
                 this.setStatus("Live-Play Fehler");
             });
 
-        const ref = this.latestWsTs || this.bufferEnd || Date.now();
+        const ref = this.latestWsTs ?? this.bufferEnd ?? Date.now();
         this.viewportRight = ref;
         this.viewportLeft  = ref - this.visibleDuration;
         this.clampViewportToBuffer();
@@ -489,8 +501,6 @@ class AircheckPlayer {
             let rightLimit = this.bufferEnd != null ? this.bufferEnd : this.viewportRight;
             if (this.latestWsTs) {
                 rightLimit = Math.max(rightLimit, this.latestWsTs);
-            } else {
-                rightLimit = Math.max(rightLimit, Date.now());
             }
     
             // Viewport an Grenzen anpassen
@@ -503,6 +513,7 @@ class AircheckPlayer {
                 this.viewportLeft = leftLimit;
                 this.viewportRight = this.viewportLeft + span;
             }
+            this.trimHistory();
             return;
         }
     
@@ -521,6 +532,7 @@ class AircheckPlayer {
             this.viewportLeft = earliest - buffer;
             this.viewportRight = this.viewportLeft + span;
         }
+        this.trimHistory();
     }
 
     // ---------------------------------------------------
@@ -598,11 +610,29 @@ async loadHistoryWindow(from, to) {
         const map = new Map(this.history.map(e => [e.ts, e]));
         converted.forEach(p => map.set(p.ts, p));
         this.history = Array.from(map.values()).sort((a,b) => a.ts - b.ts);
+        this.trimHistory();
         
     } catch (err) {
         console.error("[History] Load failed:", err);
     }
 }
+
+    trimHistory() {
+        if (!this.history.length) return;
+        if (!Number.isFinite(this.viewportLeft) || !Number.isFinite(this.viewportRight)) return;
+
+        const span = this.visibleDuration;
+        const buffer = span * 2;
+        const min = this.viewportLeft - buffer;
+        const max = this.viewportRight + buffer;
+
+        if (!Number.isFinite(min) || !Number.isFinite(max)) return;
+
+        const trimmed = this.history.filter(e => e.ts >= min && e.ts <= max);
+        if (trimmed.length !== this.history.length) {
+            this.history = trimmed;
+        }
+    }
     maybeLoadMoreHistory() {
         if (this.loadingHistory) return;
         if (this.bufferStart == null) return;
@@ -610,7 +640,7 @@ async loadHistoryWindow(from, to) {
         // Erweiterte rechte Grenze für History-Loading
         const extendedRight = Math.max(
             this.viewportRight, 
-            this.latestWsTs || this.bufferEnd || Date.now()
+            this.latestWsTs || this.bufferEnd || this.viewportRight
         );
         
         const left  = Math.max(this.viewportLeft, this.bufferStart);
