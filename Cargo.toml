@@ -31,6 +31,7 @@ bytemuck = "1.15"
 
 # Async Runtime
 tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
+tokio-stream = "0.1"
 
 # SRT (nutzt tokio)
 srt-tokio = "0.3"

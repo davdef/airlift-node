@@ -23,9 +23,8 @@ class AircheckPlayer {
         this.visibleDuration    = 30_000;          // Start: 30s
 
         const now = Date.now();
-        this.viewportLeft  = now - this.visibleDuration;
-        this.viewportRight = now;
-
+        this.viewportLeft = 0;
+        this.viewportRight = 0;
         this.followLive = true;     // Viewport folgt Live
         this.isLiveAudio = false;   // Audio-Modus
         this.dragging = false;
@@ -103,16 +102,20 @@ class AircheckPlayer {
         return 300_000;                       // 5min
     }
 
-    getCurrentPlaybackTime() {
-        if (this.isLiveAudio) {
-            // Live: wir definieren "jetzt" als Live-Referenz
-            return this.latestWsTs ?? this.bufferEnd ?? Date.now();
-        }
-        if (this.playbackServerStartTime == null) {
-            return this.latestWsTs ?? this.bufferEnd ?? Date.now();
-        }
-        return this.playbackServerStartTime + this.audio.currentTime * 1000;
+getCurrentPlaybackTime() {
+    if (this.isLiveAudio) {
+        // Live: Aktuellste Server-Zeit
+        return this.latestWsTs ?? this.bufferEnd ?? 0;
     }
+    
+    if (this.playbackServerStartTime != null) {
+        // Timeshift: Server-Startzeit + Audio-Offset
+        return this.playbackServerStartTime + (this.audio.currentTime * 1000);
+    }
+    
+    // Fallback: Aktuellste verfügbare Server-Zeit
+    return this.latestWsTs ?? this.bufferEnd ?? 0;
+}
 
     setupCanvas() {
         const resize = () => {
@@ -140,6 +143,9 @@ class AircheckPlayer {
                 this.viewportRight = this.bufferEnd;
                 this.viewportLeft  = this.bufferEnd - span;
                 this.clampViewportToBuffer();
+
+           // LADE INITIAL HISTORY für diesen Viewport
+            await this.loadHistoryWindow(this.viewportLeft, this.viewportRight);
 
                 if (this.debug.bufferInfo) {
                     const durMs = this.bufferEnd - this.bufferStart;
@@ -491,49 +497,53 @@ class AircheckPlayer {
         this.clampViewportToBuffer();
     }
 
-    clampViewportToBuffer() {
-        const span = this.visibleDuration;
+clampViewportToBuffer() {
+    const span = this.visibleDuration;
     
-        if (this.bufferStart != null) {
-            const leftLimit = this.bufferStart;
-    
-            // Rechte Grenze: Immer der aktuellste verfügbare Wert
-            let rightLimit = this.bufferEnd != null ? this.bufferEnd : this.viewportRight;
-            if (this.latestWsTs) {
-                rightLimit = Math.max(rightLimit, this.latestWsTs);
-            }
-    
-            // Viewport an Grenzen anpassen
-            if (this.viewportRight > rightLimit) {
-                this.viewportRight = rightLimit;
-                this.viewportLeft  = this.viewportRight - span;
-            }
-    
-            if (this.viewportLeft < leftLimit) {
-                this.viewportLeft = leftLimit;
-                this.viewportRight = this.viewportLeft + span;
-            }
-            this.trimHistory();
-            return;
+    // MUSS Server-Zeiten verwenden!
+    if (this.bufferStart != null && this.bufferEnd != null) {
+        const leftLimit = this.bufferStart;
+        const rightLimit = this.bufferEnd;
+        
+        // Viewport komplett nach rechts verschieben wenn nötig
+        if (this.viewportRight > rightLimit) {
+            this.viewportRight = rightLimit;
+            this.viewportLeft = this.viewportRight - span;
         }
-    
-        // Fallback: History-Grenzen (wenn kein Buffer bekannt)
-        if (!this.history.length) return;
-        const earliest = this.history[0].ts;
-        const latest   = this.history[this.history.length - 1].ts;
-    
-        // SANFTE Begrenzung an History-Grenzen
-        const buffer = span * 0.1; // 10% Puffer
-        if (this.viewportRight > latest + buffer) {
-            this.viewportRight = latest + buffer;
-            this.viewportLeft  = this.viewportRight - span;
-        }
-        if (this.viewportLeft < earliest - buffer) {
-            this.viewportLeft = earliest - buffer;
+        
+        if (this.viewportLeft < leftLimit) {
+            this.viewportLeft = leftLimit;
             this.viewportRight = this.viewportLeft + span;
         }
+        
+        // Sicherstellen dass Viewport gültig ist
+        if (this.viewportRight > rightLimit) {
+            this.viewportRight = rightLimit;
+            this.viewportLeft = Math.max(leftLimit, this.viewportRight - span);
+        }
+        
         this.trimHistory();
+        return;
     }
+    
+    // Fallback nur für History (aber auch das sind Server-Zeiten!)
+    if (!this.history.length) return;
+    
+    const earliest = this.history[0].ts;
+    const latest = this.history[this.history.length - 1].ts;
+    
+    if (this.viewportRight > latest) {
+        this.viewportRight = latest;
+        this.viewportLeft = this.viewportRight - span;
+    }
+    
+    if (this.viewportLeft < earliest) {
+        this.viewportLeft = earliest;
+        this.viewportRight = this.viewportLeft + span;
+    }
+    
+    this.trimHistory();
+}
 
     // ---------------------------------------------------
     //  Seeking
@@ -577,13 +587,34 @@ class AircheckPlayer {
     // ---------------------------------------------------
     //  History laden
     // ---------------------------------------------------
-// Kopiere den gesamten Inhalt von player.js und ändere NUR DIESE EINE FUNKTION:
-
 async loadHistoryWindow(from, to) {
     try {
+        // VERHINDERE REQUEST MIT GLEICHEN ZEITEN ODER NEGATIVER SPANNE
+        const span = to - from;
+        if (span <= 0) {
+            console.log("[History] Skipping (invalid span:", span, "ms)");
+            return;
+        }
+        
+        // Mindestspanne von 1000ms (1 Sekunde)
+        const minSpan = 1000;
+        if (span < minSpan) {
+            // Korrigiere to, um mindestens 1s zu haben
+            to = from + minSpan;
+            console.log("[History] Adjusted span to minimum 1s");
+        }
+        
         const url = `/api/history?from=${Math.floor(from)}&to=${Math.floor(to)}`;
         
-        console.log("[History] Loading:", url);
+//        console.log("[History] Loading:", url, "span:", span, "ms");
+        
+        // RATE LIMITING: Verhindere zu häufige Requests
+        const now = Date.now();
+        if (this.lastHistoryRequest && (now - this.lastHistoryRequest < 2000)) {
+//            console.log("[History] Rate limiting, skipping...");
+            return;
+        }
+        this.lastHistoryRequest = now;
         
         const res = await fetch(url);
         if (!res.ok) {
@@ -633,23 +664,40 @@ async loadHistoryWindow(from, to) {
             this.history = trimmed;
         }
     }
-    maybeLoadMoreHistory() {
-        if (this.loadingHistory) return;
-        if (this.bufferStart == null) return;
+
+maybeLoadMoreHistory() {
+    if (this.loadingHistory) return;
+    if (this.bufferStart == null) return;
+
+    // SICHERSTELLEN DASS from < to
+    let from = this.viewportLeft;
+    let to = Math.max(
+        this.viewportRight, 
+        this.latestWsTs || this.bufferEnd || this.viewportRight
+    );
     
-        // Erweiterte rechte Grenze für History-Loading
-        const extendedRight = Math.max(
-            this.viewportRight, 
-            this.latestWsTs || this.bufferEnd || this.viewportRight
-        );
-        
-        const left  = Math.max(this.viewportLeft, this.bufferStart);
-        const right = Math.min(extendedRight, this.bufferEnd || Infinity);
+    // Beschränke auf verfügbaren Buffer
+    from = Math.max(from, this.bufferStart);
+    to = Math.min(to, this.bufferEnd || Infinity);
     
-        if (right <= left) return;
-    
-        this.loadHistoryWindow(left, right);
+    // Mindestspanne von 2 Sekunden
+    const minSpan = 2000;
+    if (to - from < minSpan) {
+        // Erweitere nach hinten wenn möglich
+        if (this.bufferEnd && to < this.bufferEnd) {
+            to = Math.min(from + minSpan, this.bufferEnd);
+        } 
+        // Oder nach vorne
+        else if (this.bufferStart && from > this.bufferStart) {
+            from = Math.max(to - minSpan, this.bufferStart);
+        }
     }
+    
+    // Nur laden wenn span > 0
+    if (to > from && (to - from) >= 1000) {
+        this.loadHistoryWindow(from, to);
+    }
+}
 
     // ---------------------------------------------------
     //  Render-Loop

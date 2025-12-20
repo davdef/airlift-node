@@ -1,4 +1,4 @@
-// src/main.rs
+// src/main.rs - KORREKTE VERSION
 
 mod agent;
 mod audio;
@@ -16,7 +16,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 
 use config::Config;
 
@@ -26,7 +26,6 @@ use crate::web::peaks::{PeakPoint, PeakStorage};
 
 use crate::recorder::{AudioSink, FsRetention, Mp3Sink, RecorderConfig, WavSink, run_recorder};
 
-use crate::audio::http::start_audio_http_server;
 use crate::web::run_web_server;
 
 fn main() -> anyhow::Result<()> {
@@ -69,6 +68,43 @@ fn main() -> anyhow::Result<()> {
     start_monitoring(&cfg, &agent, metrics.clone(), running.clone());
 
     // ------------------------------------------------------------
+    // SRT Input
+    // ------------------------------------------------------------
+    if let Some(srt_cfg) = &cfg.srt_in {
+        if srt_cfg.enabled {
+            info!("[airlift] SRT enabled: {}", srt_cfg.listen);
+            
+            let ring = agent.ring.clone();
+            let cfg_clone = srt_cfg.clone();
+            let running_srt = running.clone();
+            
+            std::thread::spawn(move || {
+                if let Err(e) = crate::io::srt_in::run_srt_in(ring, cfg_clone, running_srt) {
+                    error!("[srt] fatal: {}", e);
+                }
+            });
+        }
+    }
+
+    // ------------------------------------------------------------
+    // ALSA Input (falls konfiguriert)
+    // ------------------------------------------------------------
+    if let Some(alsa_cfg) = &cfg.alsa_in {
+        if alsa_cfg.enabled {
+            info!("[airlift] ALSA enabled: {}", alsa_cfg.device);
+            
+            let ring = agent.ring.clone();
+            let metrics_alsa = metrics.clone();
+            
+            std::thread::spawn(move || {
+                if let Err(e) = crate::io::alsa_in::run_alsa_in(ring, metrics_alsa) {
+                    error!("[alsa] fatal: {}", e);
+                }
+            });
+        }
+    }
+
+    // ------------------------------------------------------------
     // Peak storage + Web
     // ------------------------------------------------------------
     let peak_store = Arc::new(PeakStorage::new());
@@ -89,9 +125,22 @@ fn main() -> anyhow::Result<()> {
     {
         let peak_store_web = peak_store.clone();
         let history_service_web = history_service.clone();
+        let ring_buffer = Arc::new(agent.ring.clone());
+        let wav_dir = if let Some(rec) = &cfg.recorder {
+            PathBuf::from(&rec.wav_dir)
+        } else {
+            PathBuf::from("/data/aircheck/wav")
+        };
+
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().expect("web runtime");
-            if let Err(e) = rt.block_on(run_web_server(peak_store_web, history_service_web, 3008)) {
+            if let Err(e) = rt.block_on(run_web_server(
+                peak_store_web, 
+                history_service_web,
+                ring_buffer,
+                wav_dir,
+                3008
+            )) {
                 error!("[web] server error: {}", e);
             }
         });
@@ -130,11 +179,6 @@ fn main() -> anyhow::Result<()> {
     start_recorder(&cfg, &agent)?;
 
     // ------------------------------------------------------------
-    // Audio HTTP
-    // ------------------------------------------------------------
-    start_audio_http(&agent)?;
-
-    // ------------------------------------------------------------
     // Main loop
     // ------------------------------------------------------------
     info!("[airlift] running – Ctrl+C to stop");
@@ -163,12 +207,6 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-//
-// ============================================================
-// Helpers
-// ============================================================
-//
-
 fn start_monitoring(
     cfg: &Config,
     agent: &agent::Agent,
@@ -185,19 +223,6 @@ fn start_monitoring(
     });
 
     info!("[airlift] monitoring on port {}", port);
-}
-
-fn start_audio_http(agent: &agent::Agent) -> anyhow::Result<()> {
-    let ring = agent.ring.clone();
-
-    start_audio_http_server(
-        "0.0.0.0:3007",
-        PathBuf::from("/data/aircheck/wav"),
-        move || ring.subscribe(),
-    )?;
-
-    info!("[airlift] audio_http enabled (0.0.0.0:3007)");
-    Ok(())
 }
 
 fn start_recorder(cfg: &Config, agent: &agent::Agent) -> anyhow::Result<()> {
