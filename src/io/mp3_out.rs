@@ -24,10 +24,14 @@ pub struct Mp3Config {
 struct Mp3Encoder {
     lame: Lame,
     buffer: Vec<u8>,
+    left: Vec<i16>,
+    right: Vec<i16>,
 }
 
 impl Mp3Encoder {
     fn new(bitrate: u32) -> Result<Self> {
+        const FRAMES: usize = 4800;
+        const MP3_BUFFER_SIZE: usize = FRAMES * 5 / 4 + 7200;
         let mut lame = Lame::new().ok_or_else(|| anyhow!("Failed to init LAME"))?;
 
         lame.set_sample_rate(48_000)
@@ -40,7 +44,9 @@ impl Mp3Encoder {
 
         Ok(Self {
             lame,
-            buffer: Vec::with_capacity(8192),
+            buffer: vec![0u8; MP3_BUFFER_SIZE],
+            left: vec![0i16; FRAMES],
+            right: vec![0i16; FRAMES],
         })
     }
 
@@ -51,17 +57,17 @@ impl Mp3Encoder {
             return Err(anyhow!("Wrong PCM length for 100ms"));
         }
 
-        let mut left = Vec::with_capacity(FRAMES);
-        let mut right = Vec::with_capacity(FRAMES);
-
-        for i in 0..FRAMES {
-            left.push(pcm[i * 2]);
-            right.push(pcm[i * 2 + 1]);
+        for (i, pair) in pcm.chunks_exact(2).enumerate() {
+            self.left[i] = pair[0];
+            self.right[i] = pair[1];
         }
 
-        let out = vec![0u8; 8192];
+        let written = self
+            .lame
+            .encode(&self.left, &self.right, &mut self.buffer)
+            .map_err(|e| anyhow!("lame encode: {:?}", e))?;
 
-        Ok(out)
+        Ok(self.buffer[..written].to_vec())
     }
 }
 
