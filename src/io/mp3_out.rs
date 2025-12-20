@@ -18,56 +18,82 @@ pub struct Mp3Config {
     pub description: String,
     pub genre: String,
     pub public: bool,
-    pub bitrate: u32, // z.B. 128 für 128kbps
+    pub bitrate: u32,
 }
 
 struct Mp3Encoder {
     lame: Lame,
-    buffer: Vec<u8>,
+    mp3_buffer: Vec<u8>,
     left: Vec<i16>,
     right: Vec<i16>,
+    frames_per_100ms: usize,
 }
 
 impl Mp3Encoder {
-    fn new(bitrate: u32) -> Result<Self> {
-        const FRAMES: usize = 4800;
-        const MP3_BUFFER_SIZE: usize = FRAMES * 5 / 4 + 7200;
+    fn new(bitrate: u32, sample_rate: u32) -> Result<Self> {
+        const MP3_BUFFER_OVERHEAD: usize = 7200;
+        let frames_per_100ms = (sample_rate / 10) as usize;
+        let mp3_buffer_size = frames_per_100ms * 5 / 4 + MP3_BUFFER_OVERHEAD;
+        
         let mut lame = Lame::new().ok_or_else(|| anyhow!("Failed to init LAME"))?;
 
-        lame.set_sample_rate(48_000)
-            .map_err(|e| anyhow!("lame: {:?}", e))?;
-        lame.set_channels(2).map_err(|e| anyhow!("lame: {:?}", e))?;
+        // Korrektur: Kein Cast zu i32, da lame::Lame u32 erwartet
+        lame.set_sample_rate(sample_rate)
+            .map_err(|e| anyhow!("lame set_sample_rate: {:?}", e))?;
+        lame.set_channels(2).map_err(|e| anyhow!("lame set_channels: {:?}", e))?;
         lame.set_kilobitrate(bitrate as i32)
-            .map_err(|e| anyhow!("lame: {:?}", e))?;
-        lame.set_quality(2).map_err(|e| anyhow!("lame: {:?}", e))?;
-        lame.init_params().map_err(|e| anyhow!("lame: {:?}", e))?;
+            .map_err(|e| anyhow!("lame set_kilobitrate: {:?}", e))?;
+        lame.set_quality(2).map_err(|e| anyhow!("lame set_quality: {:?}", e))?;
+        lame.init_params().map_err(|e| anyhow!("lame init_params: {:?}", e))?;
 
         Ok(Self {
             lame,
-            buffer: vec![0u8; MP3_BUFFER_SIZE],
-            left: vec![0i16; FRAMES],
-            right: vec![0i16; FRAMES],
+            mp3_buffer: vec![0u8; mp3_buffer_size],
+            left: vec![0i16; frames_per_100ms],
+            right: vec![0i16; frames_per_100ms],
+            frames_per_100ms,
         })
     }
 
-    fn encode_100ms(&mut self, pcm: &[i16]) -> Result<Vec<u8>> {
-        const FRAMES: usize = 4800;
-
-        if pcm.len() != FRAMES * 2 {
-            return Err(anyhow!("Wrong PCM length for 100ms"));
+    fn encode_100ms(&mut self, pcm: &[i16], out_buffer: &mut Vec<u8>) -> Result<usize> {
+        let expected_len = self.frames_per_100ms * 2;
+        if pcm.len() != expected_len {
+            return Err(anyhow!(
+                "Wrong PCM length for 100ms: expected {}, got {}",
+                expected_len,
+                pcm.len()
+            ));
         }
 
-        for (i, pair) in pcm.chunks_exact(2).enumerate() {
-            self.left[i] = pair[0];
-            self.right[i] = pair[1];
+        // PCM-Daten in separate Kanäle aufteilen
+        // Sicherstellen, dass wir nicht über die Grenzen schreiben
+        let frames_to_process = self.frames_per_100ms.min(pcm.len() / 2);
+        
+        for i in 0..frames_to_process {
+            let idx = i * 2;
+            self.left[i] = pcm[idx];
+            self.right[i] = pcm[idx + 1];
         }
 
-        let written = self
+        // Bei unvollständigen Daten, Rest mit Nullen auffüllen
+        if frames_to_process < self.frames_per_100ms {
+            for i in frames_to_process..self.frames_per_100ms {
+                self.left[i] = 0;
+                self.right[i] = 0;
+            }
+        }
+
+        // Enkodieren
+        let encoded_bytes = self
             .lame
-            .encode(&self.left, &self.right, &mut self.buffer)
+            .encode(&self.left, &self.right, &mut self.mp3_buffer)
             .map_err(|e| anyhow!("lame encode: {:?}", e))?;
 
-        Ok(self.buffer[..written].to_vec())
+        // Ergebnis in out_buffer kopieren (ohne to_vec-Allokation)
+        out_buffer.clear();
+        out_buffer.extend_from_slice(&self.mp3_buffer[..encoded_bytes]);
+
+        Ok(encoded_bytes)
     }
 }
 
@@ -81,7 +107,10 @@ pub fn run_mp3_out(mut r: RingReader, cfg: Mp3Config) -> Result<()> {
 
     loop {
         match connect_and_stream_mp3(&mut r, &cfg) {
-            Ok(_) => backoff = Duration::from_secs(1),
+            Ok(_) => {
+                backoff = Duration::from_secs(1);
+                println!("[mp3] Connection closed normally, reconnecting...");
+            }
             Err(e) => {
                 eprintln!(
                     "[mp3] Error: {} - reconnecting in {}s",
@@ -101,23 +130,38 @@ fn connect_and_stream_mp3(r: &mut RingReader, cfg: &Mp3Config) -> Result<()> {
 
     info!("[mp3] Connected to {}:{}{}", cfg.host, cfg.port, cfg.mount);
 
-    let mut encoder = Mp3Encoder::new(cfg.bitrate)?;
+    // Annahme: Sample-Rate ist 48kHz, sollte aber besser aus der Konfiguration kommen
+    let sample_rate = 48_000;
+    let mut encoder = Mp3Encoder::new(cfg.bitrate, sample_rate)?;
+    let mut encoded_buffer = Vec::with_capacity(8192); // Wiederverwendbarer Buffer
     let mut packets = 0;
     let mut last_log = Instant::now();
 
     loop {
         match r.poll() {
             RingRead::Chunk(slot) => {
-                let data = encoder.encode_100ms(&slot.pcm)?;
-                stream.write_all(&data)?;
-                packets += 1;
+                let bytes_written = encoder.encode_100ms(&slot.pcm, &mut encoded_buffer)?;
+                
+                // Sicherstellen, dass wir Daten haben
+                if bytes_written > 0 {
+                    if let Err(e) = stream.write_all(&encoded_buffer) {
+                        return Err(anyhow!("Failed to write MP3 data: {}", e));
+                    }
+                    
+                    if let Err(e) = stream.flush() {
+                        return Err(anyhow!("Failed to flush stream: {}", e));
+                    }
+                    
+                    packets += 1;
 
-                if packets == 1 {
-                    println!("[mp3] First packet sent ({} bytes)", data.len());
+                    if packets == 1 {
+                        println!("[mp3] First packet sent ({} bytes)", bytes_written);
+                    }
                 }
             }
             RingRead::Gap { missed } => {
                 eprintln!("[mp3] Gap: missed {} chunks", missed);
+                // Optional: Stille generieren für Lücken
             }
             RingRead::Empty => {
                 std::thread::sleep(Duration::from_millis(5));
@@ -126,21 +170,36 @@ fn connect_and_stream_mp3(r: &mut RingReader, cfg: &Mp3Config) -> Result<()> {
 
         if last_log.elapsed() >= Duration::from_secs(5) {
             let fill = r.fill();
-            println!("[mp3] Status: packets={}, fill={}", packets, fill);
+            println!("[mp3] Status: packets={}, fill={}%", packets, fill);
             last_log = Instant::now();
         }
     }
 }
 
 fn connect_mp3(cfg: &Mp3Config) -> Result<TcpStream> {
-    let addr = (cfg.host.as_str(), cfg.port)
-        .to_socket_addrs()?
-        .next()
-        .ok_or_else(|| anyhow!("DNS resolve failed"))?;
-
-    let stream = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(5))?;
-    stream.set_nodelay(true)?;
-    Ok(stream)
+    let addr = format!("{}:{}", cfg.host, cfg.port);
+    let addrs: Vec<_> = addr.to_socket_addrs()?.collect();
+    
+    if addrs.is_empty() {
+        return Err(anyhow!("No addresses found for {}:{}", cfg.host, cfg.port));
+    }
+    
+    // Versuche alle aufgelösten Adressen
+    for addr in addrs {
+        match TcpStream::connect_timeout(&addr, Duration::from_secs(5)) {
+            Ok(stream) => {
+                stream.set_nodelay(true)?;
+                stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+                return Ok(stream);
+            }
+            Err(e) => {
+                eprintln!("[mp3] Failed to connect to {}: {}", addr, e);
+                continue;
+            }
+        }
+    }
+    
+    Err(anyhow!("Failed to connect to any address for {}:{}", cfg.host, cfg.port))
 }
 
 fn send_mp3_headers(stream: &mut TcpStream, cfg: &Mp3Config) -> Result<()> {
@@ -165,5 +224,10 @@ fn send_mp3_headers(stream: &mut TcpStream, cfg: &Mp3Config) -> Result<()> {
     );
 
     stream.write_all(hdr.as_bytes())?;
+    stream.flush()?;
+    
+    // Kurze Pause für Server-Antwort (optional)
+    std::thread::sleep(Duration::from_millis(100));
+    
     Ok(())
 }
