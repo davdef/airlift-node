@@ -1,4 +1,5 @@
 use axum::{extract::Query, extract::State, response::Json};
+use log::warn;
 use serde::{Deserialize, Serialize};
 
 use crate::web::WebState;
@@ -54,6 +55,9 @@ pub async fn get_history(
 
     match history_service.get_history(params.from, params.to) {
         Ok(points) => Json(points),
-        Err(_) => Json(Vec::new()),
+        Err(err) => {
+            warn!("[influx] history query failed: {}", err);
+            Json(Vec::new())
+        }
     }
 }
