@@ -165,7 +165,8 @@ getCurrentPlaybackTime() {
     }
 
     async maybeLoadInitialHistory() {
-        // Ein erster kleiner Bereich am aktuellen Buffer-Ende
+        // Initialer History-Load wird bereits in fetchBufferInfo erledigt.
+        if (this.history.length) return;
         if (!this.bufferEnd) return;
         const from = this.bufferEnd - 60_000;
         const to   = this.bufferEnd;
@@ -286,6 +287,7 @@ getCurrentPlaybackTime() {
         this.viewportRight = ref;
         this.viewportLeft  = ref - this.visibleDuration;
         this.clampViewportToBuffer();
+        this.loadHistoryWindow(this.viewportLeft, this.viewportRight);
     }
 
     // ---------------------------------------------------
@@ -589,6 +591,8 @@ clampViewportToBuffer() {
     // ---------------------------------------------------
 async loadHistoryWindow(from, to) {
     try {
+        if (this.loadingHistory) return;
+        this.loadingHistory = true;
         // VERHINDERE REQUEST MIT GLEICHEN ZEITEN ODER NEGATIVER SPANNE
         const span = to - from;
         if (span <= 0) {
@@ -645,6 +649,8 @@ async loadHistoryWindow(from, to) {
         
     } catch (err) {
         console.error("[History] Load failed:", err);
+    } finally {
+        this.loadingHistory = false;
     }
 }
 
@@ -667,36 +673,40 @@ async loadHistoryWindow(from, to) {
 
 maybeLoadMoreHistory() {
     if (this.loadingHistory) return;
-    if (this.bufferStart == null) return;
+    if (this.bufferStart == null || this.bufferEnd == null) return;
+    if (this.followLive && this.history.length) return;
 
-    // SICHERSTELLEN DASS from < to
-    let from = this.viewportLeft;
-    let to = Math.max(
-        this.viewportRight, 
-        this.latestWsTs || this.bufferEnd || this.viewportRight
-    );
-    
-    // Beschränke auf verfügbaren Buffer
+    const span = this.visibleDuration;
+    if (span <= 0) return;
+
+    const earliest = this.history.length ? this.history[0].ts : null;
+    const latest = this.history.length ? this.history[this.history.length - 1].ts : null;
+
+    let from = null;
+    let to = null;
+
+    if (!this.history.length) {
+        from = this.viewportLeft;
+        to = this.viewportRight;
+    } else if (this.viewportLeft < earliest) {
+        from = this.viewportLeft;
+        to = Math.min(earliest, this.viewportRight);
+    } else if (this.viewportRight > latest) {
+        from = Math.max(latest, this.viewportLeft);
+        to = this.viewportRight;
+    } else {
+        return;
+    }
+
     from = Math.max(from, this.bufferStart);
-    to = Math.min(to, this.bufferEnd || Infinity);
-    
-    // Mindestspanne von 2 Sekunden
+    to = Math.min(to, this.bufferEnd);
+
     const minSpan = 2000;
     if (to - from < minSpan) {
-        // Erweitere nach hinten wenn möglich
-        if (this.bufferEnd && to < this.bufferEnd) {
-            to = Math.min(from + minSpan, this.bufferEnd);
-        } 
-        // Oder nach vorne
-        else if (this.bufferStart && from > this.bufferStart) {
-            from = Math.max(to - minSpan, this.bufferStart);
-        }
+        return;
     }
-    
-    // Nur laden wenn span > 0
-    if (to > from && (to - from) >= 1000) {
-        this.loadHistoryWindow(from, to);
-    }
+
+    this.loadHistoryWindow(from, to);
 }
 
     // ---------------------------------------------------
