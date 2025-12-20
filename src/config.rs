@@ -24,7 +24,7 @@ pub struct UdpOutConfig {
 #[derive(Debug, Deserialize, Clone)]
 pub struct SrtOutConfig {
     pub enabled: bool,
-    pub target: String,   // "host:port"
+    pub target: String, // "host:port"
     pub latency_ms: u32,
 }
 
@@ -93,6 +93,16 @@ pub struct MetadataConfig {
     pub default: String,
 }
 
+// ---------- Influx History ----------
+#[derive(Debug, Deserialize, Clone)]
+pub struct InfluxHistoryConfig {
+    pub enabled: bool,
+    pub base_url: String,
+    pub token: String,
+    pub org: String,
+    pub bucket: String,
+}
+
 // ---------- Root ----------
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
@@ -102,10 +112,13 @@ pub struct Config {
     pub icecast_out: Option<IcecastOutConfig>,
     pub mp3_out: Option<Mp3OutConfig>,
     pub srt_in: Option<SrtInConfig>,
-    pub srt_out: Option<SrtOutConfig>, 
+    pub srt_out: Option<SrtOutConfig>,
     pub recorder: Option<RecorderConfigToml>,
-    #[serde(default)] pub monitoring: MonitoringConfig,
-    #[serde(default)] pub metadata: MetadataConfig,
+    #[serde(default)]
+    pub monitoring: MonitoringConfig,
+    #[serde(default)]
+    pub metadata: MetadataConfig,
+    pub influx_history: Option<InfluxHistoryConfig>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -120,4 +133,3 @@ pub fn load(path: &str) -> anyhow::Result<Config> {
     let txt = std::fs::read_to_string(path)?;
     Ok(toml::from_str(&txt)?)
 }
-
