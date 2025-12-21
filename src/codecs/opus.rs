@@ -2,16 +2,30 @@ use anyhow::{anyhow, Result};
 use ogg::writing::PacketWriter;
 use opus::{Application, Channels, Encoder};
 
+use crate::codecs::{
+    AudioCodec, CodecInfo, CodecKind, ContainerKind, EncodedFrame, PCM_CHANNELS,
+    PCM_SAMPLE_RATE,
+};
+
 pub struct OggOpusEncoder {
     enc: Encoder,
     pw: PacketWriter<Vec<u8>>,
     serial: u32,
     gp: u64, // granule position (48k samples)
+    info: CodecInfo,
 }
 
 impl OggOpusEncoder {
     pub fn new(bitrate: i32, vendor: &str) -> Result<Self> {
-        let mut enc = Encoder::new(48_000, Channels::Stereo, Application::Audio)?;
+        Self::new_with_application(bitrate, vendor, Application::Audio)
+    }
+
+    pub fn new_with_application(
+        bitrate: i32,
+        vendor: &str,
+        application: Application,
+    ) -> Result<Self> {
+        let mut enc = Encoder::new(PCM_SAMPLE_RATE, Channels::Stereo, application)?;
         enc.set_bitrate(opus::Bitrate::Bits(bitrate))?;
 
         let serial = rand::random::<u32>();
@@ -36,6 +50,12 @@ impl OggOpusEncoder {
             pw,
             serial,
             gp: 0,
+            info: CodecInfo {
+                kind: CodecKind::OpusOgg,
+                sample_rate: PCM_SAMPLE_RATE,
+                channels: PCM_CHANNELS,
+                container: ContainerKind::Ogg,
+            },
         })
     }
 
@@ -88,6 +108,83 @@ impl OggOpusEncoder {
         let mut out = Vec::new();
         std::mem::swap(&mut out, self.pw.inner_mut());
         Ok(out)
+    }
+}
+
+impl AudioCodec for OggOpusEncoder {
+    fn info(&self) -> &CodecInfo {
+        &self.info
+    }
+
+    fn encode(&mut self, pcm: &[i16]) -> Result<Vec<EncodedFrame>> {
+        let payload = self.encode_100ms(pcm)?;
+        if payload.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        Ok(vec![EncodedFrame {
+            payload,
+            info: self.info.clone(),
+        }])
+    }
+}
+
+pub struct OpusWebRtcEncoder {
+    enc: Encoder,
+    info: CodecInfo,
+}
+
+impl OpusWebRtcEncoder {
+    pub fn new(bitrate: i32) -> Result<Self> {
+        Self::new_with_application(bitrate, Application::Audio)
+    }
+
+    pub fn new_with_application(bitrate: i32, application: Application) -> Result<Self> {
+        let mut enc = Encoder::new(PCM_SAMPLE_RATE, Channels::Stereo, application)?;
+        enc.set_bitrate(opus::Bitrate::Bits(bitrate))?;
+
+        Ok(Self {
+            enc,
+            info: CodecInfo {
+                kind: CodecKind::OpusWebRtc,
+                sample_rate: PCM_SAMPLE_RATE,
+                channels: PCM_CHANNELS,
+                container: ContainerKind::Rtp,
+            },
+        })
+    }
+}
+
+impl AudioCodec for OpusWebRtcEncoder {
+    fn info(&self) -> &CodecInfo {
+        &self.info
+    }
+
+    fn encode(&mut self, pcm: &[i16]) -> Result<Vec<EncodedFrame>> {
+        const OPUS_FRAME_SAMPLES_PER_CH: usize = 960; // 20 ms @ 48k
+        const CHANNELS: usize = 2;
+        const OPUS_FRAME_I16: usize = OPUS_FRAME_SAMPLES_PER_CH * CHANNELS;
+
+        if pcm.len() % OPUS_FRAME_I16 != 0 {
+            return Err(anyhow!(
+                "PCM len {} not multiple of {} (20ms stereo frame)",
+                pcm.len(),
+                OPUS_FRAME_I16
+            ));
+        }
+
+        let mut opus_buf = [0u8; 4000];
+        let mut frames = Vec::new();
+
+        for frame in pcm.chunks_exact(OPUS_FRAME_I16) {
+            let n = self.enc.encode(frame, &mut opus_buf)?;
+            frames.push(EncodedFrame {
+                payload: opus_buf[..n].to_vec(),
+                info: self.info.clone(),
+            });
+        }
+
+        Ok(frames)
     }
 }
 

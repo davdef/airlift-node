@@ -1,12 +1,17 @@
 use anyhow::{anyhow, Result};
 use lame::Lame;
 
+use crate::codecs::{
+    AudioCodec, CodecInfo, CodecKind, ContainerKind, EncodedFrame, PCM_CHANNELS,
+};
+
 pub struct Mp3Encoder {
     lame: Lame,
     mp3_buffer: Vec<u8>,
     left: Vec<i16>,
     right: Vec<i16>,
     frames_per_100ms: usize,
+    info: CodecInfo,
 }
 
 impl Mp3Encoder {
@@ -32,6 +37,12 @@ impl Mp3Encoder {
             left: vec![0i16; frames_per_100ms],
             right: vec![0i16; frames_per_100ms],
             frames_per_100ms,
+            info: CodecInfo {
+                kind: CodecKind::Mp3,
+                sample_rate,
+                channels: PCM_CHANNELS,
+                container: ContainerKind::Mpeg,
+            },
         })
     }
 
@@ -74,5 +85,24 @@ impl Mp3Encoder {
         out_buffer.extend_from_slice(&self.mp3_buffer[..encoded_bytes]);
 
         Ok(encoded_bytes)
+    }
+}
+
+impl AudioCodec for Mp3Encoder {
+    fn info(&self) -> &CodecInfo {
+        &self.info
+    }
+
+    fn encode(&mut self, pcm: &[i16]) -> Result<Vec<EncodedFrame>> {
+        let mut out = Vec::with_capacity(self.mp3_buffer.len());
+        let bytes_written = self.encode_100ms(pcm, &mut out)?;
+        if bytes_written == 0 {
+            return Ok(Vec::new());
+        }
+
+        Ok(vec![EncodedFrame {
+            payload: out,
+            info: self.info.clone(),
+        }])
     }
 }

@@ -19,6 +19,8 @@ pub struct AlsaInConfig {
 pub struct UdpOutConfig {
     pub enabled: bool,
     pub target: String,
+    #[serde(default)]
+    pub codec_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -26,6 +28,8 @@ pub struct SrtOutConfig {
     pub enabled: bool,
     pub target: String, // "host:port"
     pub latency_ms: u32,
+    #[serde(default)]
+    pub codec_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -56,6 +60,8 @@ pub struct IcecastOutConfig {
     pub description: String,
     pub genre: String,
     pub public: bool,
+    #[serde(default)]
+    pub codec_id: Option<String>,
 }
 
 // ---------- MP3 ----------
@@ -72,6 +78,43 @@ pub struct Mp3OutConfig {
     pub genre: String,
     pub public: bool,
     pub bitrate: u32,
+    #[serde(default)]
+    pub codec_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "snake_case")]
+pub enum CodecType {
+    Pcm,
+    OpusOgg,
+    OpusWebrtc,
+    Mp3,
+    Vorbis,
+    AacLc,
+    Flac,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct CodecInstanceConfig {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub codec_type: CodecType,
+    #[serde(default)]
+    pub sample_rate: Option<u32>,
+    #[serde(default)]
+    pub channels: Option<u8>,
+    #[serde(default)]
+    pub frame_size_ms: Option<u32>,
+    #[serde(default)]
+    pub bitrate: Option<u32>,
+    #[serde(default)]
+    pub container: Option<String>,
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub application: Option<String>,
+    #[serde(default)]
+    pub quality: Option<f32>,
 }
 
 // ---------- Recorder ----------
@@ -119,6 +162,8 @@ pub struct Config {
     #[serde(default)]
     pub metadata: MetadataConfig,
     pub influx_history: Option<InfluxHistoryConfig>,
+    #[serde(default)]
+    pub codecs: Vec<CodecInstanceConfig>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
