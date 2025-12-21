@@ -2,7 +2,7 @@ use axum::{extract::Query, extract::State, response::Json};
 use log::warn;
 use serde::{Deserialize, Serialize};
 
-use crate::web::WebState;
+use crate::api::ApiState;
 use crate::web::influx_service::HistoryPoint;
 
 #[derive(Serialize)]
@@ -18,7 +18,7 @@ pub struct HistoryQuery {
     to: u64,
 }
 
-pub async fn get_peaks(State(state): State<WebState>) -> Json<PeaksMeta> {
+pub async fn get_peaks(State(state): State<ApiState>) -> Json<PeaksMeta> {
     let buf = match state.peak_store.get_buffer_read_lock() {
         Ok(b) => b,
         Err(_) => {
@@ -46,7 +46,7 @@ pub async fn get_peaks(State(state): State<WebState>) -> Json<PeaksMeta> {
 }
 
 pub async fn get_history(
-    State(state): State<WebState>,
+    State(state): State<ApiState>,
     Query(params): Query<HistoryQuery>,
 ) -> Json<Vec<HistoryPoint>> {
     let Some(history_service) = &state.history_service else {

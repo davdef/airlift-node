@@ -1,7 +1,9 @@
-// src/main.rs - KORREKTE VERSION
+// src/main.rs - Bootstrap-Orchestrator
 
 mod agent;
+mod api;
 mod audio;
+mod bootstrap;
 mod codecs;
 mod config;
 mod control;
@@ -9,29 +11,21 @@ mod io;
 mod monitoring;
 mod recorder;
 mod ring;
+mod services;
 mod web;
 
-use std::path::PathBuf;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, Instant};
 
-use log::{debug, error, info, warn};
+use log::{debug, info};
 
-use config::Config;
-
-use crate::io::peak_analyzer::{PeakAnalyzer, PeakEvent};
-use crate::web::influx_service::InfluxHistoryService;
-use crate::web::peaks::{PeakPoint, PeakStorage};
-use crate::io::influx_out::InfluxOut;
-use crate::audio::http::start_audio_http_server;
-use crate::control::ControlState;
-
-use crate::recorder::{AudioSink, FsRetention, Mp3Sink, RecorderConfig, WavSink, run_recorder};
-
-use crate::web::run_web_server;
+use crate::api::{ApiService, ApiState, Registry};
+use crate::bootstrap::{AppContext, register_modules, start_workers};
+use crate::config::Config;
+use crate::services::{AudioHttpService, MonitoringService, register_services};
 
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
@@ -45,7 +39,7 @@ fn main() -> anyhow::Result<()> {
         .nth(1)
         .unwrap_or_else(|| "config.toml".into());
 
-    let cfg: Config = config::load(&cfg_path)?;
+    let cfg: Arc<Config> = Arc::new(config::load(&cfg_path)?);
     info!("[airlift] loaded {}", cfg_path);
 
     // ------------------------------------------------------------
@@ -61,204 +55,51 @@ fn main() -> anyhow::Result<()> {
     }
 
     // ------------------------------------------------------------
-    // Agent / Ring
+    // Bootstrap context (shared state)
     // ------------------------------------------------------------
-    let agent = agent::Agent::new(cfg.ring.slots, cfg.ring.prealloc_samples);
-
-    // ------------------------------------------------------------
-    // Monitoring
-    // ------------------------------------------------------------
-    monitoring::create_health_file()?;
-    let metrics = Arc::new(monitoring::Metrics::new());
-    start_monitoring(&cfg, &agent, metrics.clone(), running.clone());
+    let context = AppContext::new(&cfg);
 
     // ------------------------------------------------------------
-    // Shared Control State (für API + Control)
+    // API registry (modules + services)
     // ------------------------------------------------------------
-    let control_state = Arc::new(ControlState::new());
-    control_state.ring.set_enabled(true);
-    control_state.ring.set_running(true);
-    control_state.ring.set_connected(true);
-
-// ------------------------------------------------------------
-// SRT Input
-// ------------------------------------------------------------
-    if let Some(srt_cfg) = &cfg.srt_in {
-        control_state.srt_in.module.set_enabled(srt_cfg.enabled);
-        if srt_cfg.enabled {
-            info!("[airlift] SRT enabled: {}", srt_cfg.listen);
-
-            let ring = agent.ring.clone();
-            let cfg_clone = srt_cfg.clone();
-            let running_srt = running.clone();
-            let srt_state = control_state.srt_in.clone();
-            let ring_state = control_state.ring.clone();
-
-            std::thread::spawn(move || {
-                if let Err(e) = crate::io::srt_in::run_srt_in(
-                    ring,
-                    cfg_clone,
-                    running_srt,
-                    srt_state,
-                    ring_state,
-                ) {
-                    error!("[srt] fatal: {}", e);
-                }
-            });
-        }
-    } else {
-        control_state.srt_in.module.set_enabled(false);
-    }
-
-    if let Some(srt_out_cfg) = &cfg.srt_out {
-        control_state.srt_out.module.set_enabled(srt_out_cfg.enabled);
-    } else {
-        control_state.srt_out.module.set_enabled(false);
-    }
-
-    if let Some(icecast_cfg) = &cfg.icecast_out {
-        control_state.icecast_out.set_enabled(icecast_cfg.enabled);
-    } else {
-        control_state.icecast_out.set_enabled(false);
-    }
+    let registry = Arc::new(Registry::new());
+    register_modules(&cfg, &registry);
 
     // ------------------------------------------------------------
-    // ALSA Input (falls konfiguriert)
+    // Services
     // ------------------------------------------------------------
-    if let Some(alsa_cfg) = &cfg.alsa_in {
-        control_state.alsa_in.set_enabled(alsa_cfg.enabled);
-        if alsa_cfg.enabled {
-            info!("[airlift] ALSA enabled: {}", alsa_cfg.device);
+    MonitoringService::start(
+        &cfg,
+        &context.agent,
+        context.metrics.clone(),
+        running.clone(),
+    )?;
 
-            let ring = agent.ring.clone();
-            let metrics_alsa = metrics.clone();
-            let alsa_state = control_state.alsa_in.clone();
-            let ring_state = control_state.ring.clone();
+    let api_bind = "0.0.0.0:3008";
+    let audio_bind = "0.0.0.0:3011";
 
-            std::thread::spawn(move || {
-                if let Err(e) = crate::io::alsa_in::run_alsa_in(
-                    ring,
-                    metrics_alsa,
-                    alsa_state,
-                    ring_state,
-                ) {
-                    error!("[alsa] fatal: {}", e);
-                }
-            });
-        }
-    } else {
-        control_state.alsa_in.set_enabled(false);
-    }
+    register_services(&registry, api_bind, audio_bind, cfg.monitoring.http_port);
 
-    // ------------------------------------------------------------
-    // Peak storage + Web
-    // ------------------------------------------------------------
-    let peak_store = Arc::new(PeakStorage::new());
-
-    let history_service = cfg.influx_history.as_ref().and_then(|cfg| {
-        if cfg.enabled {
-            Some(Arc::new(InfluxHistoryService::new(
-                cfg.base_url.clone(),
-                cfg.token.clone(),
-                cfg.org.clone(),
-                cfg.bucket.clone(),
-            )))
-        } else {
-            None
-        }
-    });
-
-    {
-        let peak_store_web = peak_store.clone();
-        let history_service_web = history_service.clone();
-        let ring_buffer = Arc::new(agent.ring.clone());
-        let wav_dir = if let Some(rec) = &cfg.recorder {
-            PathBuf::from(&rec.wav_dir)
-        } else {
-            PathBuf::from("/data/aircheck/wav")
-        };
-
-        let control_state_web = control_state.clone();
-        std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().expect("web runtime");
-            if let Err(e) = rt.block_on(run_web_server(
-                peak_store_web,
-                history_service_web,
-                ring_buffer,
-                wav_dir,
-                3008,
-                control_state_web,
-            )) {
-                error!("[web] server error: {}", e);
-            }
-        });
-    }
-
-    info!("[airlift] web enabled (http://localhost:3008)");
-
-// ------------------------------------------------------------
-// Audio HTTP Streaming (LIVE + Timeshift) – tiny_http
-// ------------------------------------------------------------
-{
-    let wav_dir = if let Some(rec) = &cfg.recorder {
-        PathBuf::from(&rec.wav_dir)
-    } else {
-        PathBuf::from("/data/aircheck/wav")
+    let api_state = ApiState {
+        peak_store: context.peak_store.clone(),
+        history_service: context.history_service.clone(),
+        ring: context.agent.ring.clone(),
+        control_state: context.control_state.clone(),
+        config: cfg.clone(),
+        registry: registry.clone(),
+        wav_dir: context.wav_dir.clone(),
     };
 
-    let ring = agent.ring.clone();
+    let api_service = ApiService::new(api_bind.parse()?);
+    api_service.start(api_state);
 
-    // eigener Thread, blockierend, wie vorgesehen
-    std::thread::spawn(move || {
-        if let Err(e) = start_audio_http_server(
-            "0.0.0.0:3011",          // 🔊 Audio-Port
-            wav_dir,
-            move || ring.subscribe() // RingReader-Factory
-        ) {
-            error!("[audio] HTTP server failed: {}", e);
-        }
-    });
-
-    info!("[airlift] audio HTTP enabled (http://localhost:3011)");
-}
-
+    let audio_http_service = AudioHttpService::new(audio_bind);
+    audio_http_service.start(context.wav_dir.clone(), context.agent.ring.clone());
 
     // ------------------------------------------------------------
-    // Peaks → Storage
+    // Module workers (audio pipeline, recorder, peaks)
     // ------------------------------------------------------------
-    {
-        let reader = agent.ring.subscribe();
-        let store = peak_store.clone();
-
-let influx = InfluxOut::new(
-    "http://localhost:8086/write".into(),
-    "rfm_aircheck".into(),
-    100, // ms
-);
-
-        let handler = Box::new(move |evt: &PeakEvent| {
-            influx.handle(evt);
-            let peak = PeakPoint {
-                timestamp: evt.utc_ns / 1_000_000,
-                peak_l: evt.peak_l,
-                peak_r: evt.peak_r,
-                rms: None,
-                lufs: None,
-                silence: evt.silence,
-            };
-            store.add_peak(peak);
-        });
-
-        let mut analyzer = PeakAnalyzer::new(reader, handler, 0);
-        std::thread::spawn(move || analyzer.run());
-
-        info!("[airlift] peak_storage enabled");
-    }
-
-    // ------------------------------------------------------------
-    // Recorder (optional, aber stabil)
-    // ------------------------------------------------------------
-    start_recorder(&cfg, &agent, control_state.clone())?;
+    start_workers(&cfg, &context, running.clone())?;
 
     // ------------------------------------------------------------
     // Main loop
@@ -271,7 +112,7 @@ let influx = InfluxOut::new(
         std::thread::sleep(Duration::from_millis(100));
 
         if last_stats.elapsed() >= Duration::from_secs(5) {
-            let stats = agent.ring.stats();
+            let stats = context.agent.ring.stats();
             let fill = stats.head_seq - stats.next_seq.wrapping_sub(1);
             debug!("[airlift] head_seq={} fill={}", stats.head_seq, fill);
             last_stats = Instant::now();
@@ -283,84 +124,8 @@ let influx = InfluxOut::new(
     // ------------------------------------------------------------
     info!("[airlift] shutting down…");
     std::thread::sleep(Duration::from_secs(1));
-    monitoring::update_health_status(false)?;
+    MonitoringService::mark_shutdown()?;
     info!("[airlift] shutdown complete");
-
-    Ok(())
-}
-
-fn start_monitoring(
-    cfg: &Config,
-    agent: &agent::Agent,
-    metrics: Arc<monitoring::Metrics>,
-    running: Arc<AtomicBool>,
-) {
-    let ring = agent.ring.clone();
-    let port = cfg.monitoring.http_port;
-
-    std::thread::spawn(move || {
-        if let Err(e) = monitoring::run_metrics_server(metrics, ring, port, running) {
-            error!("[monitoring] error: {}", e);
-        }
-    });
-
-    info!("[airlift] monitoring on port {}", port);
-}
-
-fn start_recorder(
-    cfg: &Config,
-    agent: &agent::Agent,
-    control_state: Arc<ControlState>,
-) -> anyhow::Result<()> {
-    let Some(c) = &cfg.recorder else {
-        control_state.recorder.set_enabled(false);
-        return Ok(());
-    };
-    if !c.enabled {
-        control_state.recorder.set_enabled(false);
-        return Ok(());
-    }
-    control_state.recorder.set_enabled(true);
-
-    let reader = agent.ring.subscribe();
-
-    let mut sinks: Vec<Box<dyn AudioSink>> = Vec::new();
-
-    let wav_dir = PathBuf::from(&c.wav_dir);
-    sinks.push(Box::new(WavSink::new(wav_dir.clone())?));
-
-    if let Some(mp3) = &c.mp3 {
-        sinks.push(Box::new(Mp3Sink::new(
-            wav_dir.clone(),
-            PathBuf::from(&mp3.dir),
-            mp3.bitrate,
-        )?));
-    }
-
-    let retentions: Vec<Box<dyn recorder::RetentionPolicy>> = vec![Box::new(FsRetention::new(
-        wav_dir.clone(),
-        c.retention_days,
-    ))];
-
-    let rec_cfg = RecorderConfig {
-        idle_sleep: Duration::from_millis(5),
-        retention_interval: Duration::from_secs(3600),
-        continuity_interval: Duration::from_millis(100),
-    };
-
-    let recorder_state = control_state.recorder.clone();
-    let ring_state = control_state.ring.clone();
-    std::thread::spawn(move || {
-        if let Err(e) = run_recorder(reader, rec_cfg, sinks, retentions, recorder_state, ring_state) {
-            error!("[recorder] fatal: {}", e);
-        }
-    });
-
-    info!(
-        "[airlift] recorder enabled (wav{}, retention {}d)",
-        if c.mp3.is_some() { "+mp3" } else { "" },
-        c.retention_days
-    );
 
     Ok(())
 }
