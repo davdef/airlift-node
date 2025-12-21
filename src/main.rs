@@ -26,6 +26,7 @@ use crate::web::influx_service::InfluxHistoryService;
 use crate::web::peaks::{PeakPoint, PeakStorage};
 use crate::io::influx_out::InfluxOut;
 use crate::audio::http::start_audio_http_server;
+use crate::io::srt_in::SrtInState;
 
 use crate::recorder::{AudioSink, FsRetention, Mp3Sink, RecorderConfig, WavSink, run_recorder};
 
@@ -70,24 +71,35 @@ fn main() -> anyhow::Result<()> {
     let metrics = Arc::new(monitoring::Metrics::new());
     start_monitoring(&cfg, &agent, metrics.clone(), running.clone());
 
-    // ------------------------------------------------------------
-    // SRT Input
-    // ------------------------------------------------------------
-    if let Some(srt_cfg) = &cfg.srt_in {
-        if srt_cfg.enabled {
-            info!("[airlift] SRT enabled: {}", srt_cfg.listen);
-            
-            let ring = agent.ring.clone();
-            let cfg_clone = srt_cfg.clone();
-            let running_srt = running.clone();
-            
-            std::thread::spawn(move || {
-                if let Err(e) = crate::io::srt_in::run_srt_in(ring, cfg_clone, running_srt) {
-                    error!("[srt] fatal: {}", e);
-                }
-            });
-        }
+// ------------------------------------------------------------
+// Shared SRT-IN state (für API + Control)
+// ------------------------------------------------------------
+let srt_in_state = Arc::new(crate::io::srt_in::SrtInState::new());
+
+// ------------------------------------------------------------
+// SRT Input
+// ------------------------------------------------------------
+if let Some(srt_cfg) = &cfg.srt_in {
+    if srt_cfg.enabled {
+        info!("[airlift] SRT enabled: {}", srt_cfg.listen);
+
+        let ring = agent.ring.clone();
+        let cfg_clone = srt_cfg.clone();
+        let running_srt = running.clone();
+        let srt_state = srt_in_state.clone(); // 👈 jetzt sichtbar
+
+        std::thread::spawn(move || {
+            if let Err(e) = crate::io::srt_in::run_srt_in(
+                ring,
+                cfg_clone,
+                running_srt,
+                srt_state,
+            ) {
+                error!("[srt] fatal: {}", e);
+            }
+        });
     }
+}
 
     // ------------------------------------------------------------
     // ALSA Input (falls konfiguriert)

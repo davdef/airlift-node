@@ -6,8 +6,8 @@ use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
 use std::io::{Cursor, Read};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use futures_util::TryStreamExt;
 use srt_tokio::SrtSocket;
@@ -17,63 +17,127 @@ use tokio::time::{sleep, timeout};
 const MAGIC: &[u8; 4] = b"RFMA";
 const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(5);
 const SHUTDOWN_POLL_MS: u64 = 100;
+const STATS_INTERVAL: Duration = Duration::from_secs(60);
 
-pub fn run_srt_in(ring: AudioRing, cfg: SrtInConfig, running: Arc<AtomicBool>) -> Result<()> {
-    let rt = Runtime::new()?;
-    rt.block_on(async move { async_run(ring, cfg, running).await })
+/* =========================
+   STATE
+   ========================= */
+
+#[derive(Clone)]
+pub struct SrtInState {
+    pub connected: Arc<AtomicBool>,
+    pub force_disconnect: Arc<AtomicBool>,
+    pub frames: Arc<AtomicU64>,
+    pub dropped: Arc<AtomicU64>,
 }
 
-async fn async_run(ring: AudioRing, cfg: SrtInConfig, running: Arc<AtomicBool>) -> Result<()> {
+impl SrtInState {
+    pub fn new() -> Self {
+        Self {
+            connected: Arc::new(AtomicBool::new(false)),
+            force_disconnect: Arc::new(AtomicBool::new(false)),
+            frames: Arc::new(AtomicU64::new(0)),
+            dropped: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+/* =========================
+   ENTRY
+   ========================= */
+
+pub fn run_srt_in(
+    ring: AudioRing,
+    cfg: SrtInConfig,
+    running: Arc<AtomicBool>,
+    state: Arc<SrtInState>,
+) -> Result<()> {
+    let rt = Runtime::new()?;
+    rt.block_on(async move { async_run(ring, cfg, running, state).await })
+}
+
+async fn async_run(
+    ring: AudioRing,
+    cfg: SrtInConfig,
+    running: Arc<AtomicBool>,
+    state: Arc<SrtInState>,
+) -> Result<()> {
     let addr: SocketAddr = cfg.listen.parse()?;
 
-    println!("[srt_in] listening on {}", cfg.listen);
+    println!("[srt_in] binding on {}", cfg.listen);
+
+    // 🔑 EINMAL binden
+    let mut rx = SrtSocket::builder()
+        .latency(Duration::from_millis(cfg.latency_ms as u64))
+        .listen_on(addr)
+        .await?;
+
+    println!("[srt_in] ready, waiting for packets");
+
+    let mut last_stats = Instant::now();
+    let mut frames_minute: u64 = 0;
 
     while running.load(Ordering::Relaxed) {
-        println!("[srt_in] waiting for client …");
+        if state.force_disconnect.swap(false, Ordering::Relaxed) {
+            println!("[srt_in] forced disconnect (logical)");
+            state.dropped.fetch_add(1, Ordering::Relaxed);
+            state.connected.store(false, Ordering::Relaxed);
+        }
 
-        let listen_fut = SrtSocket::builder()
-            .latency(Duration::from_millis(cfg.latency_ms as u64))
-            .listen_on(addr);
+        match timeout(INACTIVITY_TIMEOUT, rx.try_next()).await {
+            Ok(Ok(Some((_inst, msg)))) => {
+                state.connected.store(true, Ordering::Relaxed);
 
-        let mut rx = tokio::select! {
-            res = listen_fut => res?,
-            _ = wait_for_shutdown(running.clone()) => {
-                break;
+                if let Err(e) = handle_rfma(&ring, msg.as_ref()) {
+                    eprintln!("[srt_in] frame error: {e}");
+                    state.dropped.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    state.frames.fetch_add(1, Ordering::Relaxed);
+                    frames_minute += 1;
+                }
             }
-        };
 
-        println!("[srt_in] client connected");
-
-        while running.load(Ordering::Relaxed) {
-            match timeout(INACTIVITY_TIMEOUT, rx.try_next()).await {
-                Ok(Ok(Some((_instant, msg)))) => {
-                    if let Err(e) = handle_rfma(&ring, msg.as_ref()) {
-                        eprintln!("[srt_in] frame error: {e}");
-                    }
-                }
-                Ok(Ok(None)) => {
+            Ok(Ok(None)) => {
+                // Peer weg, Listener bleibt
+                if state.connected.swap(false, Ordering::Relaxed) {
                     println!("[srt_in] client disconnected");
-                    break;
                 }
-                Ok(Err(e)) => {
-                    eprintln!("[srt_in] receive error: {e}");
-                    break;
-                }
-                Err(_) => {
-                    eprintln!(
-                        "[srt_in] receive timeout after {:?}, dropping client",
-                        INACTIVITY_TIMEOUT
-                    );
-                    break;
+            }
+
+            Ok(Err(e)) => {
+                eprintln!("[srt_in] receive error: {e}");
+                state.dropped.fetch_add(1, Ordering::Relaxed);
+                state.connected.store(false, Ordering::Relaxed);
+                sleep(Duration::from_millis(200)).await;
+            }
+
+            Err(_) => {
+                if state.connected.swap(false, Ordering::Relaxed) {
+                    eprintln!("[srt_in] inactivity timeout");
+                    state.dropped.fetch_add(1, Ordering::Relaxed);
                 }
             }
         }
 
-        println!("[srt_in] client disconnected");
+        // 🕒 Minütliches Heartbeat-Log
+        if last_stats.elapsed() >= STATS_INTERVAL {
+            println!(
+                "[srt_in] rx ok: {} frames/min (~{} fps)",
+                frames_minute,
+                frames_minute / 60
+            );
+            frames_minute = 0;
+            last_stats = Instant::now();
+        }
     }
 
+    println!("[srt_in] stopped");
     Ok(())
 }
+
+/* =========================
+   RFMA
+   ========================= */
 
 fn handle_rfma(ring: &AudioRing, buf: &[u8]) -> Result<()> {
     let mut c = Cursor::new(buf);
@@ -100,10 +164,4 @@ fn handle_rfma(ring: &AudioRing, buf: &[u8]) -> Result<()> {
 
     ring.writer_push(utc_ns, pcm);
     Ok(())
-}
-
-async fn wait_for_shutdown(running: Arc<AtomicBool>) {
-    while running.load(Ordering::Relaxed) {
-        sleep(Duration::from_millis(SHUTDOWN_POLL_MS)).await;
-    }
 }
