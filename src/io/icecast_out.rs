@@ -1,5 +1,7 @@
 // src/io/icecast_out.rs
 
+use crate::codecs::AudioCodec;
+use crate::codecs::registry::{CodecRegistry, DEFAULT_CODEC_OPUS_OGG_ID};
 use crate::ring::{RingRead, RingReader};
 use anyhow::{anyhow, Context, Result};
 use base64::{engine::general_purpose, Engine as _};
@@ -10,7 +12,6 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::codecs::opus::OggOpusEncoder;
 use crate::control::ModuleState;
 // ============================================================
 // Config
@@ -30,6 +31,7 @@ pub struct IcecastConfig {
     pub public: bool,
 
     pub opus_bitrate: i32, // z.B. 64000 .. 128000
+    pub codec_id: Option<String>,
 }
 
 // ============================================================
@@ -41,12 +43,19 @@ pub fn run_icecast_out(
     cfg: IcecastConfig,
     state: Arc<ModuleState>,
     ring_state: Arc<ModuleState>,
+    codec_registry: Arc<CodecRegistry>,
 ) -> Result<()> {
     state.set_running(true);
     let mut backoff = Duration::from_secs(1);
 
     loop {
-        match connect_and_stream(&mut r, &cfg, state.clone(), ring_state.clone()) {
+        match connect_and_stream(
+            &mut r,
+            &cfg,
+            state.clone(),
+            ring_state.clone(),
+            codec_registry.clone(),
+        ) {
             Ok(_) => {
                 state.set_connected(false);
                 backoff = Duration::from_secs(1)
@@ -72,6 +81,7 @@ fn connect_and_stream(
     cfg: &IcecastConfig,
     state: Arc<ModuleState>,
     ring_state: Arc<ModuleState>,
+    codec_registry: Arc<CodecRegistry>,
 ) -> Result<()> {
     let mut stream = connect(cfg)?;
     send_headers(&mut stream, cfg)?;
@@ -82,7 +92,12 @@ fn connect_and_stream(
     );
     state.set_connected(true);
 
-    let mut ogg = OggOpusEncoder::new(cfg.opus_bitrate, "airlift")?;
+    let codec_id = cfg
+        .codec_id
+        .as_deref()
+        .unwrap_or(DEFAULT_CODEC_OPUS_OGG_ID);
+    let (mut codec, codec_instance) = codec_registry.build_codec(codec_id)?;
+    codec_instance.mark_ready();
 
     // --- Stats ---
     let mut gaps: u64 = 0;
@@ -93,11 +108,20 @@ fn connect_and_stream(
     loop {
         match r.poll() {
             RingRead::Chunk(slot) => {
-                let ogg_bytes = ogg.encode_100ms(&slot.pcm)?;
-                stream.write_all(&ogg_bytes)?;
-                packets += 1;
-                state.mark_tx(1);
-                ring_state.mark_tx(1);
+                let frames = codec.encode(&slot.pcm).map_err(|e| {
+                    codec_instance.mark_error(&e.to_string());
+                    e
+                })?;
+                let mut bytes = 0u64;
+                let frame_count = frames.len() as u64;
+                for frame in frames {
+                    bytes += frame.payload.len() as u64;
+                    stream.write_all(&frame.payload)?;
+                    packets += 1;
+                    state.mark_tx(1);
+                    ring_state.mark_tx(1);
+                }
+                codec_instance.mark_encoded(1, frame_count, bytes);
             }
 
             RingRead::Gap { missed } => {

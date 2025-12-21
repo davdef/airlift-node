@@ -1,12 +1,14 @@
 // src/io/mp3_out.rs
+use crate::codecs::AudioCodec;
+use crate::codecs::registry::{CodecRegistry, DEFAULT_CODEC_MP3_ID};
 use crate::ring::{RingRead, RingReader};
 use anyhow::{Result, anyhow};
 use log::info;
 use std::io::Write;
 use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::codecs::mp3::Mp3Encoder;
 pub struct Mp3Config {
     pub host: String,
     pub port: u16,
@@ -18,10 +20,15 @@ pub struct Mp3Config {
     pub genre: String,
     pub public: bool,
     pub bitrate: u32,
+    pub codec_id: Option<String>,
 }
 
 
-pub fn run_mp3_out(mut r: RingReader, cfg: Mp3Config) -> Result<()> {
+pub fn run_mp3_out(
+    mut r: RingReader,
+    cfg: Mp3Config,
+    codec_registry: Arc<CodecRegistry>,
+) -> Result<()> {
     println!(
         "[mp3] Starting MP3 stream to {}:{}{} ({} kbps)",
         cfg.host, cfg.port, cfg.mount, cfg.bitrate
@@ -30,7 +37,7 @@ pub fn run_mp3_out(mut r: RingReader, cfg: Mp3Config) -> Result<()> {
     let mut backoff = Duration::from_secs(1);
 
     loop {
-        match connect_and_stream_mp3(&mut r, &cfg) {
+        match connect_and_stream_mp3(&mut r, &cfg, codec_registry.clone()) {
             Ok(_) => {
                 backoff = Duration::from_secs(1);
                 println!("[mp3] Connection closed normally, reconnecting...");
@@ -48,40 +55,52 @@ pub fn run_mp3_out(mut r: RingReader, cfg: Mp3Config) -> Result<()> {
     }
 }
 
-fn connect_and_stream_mp3(r: &mut RingReader, cfg: &Mp3Config) -> Result<()> {
+fn connect_and_stream_mp3(
+    r: &mut RingReader,
+    cfg: &Mp3Config,
+    codec_registry: Arc<CodecRegistry>,
+) -> Result<()> {
     let mut stream = connect_mp3(cfg)?;
     send_mp3_headers(&mut stream, cfg)?;
 
     info!("[mp3] Connected to {}:{}{}", cfg.host, cfg.port, cfg.mount);
 
-    // Annahme: Sample-Rate ist 48kHz, sollte aber besser aus der Konfiguration kommen
-    let sample_rate = 48_000;
-    let mut encoder = Mp3Encoder::new(cfg.bitrate, sample_rate)?;
-    let mut encoded_buffer = Vec::with_capacity(8192); // Wiederverwendbarer Buffer
+    let codec_id = cfg.codec_id.as_deref().unwrap_or(DEFAULT_CODEC_MP3_ID);
+    let (mut codec, codec_instance) = codec_registry.build_codec(codec_id)?;
+    codec_instance.mark_ready();
     let mut packets = 0;
     let mut last_log = Instant::now();
 
     loop {
         match r.poll() {
             RingRead::Chunk(slot) => {
-                let bytes_written = encoder.encode_100ms(&slot.pcm, &mut encoded_buffer)?;
-                
-                // Sicherstellen, dass wir Daten haben
-                if bytes_written > 0 {
-                    if let Err(e) = stream.write_all(&encoded_buffer) {
+                let frames = codec.encode(&slot.pcm).map_err(|e| {
+                    codec_instance.mark_error(&e.to_string());
+                    e
+                })?;
+                let mut bytes = 0u64;
+                let frame_count = frames.len() as u64;
+                for frame in frames {
+                    // Sicherstellen, dass wir Daten haben
+                    if frame.payload.is_empty() {
+                        continue;
+                    }
+                    bytes += frame.payload.len() as u64;
+                    if let Err(e) = stream.write_all(&frame.payload) {
                         return Err(anyhow!("Failed to write MP3 data: {}", e));
                     }
-                    
+
                     if let Err(e) = stream.flush() {
                         return Err(anyhow!("Failed to flush stream: {}", e));
                     }
-                    
+
                     packets += 1;
 
                     if packets == 1 {
-                        println!("[mp3] First packet sent ({} bytes)", bytes_written);
+                        println!("[mp3] First packet sent ({} bytes)", frame.payload.len());
                     }
                 }
+                codec_instance.mark_encoded(1, frame_count, bytes);
             }
             RingRead::Gap { missed } => {
                 eprintln!("[mp3] Gap: missed {} chunks", missed);
@@ -103,11 +122,11 @@ fn connect_and_stream_mp3(r: &mut RingReader, cfg: &Mp3Config) -> Result<()> {
 fn connect_mp3(cfg: &Mp3Config) -> Result<TcpStream> {
     let addr = format!("{}:{}", cfg.host, cfg.port);
     let addrs: Vec<_> = addr.to_socket_addrs()?.collect();
-    
+
     if addrs.is_empty() {
         return Err(anyhow!("No addresses found for {}:{}", cfg.host, cfg.port));
     }
-    
+
     // Versuche alle aufgelösten Adressen
     for addr in addrs {
         match TcpStream::connect_timeout(&addr, Duration::from_secs(5)) {
@@ -122,8 +141,12 @@ fn connect_mp3(cfg: &Mp3Config) -> Result<TcpStream> {
             }
         }
     }
-    
-    Err(anyhow!("Failed to connect to any address for {}:{}", cfg.host, cfg.port))
+
+    Err(anyhow!(
+        "Failed to connect to any address for {}:{}",
+        cfg.host,
+        cfg.port
+    ))
 }
 
 fn send_mp3_headers(stream: &mut TcpStream, cfg: &Mp3Config) -> Result<()> {
@@ -149,9 +172,9 @@ fn send_mp3_headers(stream: &mut TcpStream, cfg: &Mp3Config) -> Result<()> {
 
     stream.write_all(hdr.as_bytes())?;
     stream.flush()?;
-    
+
     // Kurze Pause für Server-Antwort (optional)
     std::thread::sleep(Duration::from_millis(100));
-    
+
     Ok(())
 }

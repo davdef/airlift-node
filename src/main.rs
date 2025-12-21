@@ -88,6 +88,7 @@ fn main() -> anyhow::Result<()> {
         config: cfg.clone(),
         registry: registry.clone(),
         wav_dir: context.wav_dir.clone(),
+        codec_registry: context.codec_registry.clone(),
     };
 
     let api_service = ApiService::new(api_bind.parse()?);

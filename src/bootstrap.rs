@@ -6,6 +6,7 @@ use log::{error, info};
 
 use crate::agent;
 use crate::api::registry::{ModuleDescriptor, ModuleRegistration, Registry};
+use crate::codecs::registry::{CodecRegistry, resolve_codec_configs};
 use crate::config::Config;
 use crate::control::ControlState;
 use crate::io::influx_out::InfluxOut;
@@ -24,6 +25,7 @@ pub struct AppContext {
     pub peak_store: Arc<PeakStorage>,
     pub history_service: Option<Arc<InfluxHistoryService>>,
     pub wav_dir: PathBuf,
+    pub codec_registry: Arc<CodecRegistry>,
 }
 
 impl AppContext {
@@ -57,6 +59,8 @@ impl AppContext {
             .map(|rec| PathBuf::from(&rec.wav_dir))
             .unwrap_or_else(|| PathBuf::from("/data/aircheck/wav"));
 
+        let codec_registry = Arc::new(CodecRegistry::from_config(cfg));
+
         Self {
             agent,
             metrics,
@@ -64,6 +68,7 @@ impl AppContext {
             peak_store,
             history_service,
             wav_dir,
+            codec_registry,
         }
     }
 }
@@ -104,14 +109,9 @@ pub fn register_modules(cfg: &Config, registry: &Registry) {
     );
 
     // Codec-Module als eigenständige Processing-Instanzen.
-    register_codec(registry, "codec_opus", true);
-    let mp3_enabled = cfg
-        .recorder
-        .as_ref()
-        .and_then(|rec| rec.mp3.as_ref())
-        .is_some()
-        || cfg.mp3_out.as_ref().map(|m| m.enabled).unwrap_or(false);
-    register_codec(registry, "codec_mp3", mp3_enabled);
+    for codec in resolve_codec_configs(cfg) {
+        register_codec(registry, &codec.id, true);
+    }
 }
 
 pub fn start_workers(

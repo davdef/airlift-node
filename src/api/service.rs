@@ -22,6 +22,7 @@ pub struct ApiState {
     pub config: Arc<Config>,
     pub registry: Arc<Registry>,
     pub wav_dir: PathBuf,
+    pub codec_registry: Arc<crate::codecs::registry::CodecRegistry>,
 }
 
 pub struct ApiService {
@@ -55,6 +56,7 @@ async fn run_api_server(bind_addr: SocketAddr, state: ApiState) -> anyhow::Resul
         .route("/api/peaks", get(routes::peaks::get_peaks))
         .route("/api/history", get(routes::peaks::get_history))
         .route("/api/status", get(routes::status::get_status))
+        .route("/api/codecs", get(routes::codecs::get_codecs))
         .route(
             "/api/control",
             axum::routing::post(routes::control::post_control),
