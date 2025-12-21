@@ -2,6 +2,7 @@
 use std::time::{Instant, Duration};
 
 use crate::ring::{RingRead, RingReader};
+use crate::control::ModuleState;
 use super::{AudioSink, RetentionPolicy, RecorderConfig};
 
 pub fn run_recorder(
@@ -9,8 +10,12 @@ pub fn run_recorder(
     cfg: RecorderConfig,
     mut sinks: Vec<Box<dyn AudioSink>>,
     mut retentions: Vec<Box<dyn RetentionPolicy>>,
+    state: std::sync::Arc<ModuleState>,
+    ring_state: std::sync::Arc<ModuleState>,
 ) -> anyhow::Result<()> {
 
+    state.set_running(true);
+    state.set_connected(true);
     let mut current_hour: Option<u64> = None;
     let mut last_retention = Instant::now();
     let mut last_continuity_check = Instant::now();
@@ -39,6 +44,8 @@ pub fn run_recorder(
                 for s in sinks.iter_mut() {
                     s.on_chunk(&slot)?;
                 }
+                state.mark_tx(1);
+                ring_state.mark_tx(1);
                 
                 // Nach Audio auch Kontinuität zurücksetzen
                 last_continuity_check = Instant::now();
@@ -46,6 +53,8 @@ pub fn run_recorder(
 
             RingRead::Gap { .. } => {
                 // Lücke - trotzdem Kontinuität wahren
+                state.mark_drop(1);
+                ring_state.mark_drop(1);
             }
 
             RingRead::Empty => {

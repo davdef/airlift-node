@@ -4,6 +4,7 @@ mod agent;
 mod audio;
 mod codecs;
 mod config;
+mod control;
 mod io;
 mod monitoring;
 mod recorder;
@@ -26,7 +27,7 @@ use crate::web::influx_service::InfluxHistoryService;
 use crate::web::peaks::{PeakPoint, PeakStorage};
 use crate::io::influx_out::InfluxOut;
 use crate::audio::http::start_audio_http_server;
-use crate::io::srt_in::SrtInState;
+use crate::control::ControlState;
 
 use crate::recorder::{AudioSink, FsRetention, Mp3Sink, RecorderConfig, WavSink, run_recorder};
 
@@ -71,52 +72,82 @@ fn main() -> anyhow::Result<()> {
     let metrics = Arc::new(monitoring::Metrics::new());
     start_monitoring(&cfg, &agent, metrics.clone(), running.clone());
 
-// ------------------------------------------------------------
-// Shared SRT-IN state (für API + Control)
-// ------------------------------------------------------------
-let srt_in_state = Arc::new(crate::io::srt_in::SrtInState::new());
+    // ------------------------------------------------------------
+    // Shared Control State (für API + Control)
+    // ------------------------------------------------------------
+    let control_state = Arc::new(ControlState::new());
+    control_state.ring.set_enabled(true);
+    control_state.ring.set_running(true);
+    control_state.ring.set_connected(true);
 
 // ------------------------------------------------------------
 // SRT Input
 // ------------------------------------------------------------
-if let Some(srt_cfg) = &cfg.srt_in {
-    if srt_cfg.enabled {
-        info!("[airlift] SRT enabled: {}", srt_cfg.listen);
+    if let Some(srt_cfg) = &cfg.srt_in {
+        control_state.srt_in.module.set_enabled(srt_cfg.enabled);
+        if srt_cfg.enabled {
+            info!("[airlift] SRT enabled: {}", srt_cfg.listen);
 
-        let ring = agent.ring.clone();
-        let cfg_clone = srt_cfg.clone();
-        let running_srt = running.clone();
-        let srt_state = srt_in_state.clone(); // 👈 jetzt sichtbar
+            let ring = agent.ring.clone();
+            let cfg_clone = srt_cfg.clone();
+            let running_srt = running.clone();
+            let srt_state = control_state.srt_in.clone();
+            let ring_state = control_state.ring.clone();
 
-        std::thread::spawn(move || {
-            if let Err(e) = crate::io::srt_in::run_srt_in(
-                ring,
-                cfg_clone,
-                running_srt,
-                srt_state,
-            ) {
-                error!("[srt] fatal: {}", e);
-            }
-        });
+            std::thread::spawn(move || {
+                if let Err(e) = crate::io::srt_in::run_srt_in(
+                    ring,
+                    cfg_clone,
+                    running_srt,
+                    srt_state,
+                    ring_state,
+                ) {
+                    error!("[srt] fatal: {}", e);
+                }
+            });
+        }
+    } else {
+        control_state.srt_in.module.set_enabled(false);
     }
-}
+
+    if let Some(srt_out_cfg) = &cfg.srt_out {
+        control_state.srt_out.module.set_enabled(srt_out_cfg.enabled);
+    } else {
+        control_state.srt_out.module.set_enabled(false);
+    }
+
+    if let Some(icecast_cfg) = &cfg.icecast_out {
+        control_state.icecast_out.set_enabled(icecast_cfg.enabled);
+    } else {
+        control_state.icecast_out.set_enabled(false);
+    }
 
     // ------------------------------------------------------------
     // ALSA Input (falls konfiguriert)
     // ------------------------------------------------------------
     if let Some(alsa_cfg) = &cfg.alsa_in {
+        control_state.alsa_in.set_enabled(alsa_cfg.enabled);
         if alsa_cfg.enabled {
             info!("[airlift] ALSA enabled: {}", alsa_cfg.device);
-            
+
             let ring = agent.ring.clone();
             let metrics_alsa = metrics.clone();
-            
+            let alsa_state = control_state.alsa_in.clone();
+            let ring_state = control_state.ring.clone();
+
             std::thread::spawn(move || {
-                if let Err(e) = crate::io::alsa_in::run_alsa_in(ring, metrics_alsa) {
+                if let Err(e) = crate::io::alsa_in::run_alsa_in(
+                    ring,
+                    metrics_alsa,
+                    alsa_state,
+                    ring_state,
+                ) {
                     error!("[alsa] fatal: {}", e);
                 }
             });
         }
+    } else {
+        control_state.alsa_in.set_enabled(false);
     }
 
     // ------------------------------------------------------------
@@ -147,14 +178,16 @@ if let Some(srt_cfg) = &cfg.srt_in {
             PathBuf::from("/data/aircheck/wav")
         };
 
+        let control_state_web = control_state.clone();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().expect("web runtime");
             if let Err(e) = rt.block_on(run_web_server(
-                peak_store_web, 
+                peak_store_web,
                 history_service_web,
                 ring_buffer,
                 wav_dir,
-                3008
+                3008,
+                control_state_web,
             )) {
                 error!("[web] server error: {}", e);
             }
@@ -225,7 +258,7 @@ let influx = InfluxOut::new(
     // ------------------------------------------------------------
     // Recorder (optional, aber stabil)
     // ------------------------------------------------------------
-    start_recorder(&cfg, &agent)?;
+    start_recorder(&cfg, &agent, control_state.clone())?;
 
     // ------------------------------------------------------------
     // Main loop
@@ -274,13 +307,20 @@ fn start_monitoring(
     info!("[airlift] monitoring on port {}", port);
 }
 
-fn start_recorder(cfg: &Config, agent: &agent::Agent) -> anyhow::Result<()> {
+fn start_recorder(
+    cfg: &Config,
+    agent: &agent::Agent,
+    control_state: Arc<ControlState>,
+) -> anyhow::Result<()> {
     let Some(c) = &cfg.recorder else {
+        control_state.recorder.set_enabled(false);
         return Ok(());
     };
     if !c.enabled {
+        control_state.recorder.set_enabled(false);
         return Ok(());
     }
+    control_state.recorder.set_enabled(true);
 
     let reader = agent.ring.subscribe();
 
@@ -308,8 +348,10 @@ fn start_recorder(cfg: &Config, agent: &agent::Agent) -> anyhow::Result<()> {
         continuity_interval: Duration::from_millis(100),
     };
 
+    let recorder_state = control_state.recorder.clone();
+    let ring_state = control_state.ring.clone();
     std::thread::spawn(move || {
-        if let Err(e) = run_recorder(reader, rec_cfg, sinks, retentions) {
+        if let Err(e) = run_recorder(reader, rec_cfg, sinks, retentions, recorder_state, ring_state) {
             error!("[recorder] fatal: {}", e);
         }
     });
