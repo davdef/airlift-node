@@ -67,8 +67,6 @@ pub async fn run_web_server(
         .route("/api/peaks", get(peaks_api::get_peaks))
         .route("/api/history", get(peaks_api::get_history))
         .route("/ws", get(websocket::websocket_handler))
-        .route("/audio/live", get(handle_live_audio))
-        .route("/audio/at", get(handle_historical_audio))
         .with_state(app_state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

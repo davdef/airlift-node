@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Audio Format Test</title>
+</head>
+<body>
+    <h1>Audio Format Test</h1>
+    
+    <div>
+        <h2>Test 1: MP3 Stream</h2>
+        <audio id="audio1" controls>
+            <source src="/audio/live" type="audio/mpeg">
+        </audio>
+        <button onclick="testStream('audio1')">Test Stream</button>
+        <div id="status1"></div>
+    </div>
+    
+    <div>
+        <h2>Test 2: OGG Stream (mit Cache-Buster)</h2>
+        <audio id="audio2" controls>
+            <source src="/audio/live?_t=test" type="audio/ogg; codecs=opus">
+        </audio>
+        <button onclick="testStream('audio2')">Test Stream</button>
+        <div id="status2"></div>
+    </div>
+    
+    <div>
+        <h2>Test 3: Direkter WAV Stream (falls verfügbar)</h2>
+        <audio id="audio3" controls>
+            <source src="/audio/live" type="audio/wav">
+        </audio>
+        <button onclick="testStream('audio3')">Test Stream</button>
+        <div id="status3"></div>
+    </div>
+
+    <script>
+        function testStream(audioId) {
+            const audio = document.getElementById(audioId);
+            const status = document.getElementById('status' + audioId.charAt(audioId.length-1));
+            
+            status.textContent = 'Loading...';
+            
+            audio.addEventListener('loadedmetadata', () => {
+                status.textContent = 'Metadata loaded, playing...';
+                audio.play().catch(e => {
+                    status.textContent = 'Play error: ' + e.message;
+                });
+            });
+            
+            audio.addEventListener('playing', () => {
+                status.textContent = 'Playing!';
+            });
+            
+            audio.addEventListener('error', (e) => {
+                console.error('Audio error:', audio.error);
+                status.textContent = 'Error: ' + (audio.error?.message || 'Unknown');
+            });
+            
+            // Lade die Quelle neu
+            audio.load();
+        }
+    </script>
+</body>
+</html>

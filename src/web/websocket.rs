@@ -2,6 +2,7 @@ use axum::{
     extract::{State, WebSocketUpgrade},
     response::Response,
 };
+use axum::extract::ws::Message;
 use futures::{SinkExt, StreamExt};
 use log::{debug, warn};
 use serde::Serialize;
@@ -27,19 +28,33 @@ async fn handle(mut socket: axum::extract::ws::WebSocket, state: WebState) {
 
     loop {
         tokio::select! {
-            Some(msg) = socket.next() => {
-                match msg {
-                    Ok(axum::extract::ws::Message::Close(frame)) => {
-                        debug!("[ws] client closed connection: {:?}", frame);
-                        break;
-                    }
-                    Ok(_) => {}
-                    Err(err) => {
-                        warn!("[ws] receive error: {}", err);
-                        break;
-                    }
-                }
+
+Some(msg) = socket.next() => {
+    match msg {
+        Ok(Message::Ping(payload)) => {
+            // 🔥 WICHTIG
+            if socket.send(Message::Pong(payload)).await.is_err() {
+                break;
             }
+        }
+        Ok(Message::Close(frame)) => {
+            debug!("[ws] client closed connection: {:?}", frame);
+            break;
+        }
+        Ok(Message::Pong(_)) => {
+            // optional: ignore
+        }
+        Ok(Message::Text(_)) => {
+            // optional: client commands später
+        }
+        Ok(Message::Binary(_)) => {}
+        Err(err) => {
+            warn!("[ws] receive error: {}", err);
+            break;
+        }
+    }
+}
+
             result = rx.recv() => {
                 match result {
                     Ok(peak) => {

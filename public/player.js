@@ -42,6 +42,13 @@ class AircheckPlayer {
         // === AUDIO ===
         this.audio = new Audio();
         this.audio.crossOrigin = "anonymous";
+        this.audio.preload = "none";
+        
+        // Setze MIME-Typ für bessere Browser-Unterstützung
+        if ('type' in this.audio) {
+            this.audio.type = "audio/ogg; codecs=opus";
+        }
+        
         this.isPlaying = false;
         this.playbackServerStartTime = null; // ms
 
@@ -54,7 +61,8 @@ class AircheckPlayer {
             history:    document.getElementById("dbgHistory"),
             lastWs:     document.getElementById("dbgLastWs"),
             status:     document.getElementById("status"),
-            bufferInfo: document.getElementById("bufferInfo")
+            bufferInfo: document.getElementById("bufferInfo"),
+            audioState: document.getElementById("dbgAudioState")
         };
 
         this.setStatus("Initialisiere Player...");
@@ -102,20 +110,20 @@ class AircheckPlayer {
         return 300_000;                       // 5min
     }
 
-getCurrentPlaybackTime() {
-    if (this.isLiveAudio) {
-        // Live: Aktuellste Server-Zeit
+    getCurrentPlaybackTime() {
+        if (this.isLiveAudio) {
+            // Live: Aktuellste Server-Zeit
+            return this.latestWsTs ?? this.bufferEnd ?? 0;
+        }
+        
+        if (this.playbackServerStartTime != null) {
+            // Timeshift: Server-Startzeit + Audio-Offset
+            return this.playbackServerStartTime + (this.audio.currentTime * 1000);
+        }
+        
+        // Fallback: Aktuellste verfügbare Server-Zeit
         return this.latestWsTs ?? this.bufferEnd ?? 0;
     }
-    
-    if (this.playbackServerStartTime != null) {
-        // Timeshift: Server-Startzeit + Audio-Offset
-        return this.playbackServerStartTime + (this.audio.currentTime * 1000);
-    }
-    
-    // Fallback: Aktuellste verfügbare Server-Zeit
-    return this.latestWsTs ?? this.bufferEnd ?? 0;
-}
 
     setupCanvas() {
         const resize = () => {
@@ -144,8 +152,8 @@ getCurrentPlaybackTime() {
                 this.viewportLeft  = this.bufferEnd - span;
                 this.clampViewportToBuffer();
 
-           // LADE INITIAL HISTORY für diesen Viewport
-            await this.loadHistoryWindow(this.viewportLeft, this.viewportRight);
+                // LADE INITIAL HISTORY für diesen Viewport
+                await this.loadHistoryWindow(this.viewportLeft, this.viewportRight);
 
                 if (this.debug.bufferInfo) {
                     const durMs = this.bufferEnd - this.bufferStart;
@@ -267,22 +275,45 @@ getCurrentPlaybackTime() {
         }
     }
 
+    // VERBESSERTE LIVE-SWITCH-METHODE MIT FEHLERHANDLING
     switchToLive() {
         this.isLiveAudio = true;
         this.followLive = true;
         this.playbackServerStartTime = null;
 
+        // Setze zuerst die Quelle, dann spiele ab
         this.audio.src = "/audio/live";
-        this.audio
-            .play()
-            .then(() => {
-                this.setStatus("LIVE");
-            })
-            .catch(err => {
-                console.error("Live play error", err);
-                this.setStatus("Live-Play Fehler");
-            });
-
+        
+        // Füge einen Cache-Buster hinzu, um Caching-Probleme zu vermeiden
+        if (this.audio.src.includes('?')) {
+            this.audio.src += '&_=' + Date.now();
+        } else {
+            this.audio.src += '?_=' + Date.now();
+        }
+        
+        // Preload deaktivieren für Live-Streams
+        this.audio.preload = "none";
+        
+        // Warte kurz, dann versuche zu spielen
+        setTimeout(() => {
+            this.audio.play()
+                .then(() => {
+                    console.log("Live audio playback started");
+                    this.setStatus("LIVE");
+                })
+                .catch(err => {
+                    console.error("Live play error:", err);
+                    this.setStatus("Live-Play Fehler - " + err.message);
+                    
+                    // Fallback: Versuche es ohne Autoplay, nur Quelle setzen
+                    setTimeout(() => {
+                        this.audio.load(); // Lade die Quelle neu
+                        this.setStatus("Klicke Play um Live zu starten");
+                    }, 1000);
+                });
+        }, 100);
+        
+        // Viewport auf Live-Bereich setzen
         const ref = this.latestWsTs ?? this.bufferEnd ?? Date.now();
         this.viewportRight = ref;
         this.viewportLeft  = ref - this.visibleDuration;
@@ -296,15 +327,83 @@ getCurrentPlaybackTime() {
     setupAudioEvents() {
         this.audio.addEventListener("play", () => {
             this.isPlaying = true;
+            console.log("Audio playback started");
         });
 
         this.audio.addEventListener("pause", () => {
             this.isPlaying = false;
+            console.log("Audio playback paused");
+        });
+
+        this.audio.addEventListener("loadedmetadata", () => {
+            console.log("Audio metadata loaded");
+            this.setStatus("Audio geladen");
+        });
+
+        this.audio.addEventListener("canplay", () => {
+            console.log("Audio can play");
+            this.setStatus("Bereit zum Abspielen");
+        });
+
+        this.audio.addEventListener("waiting", () => {
+            console.log("Audio buffering...");
+            this.setStatus("Pufferung...");
+        });
+
+        this.audio.addEventListener("stalled", () => {
+            console.warn("Audio stalled - connection interrupted");
+            this.setStatus("Verbindung unterbrochen");
+        });
+
+        this.audio.addEventListener("suspend", () => {
+            console.log("Audio loading suspended");
+        });
+
+        this.audio.addEventListener("emptied", () => {
+            console.log("Audio element emptied");
+            this.setStatus("Audio-Quelle geändert");
+        });
+
+        this.audio.addEventListener("ended", () => {
+            console.log("Audio playback ended");
+            this.isPlaying = false;
+            if (!this.isLiveAudio) {
+                this.setStatus("Timeshift beendet");
+            }
         });
 
         this.audio.addEventListener("error", (e) => {
-            console.error("Audio error:", e);
-            this.setStatus("Audio-Fehler");
+            console.error("Audio error:", e, this.audio.error);
+            let errorMsg = "Audio-Fehler";
+            
+            if (this.audio.error) {
+                switch (this.audio.error.code) {
+                    case MediaError.MEDIA_ERR_ABORTED:
+                        errorMsg = "Audio abgebrochen";
+                        break;
+                    case MediaError.MEDIA_ERR_NETWORK:
+                        errorMsg = "Netzwerk-Fehler";
+                        break;
+                    case MediaError.MEDIA_ERR_DECODE:
+                        errorMsg = "Audio-Dekodierungsfehler";
+                        break;
+                    case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
+                        errorMsg = "Audio-Format nicht unterstützt";
+                        break;
+                    default:
+                        errorMsg = `Audio-Fehler (Code: ${this.audio.error.code})`;
+                }
+            }
+            
+            this.setStatus(errorMsg);
+            
+            // Bei Timeshift-Fehlern automatisch zurück zu Live wechseln
+            if (!this.isLiveAudio) {
+                console.log("Timeshift failed, switching back to live...");
+                setTimeout(() => {
+                    this.switchToLive();
+                }, 1000);
+            }
         });
     }
 
@@ -499,53 +598,53 @@ getCurrentPlaybackTime() {
         this.clampViewportToBuffer();
     }
 
-clampViewportToBuffer() {
-    const span = this.visibleDuration;
-    
-    // MUSS Server-Zeiten verwenden!
-    if (this.bufferStart != null && this.bufferEnd != null) {
-        const leftLimit = this.bufferStart;
-        const rightLimit = this.bufferEnd;
+    clampViewportToBuffer() {
+        const span = this.visibleDuration;
         
-        // Viewport komplett nach rechts verschieben wenn nötig
-        if (this.viewportRight > rightLimit) {
-            this.viewportRight = rightLimit;
+        // MUSS Server-Zeiten verwenden!
+        if (this.bufferStart != null && this.bufferEnd != null) {
+            const leftLimit = this.bufferStart;
+            const rightLimit = this.bufferEnd;
+            
+            // Viewport komplett nach rechts verschieben wenn nötig
+            if (this.viewportRight > rightLimit) {
+                this.viewportRight = rightLimit;
+                this.viewportLeft = this.viewportRight - span;
+            }
+            
+            if (this.viewportLeft < leftLimit) {
+                this.viewportLeft = leftLimit;
+                this.viewportRight = this.viewportLeft + span;
+            }
+            
+            // Sicherstellen dass Viewport gültig ist
+            if (this.viewportRight > rightLimit) {
+                this.viewportRight = rightLimit;
+                this.viewportLeft = Math.max(leftLimit, this.viewportRight - span);
+            }
+            
+            this.trimHistory();
+            return;
+        }
+        
+        // Fallback nur für History (aber auch das sind Server-Zeiten!)
+        if (!this.history.length) return;
+        
+        const earliest = this.history[0].ts;
+        const latest = this.history[this.history.length - 1].ts;
+        
+        if (this.viewportRight > latest) {
+            this.viewportRight = latest;
             this.viewportLeft = this.viewportRight - span;
         }
         
-        if (this.viewportLeft < leftLimit) {
-            this.viewportLeft = leftLimit;
+        if (this.viewportLeft < earliest) {
+            this.viewportLeft = earliest;
             this.viewportRight = this.viewportLeft + span;
         }
         
-        // Sicherstellen dass Viewport gültig ist
-        if (this.viewportRight > rightLimit) {
-            this.viewportRight = rightLimit;
-            this.viewportLeft = Math.max(leftLimit, this.viewportRight - span);
-        }
-        
         this.trimHistory();
-        return;
     }
-    
-    // Fallback nur für History (aber auch das sind Server-Zeiten!)
-    if (!this.history.length) return;
-    
-    const earliest = this.history[0].ts;
-    const latest = this.history[this.history.length - 1].ts;
-    
-    if (this.viewportRight > latest) {
-        this.viewportRight = latest;
-        this.viewportLeft = this.viewportRight - span;
-    }
-    
-    if (this.viewportLeft < earliest) {
-        this.viewportLeft = earliest;
-        this.viewportRight = this.viewportLeft + span;
-    }
-    
-    this.trimHistory();
-}
 
     // ---------------------------------------------------
     //  Seeking
@@ -560,99 +659,133 @@ clampViewportToBuffer() {
         this.seekAudio(targetServerTime);
     }
 
+    // VERBESSERTE SEEK-METHODE MIT FEHLERHANDLING
     seekAudio(targetServerTime) {
         if (!Number.isFinite(targetServerTime)) return;
+        
+        // Prüfe ob der Zeitpunkt im Buffer liegt
+        if (this.bufferStart !== null && this.bufferEnd !== null) {
+            if (targetServerTime < this.bufferStart || targetServerTime > this.bufferEnd) {
+                console.warn("Seek outside buffer range");
+                this.setStatus("Zeitpunkt nicht im Buffer verfügbar");
+                return;
+            }
+        }
 
         this.isLiveAudio = false;
         this.followLive = false;
         this.playbackServerStartTime = targetServerTime;
 
         const src = `/audio/at?ts=${Math.floor(targetServerTime)}&_=${Date.now()}`;
+        
+        // Pausiere aktuellen Stream zuerst
+        this.audio.pause();
+        
+        // Setze neue Quelle
         this.audio.src = src;
-
-        const startClient = performance.now();
-
-        this.audio.onplay = () => {
-            const latency = performance.now() - startClient;
-            console.log("⏱️ Timeshift started, latency =", latency.toFixed(1), "ms");
-            this.setStatus("Timeshift");
+        
+        // Warte auf canplay, dann starte
+        const playOnce = () => {
+            this.audio.removeEventListener('canplay', playOnce);
+            const startClient = performance.now();
+            
+            this.audio.play()
+                .then(() => {
+                    const latency = performance.now() - startClient;
+                    console.log("⏱️ Timeshift started, latency =", latency.toFixed(1), "ms");
+                    this.setStatus("Timeshift");
+                })
+                .catch(err => {
+                    console.error("Timeshift play error", err);
+                    this.setStatus("Timeshift-Fehler - " + err.message);
+                    
+                    // Fallback zu Live
+                    setTimeout(() => {
+                        console.log("Timeshift failed, switching to live...");
+                        this.switchToLive();
+                    }, 1000);
+                });
         };
-
-        this.audio
-            .play()
-            .catch(err => {
-                console.error("Timeshift play error", err);
-                this.setStatus("Timeshift-Fehler");
-            });
+        
+        this.audio.addEventListener('canplay', playOnce);
+        
+        // Timeout falls canplay nicht kommt
+        setTimeout(() => {
+            if (!this.isPlaying && !this.isLiveAudio) {
+                this.audio.play().catch(() => {
+                    this.switchToLive();
+                });
+            }
+        }, 2000);
     }
 
     // ---------------------------------------------------
     //  History laden
     // ---------------------------------------------------
-async loadHistoryWindow(from, to) {
-    try {
-        if (this.loadingHistory) return;
-        this.loadingHistory = true;
-        // VERHINDERE REQUEST MIT GLEICHEN ZEITEN ODER NEGATIVER SPANNE
-        const span = to - from;
-        if (span <= 0) {
-            console.log("[History] Skipping (invalid span:", span, "ms)");
-            return;
+    async loadHistoryWindow(from, to) {
+        try {
+            if (this.loadingHistory) return;
+            this.loadingHistory = true;
+            // VERHINDERE REQUEST MIT GLEICHEN ZEITEN ODER NEGATIVER SPANNE
+            const span = to - from;
+            if (span <= 0) {
+                console.log("[History] Skipping (invalid span:", span, "ms)");
+                return;
+            }
+            
+            // Mindestspanne von 1000ms (1 Sekunde)
+            const minSpan = 1000;
+            if (span < minSpan) {
+                // Korrigiere to, um mindestens 1s zu haben
+                to = from + minSpan;
+                console.log("[History] Adjusted span to minimum 1s");
+            }
+            
+            const url = `/api/history?from=${Math.floor(from)}&to=${Math.floor(to)}`;
+            
+            // console.log("[History] Loading:", url, "span:", span, "ms");
+            
+            // RATE LIMITING: Verhindere zu häufige Requests
+            const now = Date.now();
+            if (this.lastHistoryRequest && (now - this.lastHistoryRequest < 2000)) {
+                // console.log("[History] Rate limiting, skipping...");
+                return;
+            }
+            this.lastHistoryRequest = now;
+            
+            const res = await fetch(url);
+            if (!res.ok) {
+                throw new Error(`HTTP ${res.status}`);
+            }
+            
+            const data = await res.json();
+            console.log("[History] Loaded", data.length, "points");
+            
+            if (!Array.isArray(data)) {
+                console.warn("[History] API returned non-array");
+                return;
+            }
+            
+            // Konvertiere Format
+            const converted = data.map(point => ({
+                ts: point.ts,  // Schon in Millisekunden!
+                peaks: [point.peak_l, point.peak_r],
+                amp: (point.peak_l + point.peak_r) / 2.0,
+                silence: point.silence || false
+            }));
+            
+            // Merge mit existing history
+            const map = new Map(this.history.map(e => [e.ts, e]));
+            converted.forEach(p => map.set(p.ts, p));
+            this.history = Array.from(map.values()).sort((a,b) => a.ts - b.ts);
+            this.trimHistory();
+            
+        } catch (err) {
+            console.error("[History] Load failed:", err);
+        } finally {
+            this.loadingHistory = false;
         }
-        
-        // Mindestspanne von 1000ms (1 Sekunde)
-        const minSpan = 1000;
-        if (span < minSpan) {
-            // Korrigiere to, um mindestens 1s zu haben
-            to = from + minSpan;
-            console.log("[History] Adjusted span to minimum 1s");
-        }
-        
-        const url = `/api/history?from=${Math.floor(from)}&to=${Math.floor(to)}`;
-        
-//        console.log("[History] Loading:", url, "span:", span, "ms");
-        
-        // RATE LIMITING: Verhindere zu häufige Requests
-        const now = Date.now();
-        if (this.lastHistoryRequest && (now - this.lastHistoryRequest < 2000)) {
-//            console.log("[History] Rate limiting, skipping...");
-            return;
-        }
-        this.lastHistoryRequest = now;
-        
-        const res = await fetch(url);
-        if (!res.ok) {
-            throw new Error(`HTTP ${res.status}`);
-        }
-        
-        const data = await res.json();
-        console.log("[History] Loaded", data.length, "points");
-        
-        if (!Array.isArray(data)) {
-            console.warn("[History] API returned non-array");
-            return;
-        }
-        
-        // Konvertiere Format
-        const converted = data.map(point => ({
-            ts: point.ts,  // Schon in Millisekunden!
-            peaks: [point.peak_l, point.peak_r],
-            amp: (point.peak_l + point.peak_r) / 2.0,
-            silence: point.silence || false
-        }));
-        
-        // Merge mit existing history
-        const map = new Map(this.history.map(e => [e.ts, e]));
-        converted.forEach(p => map.set(p.ts, p));
-        this.history = Array.from(map.values()).sort((a,b) => a.ts - b.ts);
-        this.trimHistory();
-        
-    } catch (err) {
-        console.error("[History] Load failed:", err);
-    } finally {
-        this.loadingHistory = false;
     }
-}
 
     trimHistory() {
         if (!this.history.length) return;
@@ -671,43 +804,43 @@ async loadHistoryWindow(from, to) {
         }
     }
 
-maybeLoadMoreHistory() {
-    if (this.loadingHistory) return;
-    if (this.bufferStart == null || this.bufferEnd == null) return;
-    if (this.followLive && this.history.length) return;
+    maybeLoadMoreHistory() {
+        if (this.loadingHistory) return;
+        if (this.bufferStart == null || this.bufferEnd == null) return;
+        if (this.followLive && this.history.length) return;
 
-    const span = this.visibleDuration;
-    if (span <= 0) return;
+        const span = this.visibleDuration;
+        if (span <= 0) return;
 
-    const earliest = this.history.length ? this.history[0].ts : null;
-    const latest = this.history.length ? this.history[this.history.length - 1].ts : null;
+        const earliest = this.history.length ? this.history[0].ts : null;
+        const latest = this.history.length ? this.history[this.history.length - 1].ts : null;
 
-    let from = null;
-    let to = null;
+        let from = null;
+        let to = null;
 
-    if (!this.history.length) {
-        from = this.viewportLeft;
-        to = this.viewportRight;
-    } else if (this.viewportLeft < earliest) {
-        from = this.viewportLeft;
-        to = Math.min(earliest, this.viewportRight);
-    } else if (this.viewportRight > latest) {
-        from = Math.max(latest, this.viewportLeft);
-        to = this.viewportRight;
-    } else {
-        return;
+        if (!this.history.length) {
+            from = this.viewportLeft;
+            to = this.viewportRight;
+        } else if (this.viewportLeft < earliest) {
+            from = this.viewportLeft;
+            to = Math.min(earliest, this.viewportRight);
+        } else if (this.viewportRight > latest) {
+            from = Math.max(latest, this.viewportLeft);
+            to = this.viewportRight;
+        } else {
+            return;
+        }
+
+        from = Math.max(from, this.bufferStart);
+        to = Math.min(to, this.bufferEnd);
+
+        const minSpan = 2000;
+        if (to - from < minSpan) {
+            return;
+        }
+
+        this.loadHistoryWindow(from, to);
     }
-
-    from = Math.max(from, this.bufferStart);
-    to = Math.min(to, this.bufferEnd);
-
-    const minSpan = 2000;
-    if (to - from < minSpan) {
-        return;
-    }
-
-    this.loadHistoryWindow(from, to);
-}
 
     // ---------------------------------------------------
     //  Render-Loop
@@ -754,7 +887,8 @@ maybeLoadMoreHistory() {
         }
 
         if (d.audioTime) {
-            d.audioTime.textContent = `${this.audio.currentTime.toFixed(3)} s`;
+            const duration = this.audio.duration ? this.audio.duration.toFixed(3) : "N/A";
+            d.audioTime.textContent = `${this.audio.currentTime.toFixed(3)} s (${duration} s total)`;
         }
 
         if (d.history) {
@@ -774,6 +908,17 @@ maybeLoadMoreHistory() {
             } else {
                 d.lastWs.textContent = "–";
             }
+        }
+        
+        // Audio-Zustand
+        if (d.audioState) {
+            let state = "unknown";
+            if (this.audio.readyState >= 4) state = "ready";
+            else if (this.audio.readyState >= 3) state = "loaded";
+            else if (this.audio.readyState >= 2) state = "metadata";
+            else if (this.audio.readyState >= 1) state = "loading";
+            
+            d.audioState.textContent = `Audio: ${state} (${this.audio.readyState})`;
         }
     }
 

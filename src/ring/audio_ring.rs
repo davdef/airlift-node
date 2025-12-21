@@ -172,6 +172,10 @@ impl RingReader {
         let head = self.ring.head_seq();
         head.saturating_sub(self.last_seq)
     }
+    pub fn follow(&mut self) {
+        let head = self.ring.head_seq();
+        self.last_seq = head;
+    }
 }
 
 #[derive(Debug, Clone)]

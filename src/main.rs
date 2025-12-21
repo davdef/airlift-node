@@ -23,6 +23,8 @@ use config::Config;
 use crate::io::peak_analyzer::{PeakAnalyzer, PeakEvent};
 use crate::web::influx_service::InfluxHistoryService;
 use crate::web::peaks::{PeakPoint, PeakStorage};
+use crate::io::influx_out::InfluxOut;
+use crate::audio::http::start_audio_http_server;
 
 use crate::recorder::{AudioSink, FsRetention, Mp3Sink, RecorderConfig, WavSink, run_recorder};
 
@@ -148,6 +150,33 @@ fn main() -> anyhow::Result<()> {
 
     info!("[airlift] web enabled (http://localhost:3008)");
 
+// ------------------------------------------------------------
+// Audio HTTP Streaming (LIVE + Timeshift) – tiny_http
+// ------------------------------------------------------------
+{
+    let wav_dir = if let Some(rec) = &cfg.recorder {
+        PathBuf::from(&rec.wav_dir)
+    } else {
+        PathBuf::from("/data/aircheck/wav")
+    };
+
+    let ring = agent.ring.clone();
+
+    // eigener Thread, blockierend, wie vorgesehen
+    std::thread::spawn(move || {
+        if let Err(e) = start_audio_http_server(
+            "0.0.0.0:3011",          // 🔊 Audio-Port
+            wav_dir,
+            move || ring.subscribe() // RingReader-Factory
+        ) {
+            error!("[audio] HTTP server failed: {}", e);
+        }
+    });
+
+    info!("[airlift] audio HTTP enabled (http://localhost:3011)");
+}
+
+
     // ------------------------------------------------------------
     // Peaks → Storage
     // ------------------------------------------------------------
@@ -155,7 +184,14 @@ fn main() -> anyhow::Result<()> {
         let reader = agent.ring.subscribe();
         let store = peak_store.clone();
 
+let influx = InfluxOut::new(
+    "http://localhost:8086/write".into(),
+    "rfm_aircheck".into(),
+    100, // ms
+);
+
         let handler = Box::new(move |evt: &PeakEvent| {
+            influx.handle(evt);
             let peak = PeakPoint {
                 timestamp: evt.utc_ns / 1_000_000,
                 peak_l: evt.peak_l,
