@@ -115,6 +115,16 @@
             font-weight: 600;
         }
 
+        button.small {
+            padding: 4px 8px;
+            font-size: 12px;
+        }
+
+        button[disabled] {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
         button:active {
             transform: translateY(1px);
         }
@@ -147,6 +157,86 @@
             display: block;
             font-size: 16px;
         }
+
+        .flow-tree {
+            margin: 0;
+            padding-left: 20px;
+            list-style: none;
+        }
+
+        .flow-tree li {
+            margin: 6px 0;
+            padding-left: 12px;
+            position: relative;
+        }
+
+        .flow-tree li::before {
+            content: "";
+            position: absolute;
+            left: 0;
+            top: 10px;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--accent);
+        }
+
+        .flow-node {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 8px;
+            border-radius: 999px;
+            background: var(--panel-light);
+            font-size: 12px;
+        }
+
+        .flow-node .kind {
+            color: var(--muted);
+            font-size: 11px;
+            text-transform: uppercase;
+        }
+
+        .ring-bar {
+            position: relative;
+            height: 18px;
+            background: #0f1318;
+            border-radius: 999px;
+            overflow: hidden;
+            border: 1px solid #222;
+        }
+
+        .ring-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #2ecc71, #f1c40f);
+            transition: width 0.2s ease;
+        }
+
+        .ring-marker {
+            position: absolute;
+            top: -4px;
+            width: 2px;
+            height: 26px;
+            background: var(--accent);
+        }
+
+        .ring-marker.tail {
+            background: var(--warn);
+        }
+
+        .module-controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .tag {
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 999px;
+            background: var(--panel-light);
+            color: var(--muted);
+        }
     </style>
 </head>
 <body>
@@ -155,22 +245,29 @@
     <div class="meta">
         <div>Quelle: <span id="connState" class="pill">verbinde…</span></div>
         <div>Letztes Update: <span id="lastUpdate" class="muted">–</span></div>
+        <div id="controlMsg" class="muted"></div>
     </div>
 </header>
 
 <main>
     <section class="panel">
-        <h2>Module</h2>
+        <h2>Aktiver Modul-Graph</h2>
+        <div id="flowGraph" class="muted">Lade Graph…</div>
+    </section>
+
+    <section class="panel">
+        <h2>Aktive Module</h2>
         <table>
             <thead>
                 <tr>
                     <th>Modul</th>
+                    <th>Typ</th>
                     <th>Status</th>
                     <th>RX/min</th>
                     <th>TX/min</th>
-                    <th>Drops</th>
                     <th>Errors</th>
                     <th>Letzte Aktivität</th>
+                    <th>Controls</th>
                 </tr>
             </thead>
             <tbody id="moduleRows"></tbody>
@@ -178,7 +275,39 @@
     </section>
 
     <section class="panel">
+        <h2>Recorder</h2>
+        <div class="grid">
+            <div class="metric">
+                <span class="muted">Pfad</span>
+                <strong id="recPath">–</strong>
+            </div>
+            <div class="metric">
+                <span class="muted">Format</span>
+                <strong id="recFormat">–</strong>
+            </div>
+            <div class="metric">
+                <span class="muted">Retention</span>
+                <strong id="recRetention">–</strong>
+            </div>
+            <div class="metric">
+                <span class="muted">Aktuelle Datei</span>
+                <strong id="recCurrent">–</strong>
+            </div>
+        </div>
+        <div class="module-controls" id="recControls" style="margin-top: 10px;"></div>
+    </section>
+
+    <section class="panel">
         <h2>Ringbuffer</h2>
+        <div class="metric" style="margin-bottom: 10px;">
+            <span class="muted">Füllstand</span>
+            <strong id="ringFillText">–</strong>
+        </div>
+        <div class="ring-bar">
+            <div id="ringFillBar" class="ring-fill" style="width: 0%;"></div>
+            <div id="ringHeadMarker" class="ring-marker"></div>
+            <div id="ringTailMarker" class="ring-marker tail"></div>
+        </div>
         <div class="grid">
             <div class="metric">
                 <span class="muted">Fill</span>
@@ -200,28 +329,32 @@
     </section>
 
     <section class="panel">
-        <h2>Controls</h2>
-        <div class="controls">
-            <button data-action="srt_in.force_disconnect">SRT-IN trennen</button>
-            <button data-action="srt_out.reconnect">SRT-OUT reconnect</button>
-            <button data-action="reset_counters">Zähler zurücksetzen</button>
-        </div>
-        <p id="controlMsg" class="muted"></p>
+        <h2>Verfügbare Module</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Modul</th>
+                    <th>Typ</th>
+                    <th>Grund</th>
+                    <th>Aktion</th>
+                </tr>
+            </thead>
+            <tbody id="inactiveRows"></tbody>
+        </table>
     </section>
 </main>
 
 <script>
-const moduleOrder = [
-    { key: "srt_in", label: "SRT-IN" },
-    { key: "srt_out", label: "SRT-OUT" },
-    { key: "alsa_in", label: "ALSA-IN" },
-    { key: "icecast_out", label: "Icecast-Out" },
-    { key: "recorder", label: "Recorder" },
-    { key: "ring_module", label: "Ring" }
-];
-
 const lastCounters = new Map();
 const lastTimestamps = new Map();
+
+const typeOrder = {
+    input: 1,
+    buffer: 2,
+    processing: 3,
+    codec: 3,
+    output: 4
+};
 
 function timeAgo(ms) {
     if (!ms) return "–";
@@ -239,6 +372,13 @@ function statusClass(mod) {
     if (!mod.running) return "warn";
     if (mod.connected === false) return "warn";
     return "good";
+}
+
+function statusLabel(mod) {
+    if (!mod.enabled) return "aus";
+    if (!mod.running) return "inaktiv";
+    if (mod.connected === false) return "bereit";
+    return "aktiv";
 }
 
 function calcRate(key, counters, timestampMs) {
@@ -262,40 +402,193 @@ function calcRate(key, counters, timestampMs) {
     };
 }
 
-function updateUI(status) {
-    document.getElementById("lastUpdate").textContent = new Date(status.timestamp_ms).toLocaleTimeString();
+function renderControls(controls, container) {
+    container.innerHTML = "";
+    if (!controls || controls.length === 0) {
+        container.textContent = "–";
+        return;
+    }
+    controls.forEach(control => {
+        const btn = document.createElement("button");
+        btn.className = "small";
+        btn.textContent = control.label;
+        btn.disabled = !control.enabled;
+        if (control.reason) {
+            btn.title = control.reason;
+        }
+        btn.addEventListener("click", () => sendControl(control.action));
+        container.appendChild(btn);
+    });
+}
 
-    document.getElementById("ringFill").textContent = status.ring.fill;
-    document.getElementById("ringHead").textContent = status.ring.head_seq;
-    document.getElementById("ringNext").textContent = status.ring.next_seq;
-    document.getElementById("ringCap").textContent = status.ring.capacity;
+function renderRing(ring) {
+    document.getElementById("ringFill").textContent = ring.fill;
+    document.getElementById("ringHead").textContent = ring.head_seq;
+    document.getElementById("ringNext").textContent = ring.next_seq;
+    document.getElementById("ringCap").textContent = ring.capacity;
+    document.getElementById("ringFillText").textContent =
+        `${Math.round(ring.fill_ratio * 100)}% (${ring.fill} / ${ring.capacity})`;
 
+    const fillBar = document.getElementById("ringFillBar");
+    fillBar.style.width = `${ring.fill_ratio * 100}%`;
+
+    const headMarker = document.getElementById("ringHeadMarker");
+    const tailMarker = document.getElementById("ringTailMarker");
+    const capacity = ring.capacity || 1;
+    const headPos = (ring.head_index / capacity) * 100;
+    const tailPos = (ring.tail_index / capacity) * 100;
+    headMarker.style.left = `${headPos}%`;
+    tailMarker.style.left = `${tailPos}%`;
+}
+
+function renderModules(modules, timestampMs) {
     const tbody = document.getElementById("moduleRows");
     tbody.innerHTML = "";
 
-    moduleOrder.forEach(({ key, label }) => {
-        const mod = status[key];
-        if (!mod) return;
-
-        const rate = calcRate(key, mod.counters, status.timestamp_ms);
+    if (!modules || modules.length === 0) {
         const row = document.createElement("tr");
-        const dotClass = statusClass(mod);
+        row.innerHTML = `<td colspan="8" class="muted">Keine aktiven Module</td>`;
+        tbody.appendChild(row);
+        return;
+    }
+
+    const sorted = [...modules].sort((a, b) => {
+        const typeA = typeOrder[a.type] ?? 99;
+        const typeB = typeOrder[b.type] ?? 99;
+        if (typeA !== typeB) return typeA - typeB;
+        return a.label.localeCompare(b.label);
+    });
+
+    sorted.forEach(mod => {
+        const rate = calcRate(mod.id, mod.runtime.counters, timestampMs);
+        const row = document.createElement("tr");
+        const dotClass = statusClass(mod.runtime);
         row.innerHTML = `
-            <td>${label}</td>
+            <td>${mod.label}</td>
+            <td><span class="tag">${mod.type}</span></td>
             <td>
                 <span class="status-dot">
                     <span class="dot ${dotClass}"></span>
-                    ${mod.enabled ? (mod.running ? (mod.connected ? "aktiv" : "bereit") : "inaktiv") : "aus"}
+                    ${statusLabel(mod.runtime)}
                 </span>
             </td>
             <td>${rate.rx}</td>
             <td>${rate.tx}</td>
-            <td>${mod.counters.drops}</td>
-            <td>${mod.counters.errors}</td>
-            <td>${timeAgo(mod.last_activity_ms)}</td>
+            <td>${mod.runtime.counters.errors}</td>
+            <td>${timeAgo(mod.runtime.last_activity_ms)}</td>
+            <td><div class="module-controls" data-controls="${mod.id}"></div></td>
         `;
         tbody.appendChild(row);
+        renderControls(mod.controls, row.querySelector(`[data-controls="${mod.id}"]`));
     });
+}
+
+function renderInactive(inactive) {
+    const tbody = document.getElementById("inactiveRows");
+    tbody.innerHTML = "";
+
+    if (!inactive || inactive.length === 0) {
+        const row = document.createElement("tr");
+        row.innerHTML = `<td colspan="4" class="muted">Keine inaktiven Module</td>`;
+        tbody.appendChild(row);
+        return;
+    }
+
+    inactive.forEach(mod => {
+        const row = document.createElement("tr");
+        const actionCell = document.createElement("td");
+        if (mod.can_activate && mod.activate_action) {
+            const btn = document.createElement("button");
+            btn.className = "small";
+            btn.textContent = "Aktivieren";
+            btn.addEventListener("click", () => sendControl(mod.activate_action));
+            actionCell.appendChild(btn);
+        } else {
+            const btn = document.createElement("button");
+            btn.className = "small";
+            btn.textContent = "Aktivieren";
+            btn.disabled = true;
+            btn.title = "Aktivierung nicht verfügbar";
+            actionCell.appendChild(btn);
+        }
+        row.innerHTML = `
+            <td>${mod.label}</td>
+            <td><span class="tag">${mod.type}</span></td>
+            <td>${mod.reason}</td>
+        `;
+        row.appendChild(actionCell);
+        tbody.appendChild(row);
+    });
+}
+
+function renderGraph(graph) {
+    const container = document.getElementById("flowGraph");
+    container.innerHTML = "";
+    if (!graph || !graph.nodes || graph.nodes.length === 0) {
+        container.textContent = "Keine aktiven Module verbunden.";
+        return;
+    }
+
+    const nodes = new Map(graph.nodes.map(node => [node.id, node]));
+    const incoming = new Set();
+    const edgesByFrom = new Map();
+    graph.edges.forEach(edge => {
+        incoming.add(edge.to);
+        if (!edgesByFrom.has(edge.from)) {
+            edgesByFrom.set(edge.from, []);
+        }
+        edgesByFrom.get(edge.from).push(edge.to);
+    });
+
+    const roots = graph.nodes.filter(node => node.kind === "input");
+    const fallbackRoots = graph.nodes.filter(node => !incoming.has(node.id));
+    const startNodes = roots.length > 0 ? roots : fallbackRoots;
+
+    const list = document.createElement("ul");
+    list.className = "flow-tree";
+
+    const renderNode = (nodeId, parent) => {
+        const node = nodes.get(nodeId);
+        if (!node) return;
+        const li = document.createElement("li");
+        const badge = document.createElement("span");
+        badge.className = "flow-node";
+        badge.innerHTML = `<strong>${node.label}</strong> <span class="kind">${node.kind}</span>`;
+        li.appendChild(badge);
+        const children = edgesByFrom.get(nodeId) || [];
+        if (children.length > 0) {
+            const sub = document.createElement("ul");
+            sub.className = "flow-tree";
+            children.forEach(childId => renderNode(childId, sub));
+            li.appendChild(sub);
+        }
+        parent.appendChild(li);
+    };
+
+    startNodes.forEach(node => renderNode(node.id, list));
+    container.appendChild(list);
+}
+
+function renderRecorder(recorder) {
+    document.getElementById("recPath").textContent = recorder.path || "–";
+    document.getElementById("recFormat").textContent = recorder.format || "–";
+    document.getElementById("recRetention").textContent =
+        recorder.retention_days ? `${recorder.retention_days} Tage` : "–";
+    document.getElementById("recCurrent").textContent =
+        recorder.current_files && recorder.current_files.length > 0
+            ? recorder.current_files.join(" | ")
+            : "–";
+    renderControls(recorder.controls, document.getElementById("recControls"));
+}
+
+function updateUI(status) {
+    document.getElementById("lastUpdate").textContent =
+        new Date(status.timestamp_ms).toLocaleTimeString();
+    renderRing(status.ring);
+    renderModules(status.modules, status.timestamp_ms);
+    renderInactive(status.inactive_modules);
+    renderGraph(status.graph);
+    renderRecorder(status.recorder);
 }
 
 async function sendControl(action) {
@@ -313,10 +606,6 @@ async function sendControl(action) {
         msg.textContent = `Fehler: ${err}`;
     }
 }
-
-document.querySelectorAll("button[data-action]").forEach(btn => {
-    btn.addEventListener("click", () => sendControl(btn.dataset.action));
-});
 
 function connectSse() {
     const connState = document.getElementById("connState");
