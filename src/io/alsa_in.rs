@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::ring::AudioRing;
 use crate::monitoring::Metrics;
+use crate::control::ModuleState;
 
 const RATE: usize = 48_000;
 const CHANNELS: usize = 2;
@@ -34,7 +35,11 @@ use alsa::{Direction, ValueOr};
 pub fn run_alsa_in(
     ring: AudioRing,
     metrics: Arc<Metrics>,
+    state: Arc<ModuleState>,
+    ring_state: Arc<ModuleState>,
 ) -> anyhow::Result<()> {
+    state.set_running(true);
+    state.set_connected(true);
     let pcm = PCM::new("default", Direction::Capture, false)?;
 
     let period_frames: usize;
@@ -88,6 +93,8 @@ pub fn run_alsa_in(
                         TARGET_FRAMES as u64 * CHANNELS as u64,
                         Ordering::Relaxed,
                     );
+                    state.mark_rx(TARGET_FRAMES as u64);
+                    ring_state.mark_rx(1);
 
                     if seq % 10 == 0 {
                         println!("[alsa] pushed seq={}", seq);
@@ -111,8 +118,12 @@ pub fn run_alsa_in(
 pub fn run_alsa_in(
     _ring: AudioRing,
     _metrics: Arc<Metrics>,
+    state: Arc<ModuleState>,
+    _ring_state: Arc<ModuleState>,
 ) -> anyhow::Result<()> {
     log::warn!("[mock-audio] ALSA input disabled (no audio source)");
+    state.set_running(true);
+    state.set_connected(false);
 
     // absichtlich nichts tun
     loop {

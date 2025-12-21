@@ -6,10 +6,12 @@ use base64::{engine::general_purpose, Engine as _};
 use log::{info, warn};
 use std::io::Write;
 use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::codecs::opus::OggOpusEncoder;
+use crate::control::ModuleState;
 // ============================================================
 // Config
 // ============================================================
@@ -34,14 +36,25 @@ pub struct IcecastConfig {
 // Public entry
 // ============================================================
 
-pub fn run_icecast_out(mut r: RingReader, cfg: IcecastConfig) -> Result<()> {
+pub fn run_icecast_out(
+    mut r: RingReader,
+    cfg: IcecastConfig,
+    state: Arc<ModuleState>,
+    ring_state: Arc<ModuleState>,
+) -> Result<()> {
+    state.set_running(true);
     let mut backoff = Duration::from_secs(1);
 
     loop {
-        match connect_and_stream(&mut r, &cfg) {
-            Ok(_) => backoff = Duration::from_secs(1),
+        match connect_and_stream(&mut r, &cfg, state.clone(), ring_state.clone()) {
+            Ok(_) => {
+                state.set_connected(false);
+                backoff = Duration::from_secs(1)
+            }
             Err(e) => {
                 warn!("[icecast] error: {}", e);
+                state.mark_error(1);
+                state.set_connected(false);
                 warn!("[icecast] reconnect in {}s", backoff.as_secs());
                 thread::sleep(backoff);
                 backoff = (backoff * 2).min(Duration::from_secs(30));
@@ -54,7 +67,12 @@ pub fn run_icecast_out(mut r: RingReader, cfg: IcecastConfig) -> Result<()> {
 // Core loop
 // ============================================================
 
-fn connect_and_stream(r: &mut RingReader, cfg: &IcecastConfig) -> Result<()> {
+fn connect_and_stream(
+    r: &mut RingReader,
+    cfg: &IcecastConfig,
+    state: Arc<ModuleState>,
+    ring_state: Arc<ModuleState>,
+) -> Result<()> {
     let mut stream = connect(cfg)?;
     send_headers(&mut stream, cfg)?;
 
@@ -62,6 +80,7 @@ fn connect_and_stream(r: &mut RingReader, cfg: &IcecastConfig) -> Result<()> {
         "[icecast] connected → {}:{}{}",
         cfg.host, cfg.port, cfg.mount
     );
+    state.set_connected(true);
 
     let mut ogg = OggOpusEncoder::new(cfg.opus_bitrate, "airlift")?;
 
@@ -77,11 +96,15 @@ fn connect_and_stream(r: &mut RingReader, cfg: &IcecastConfig) -> Result<()> {
                 let ogg_bytes = ogg.encode_100ms(&slot.pcm)?;
                 stream.write_all(&ogg_bytes)?;
                 packets += 1;
+                state.mark_tx(1);
+                ring_state.mark_tx(1);
             }
 
             RingRead::Gap { missed } => {
                 gaps += 1;
                 missed_total += missed;
+                state.mark_drop(missed);
+                ring_state.mark_drop(missed);
             }
 
             RingRead::Empty => {
@@ -159,4 +182,3 @@ fn sanitize(s: &str) -> String {
 // ============================================================
 // Opus / Ogg encoder
 // ============================================================
-

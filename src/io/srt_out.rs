@@ -15,6 +15,8 @@ use bytes::Bytes;
 use futures_util::SinkExt;
 use tokio::time::sleep;
 
+use crate::control::{ModuleState, SrtOutState};
+
 const MAGIC: &[u8; 4] = b"RFMA";
 const INITIAL_BACKOFF_MS: u64 = 250;
 const MAX_BACKOFF_MS: u64 = 5000;
@@ -24,28 +26,37 @@ pub fn run_srt_out(
     mut reader: RingReader,
     cfg: SrtOutConfig,
     running: Arc<AtomicBool>,
+    state: Arc<SrtOutState>,
+    ring_state: Arc<ModuleState>,
 ) -> Result<()> {
     let rt = Runtime::new()?;
-    rt.block_on(async move { async_run(&mut reader, cfg, running).await })
+    rt.block_on(async move { async_run(&mut reader, cfg, running, state, ring_state).await })
 }
 
 async fn async_run(
     reader: &mut RingReader,
     cfg: SrtOutConfig,
     running: Arc<AtomicBool>,
+    state: Arc<SrtOutState>,
+    ring_state: Arc<ModuleState>,
 ) -> Result<()> {
     let mut backoff_ms = INITIAL_BACKOFF_MS;
+    state.module.set_running(true);
+    state.module.set_connected(false);
 
     while running.load(Ordering::Relaxed) {
         println!("[srt_out] connecting to {} …", cfg.target);
 
-        match connect_and_run(reader, &cfg, running.clone()).await {
+        match connect_and_run(reader, &cfg, running.clone(), state.clone(), ring_state.clone()).await {
             Ok(_) => {
                 eprintln!("[srt_out] connection ended");
+                state.module.set_connected(false);
                 backoff_ms = INITIAL_BACKOFF_MS;
             }
             Err(e) => {
                 eprintln!("[srt_out] error: {e}");
+                state.module.mark_error(1);
+                state.module.set_connected(false);
                 backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
             }
         }
@@ -57,6 +68,8 @@ async fn async_run(
         sleep(Duration::from_millis(backoff_ms)).await;
     }
 
+    state.module.set_running(false);
+    state.module.set_connected(false);
     Ok(())
 }
 
@@ -64,6 +77,8 @@ async fn connect_and_run(
     reader: &mut RingReader,
     cfg: &SrtOutConfig,
     running: Arc<AtomicBool>,
+    state: Arc<SrtOutState>,
+    ring_state: Arc<ModuleState>,
 ) -> Result<()> {
     let addr: SocketAddr = cfg.target.parse()?;
 
@@ -79,8 +94,15 @@ async fn connect_and_run(
     };
 
     println!("[srt_out] connected");
+    state.module.set_connected(true);
 
     while running.load(Ordering::Relaxed) {
+        if state.force_reconnect.swap(false, Ordering::Relaxed) {
+            eprintln!("[srt_out] reconnect requested");
+            state.module.mark_drop(1);
+            state.module.set_connected(false);
+            return Ok(());
+        }
         match reader.poll() {
             RingRead::Chunk(slot) => {
                 let pcm = &slot.pcm;
@@ -97,10 +119,14 @@ async fn connect_and_run(
                 }
 
                 tx.send((Instant::now(), Bytes::from(buf))).await?;
+                state.module.mark_tx(1);
+                ring_state.mark_tx(1);
             }
 
             RingRead::Gap { missed } => {
                 eprintln!("[srt_out] GAP: missed {}", missed);
+                state.module.mark_drop(missed);
+                ring_state.mark_drop(missed);
             }
 
             RingRead::Empty => {

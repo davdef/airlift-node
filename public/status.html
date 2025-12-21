@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Airlift Node Status</title>
+    <style>
+        :root {
+            --bg: #0b0e11;
+            --panel: #14171c;
+            --panel-light: #1c2128;
+            --text: #d8e4f0;
+            --muted: #8a97a8;
+            --good: #2ecc71;
+            --warn: #f1c40f;
+            --bad: #e74c3c;
+            --accent: #5aa0ff;
+        }
+
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--text);
+            font-family: system-ui, sans-serif;
+        }
+
+        header {
+            padding: 16px;
+            background: var(--panel);
+            border-bottom: 1px solid #222;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 20px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        header .meta {
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        main {
+            padding: 16px;
+            display: grid;
+            gap: 16px;
+        }
+
+        .panel {
+            background: var(--panel);
+            border: 1px solid #20262d;
+            border-radius: 10px;
+            padding: 12px 14px;
+        }
+
+        .panel h2 {
+            margin: 0 0 8px 0;
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+
+        th, td {
+            padding: 8px 6px;
+            text-align: left;
+            border-bottom: 1px solid #222;
+        }
+
+        th {
+            color: var(--muted);
+            font-weight: 500;
+        }
+
+        .status-dot {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--muted);
+        }
+
+        .dot.good { background: var(--good); }
+        .dot.warn { background: var(--warn); }
+        .dot.bad { background: var(--bad); }
+
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        button {
+            border: none;
+            background: var(--accent);
+            color: #0b0e11;
+            padding: 8px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        button:active {
+            transform: translateY(1px);
+        }
+
+        .pill {
+            padding: 2px 6px;
+            border-radius: 999px;
+            background: var(--panel-light);
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        .muted {
+            color: var(--muted);
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 12px;
+        }
+
+        .metric {
+            background: var(--panel-light);
+            padding: 8px;
+            border-radius: 8px;
+        }
+
+        .metric strong {
+            display: block;
+            font-size: 16px;
+        }
+    </style>
+</head>
+<body>
+<header>
+    <h1>Airlift Node Status</h1>
+    <div class="meta">
+        <div>Quelle: <span id="connState" class="pill">verbinde…</span></div>
+        <div>Letztes Update: <span id="lastUpdate" class="muted">–</span></div>
+    </div>
+</header>
+
+<main>
+    <section class="panel">
+        <h2>Module</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Modul</th>
+                    <th>Status</th>
+                    <th>RX/min</th>
+                    <th>TX/min</th>
+                    <th>Drops</th>
+                    <th>Errors</th>
+                    <th>Letzte Aktivität</th>
+                </tr>
+            </thead>
+            <tbody id="moduleRows"></tbody>
+        </table>
+    </section>
+
+    <section class="panel">
+        <h2>Ringbuffer</h2>
+        <div class="grid">
+            <div class="metric">
+                <span class="muted">Fill</span>
+                <strong id="ringFill">–</strong>
+            </div>
+            <div class="metric">
+                <span class="muted">Head Seq</span>
+                <strong id="ringHead">–</strong>
+            </div>
+            <div class="metric">
+                <span class="muted">Next Seq</span>
+                <strong id="ringNext">–</strong>
+            </div>
+            <div class="metric">
+                <span class="muted">Capacity</span>
+                <strong id="ringCap">–</strong>
+            </div>
+        </div>
+    </section>
+
+    <section class="panel">
+        <h2>Controls</h2>
+        <div class="controls">
+            <button data-action="srt_in.force_disconnect">SRT-IN trennen</button>
+            <button data-action="srt_out.reconnect">SRT-OUT reconnect</button>
+            <button data-action="reset_counters">Zähler zurücksetzen</button>
+        </div>
+        <p id="controlMsg" class="muted"></p>
+    </section>
+</main>
+
+<script>
+const moduleOrder = [
+    { key: "srt_in", label: "SRT-IN" },
+    { key: "srt_out", label: "SRT-OUT" },
+    { key: "alsa_in", label: "ALSA-IN" },
+    { key: "icecast_out", label: "Icecast-Out" },
+    { key: "recorder", label: "Recorder" },
+    { key: "ring_module", label: "Ring" }
+];
+
+const lastCounters = new Map();
+const lastTimestamps = new Map();
+
+function timeAgo(ms) {
+    if (!ms) return "–";
+    const diff = Math.max(0, Date.now() - ms);
+    const secs = Math.floor(diff / 1000);
+    if (secs < 60) return `${secs}s`;
+    const mins = Math.floor(secs / 60);
+    if (mins < 60) return `${mins}m`;
+    const hrs = Math.floor(mins / 60);
+    return `${hrs}h`;
+}
+
+function statusClass(mod) {
+    if (!mod.enabled) return "bad";
+    if (!mod.running) return "warn";
+    if (mod.connected === false) return "warn";
+    return "good";
+}
+
+function calcRate(key, counters, timestampMs) {
+    const prev = lastCounters.get(key);
+    const prevTs = lastTimestamps.get(key);
+    lastCounters.set(key, counters);
+    lastTimestamps.set(key, timestampMs);
+
+    if (!prev || !prevTs) {
+        return { rx: "–", tx: "–" };
+    }
+
+    const deltaMs = Math.max(1, timestampMs - prevTs);
+    const scale = 60000 / deltaMs;
+    const rx = Math.round((counters.rx - prev.rx) * scale);
+    const tx = Math.round((counters.tx - prev.tx) * scale);
+
+    return {
+        rx: Number.isFinite(rx) ? rx.toString() : "–",
+        tx: Number.isFinite(tx) ? tx.toString() : "–"
+    };
+}
+
+function updateUI(status) {
+    document.getElementById("lastUpdate").textContent = new Date(status.timestamp_ms).toLocaleTimeString();
+
+    document.getElementById("ringFill").textContent = status.ring.fill;
+    document.getElementById("ringHead").textContent = status.ring.head_seq;
+    document.getElementById("ringNext").textContent = status.ring.next_seq;
+    document.getElementById("ringCap").textContent = status.ring.capacity;
+
+    const tbody = document.getElementById("moduleRows");
+    tbody.innerHTML = "";
+
+    moduleOrder.forEach(({ key, label }) => {
+        const mod = status[key];
+        if (!mod) return;
+
+        const rate = calcRate(key, mod.counters, status.timestamp_ms);
+        const row = document.createElement("tr");
+        const dotClass = statusClass(mod);
+        row.innerHTML = `
+            <td>${label}</td>
+            <td>
+                <span class="status-dot">
+                    <span class="dot ${dotClass}"></span>
+                    ${mod.enabled ? (mod.running ? (mod.connected ? "aktiv" : "bereit") : "inaktiv") : "aus"}
+                </span>
+            </td>
+            <td>${rate.rx}</td>
+            <td>${rate.tx}</td>
+            <td>${mod.counters.drops}</td>
+            <td>${mod.counters.errors}</td>
+            <td>${timeAgo(mod.last_activity_ms)}</td>
+        `;
+        tbody.appendChild(row);
+    });
+}
+
+async function sendControl(action) {
+    const msg = document.getElementById("controlMsg");
+    msg.textContent = "Sende…";
+    try {
+        const res = await fetch("/api/control", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action })
+        });
+        const data = await res.json();
+        msg.textContent = data.message || "OK";
+    } catch (err) {
+        msg.textContent = `Fehler: ${err}`;
+    }
+}
+
+document.querySelectorAll("button[data-action]").forEach(btn => {
+    btn.addEventListener("click", () => sendControl(btn.dataset.action));
+});
+
+function connectSse() {
+    const connState = document.getElementById("connState");
+    const source = new EventSource("/api/events");
+
+    source.onopen = () => {
+        connState.textContent = "SSE";
+    };
+
+    source.onerror = () => {
+        connState.textContent = "Polling";
+        source.close();
+        startPolling();
+    };
+
+    source.addEventListener("status", (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            updateUI(data);
+        } catch (err) {
+            console.error(err);
+        }
+    });
+}
+
+function startPolling() {
+    setInterval(async () => {
+        try {
+            const res = await fetch("/api/status");
+            const data = await res.json();
+            updateUI(data);
+        } catch (err) {
+            console.error(err);
+        }
+    }, 2000);
+}
+
+connectSse();
+</script>
+</body>
+</html>
