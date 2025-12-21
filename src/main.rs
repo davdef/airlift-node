@@ -1,7 +1,7 @@
 // src/main.rs - KORREKTE VERSION
 
 mod agent;
-mod audio;
+mod codecs;
 mod config;
 mod io;
 mod monitoring;
@@ -20,11 +20,16 @@ use log::{debug, error, info, warn};
 
 use config::Config;
 
+use crate::codecs::CodecConfig;
+use crate::config::{HttpAudioOutputConfig, IcecastOutputConfig};
+use crate::io::http_live_out::HttpLiveOutput;
+use crate::io::http_service::HttpAudioService;
+use crate::io::http_timeshift_out::HttpTimeshiftOutput;
+use crate::io::icecast_out::run_icecast_out;
 use crate::io::peak_analyzer::{PeakAnalyzer, PeakEvent};
 use crate::web::influx_service::InfluxHistoryService;
 use crate::web::peaks::{PeakPoint, PeakStorage};
 use crate::io::influx_out::InfluxOut;
-use crate::audio::http::start_audio_http_server;
 
 use crate::recorder::{AudioSink, FsRetention, Mp3Sink, RecorderConfig, WavSink, run_recorder};
 
@@ -153,27 +158,56 @@ fn main() -> anyhow::Result<()> {
 // ------------------------------------------------------------
 // Audio HTTP Streaming (LIVE + Timeshift) – tiny_http
 // ------------------------------------------------------------
-{
+if cfg.http_audio.enabled {
     let wav_dir = if let Some(rec) = &cfg.recorder {
         PathBuf::from(&rec.wav_dir)
     } else {
         PathBuf::from("/data/aircheck/wav")
     };
 
+    let wav_dir = Arc::new(wav_dir);
     let ring = agent.ring.clone();
+    let ring_factory: Arc<dyn Fn() -> crate::ring::RingReader + Send + Sync> =
+        Arc::new(move || ring.subscribe());
 
-    // eigener Thread, blockierend, wie vorgesehen
-    std::thread::spawn(move || {
-        if let Err(e) = start_audio_http_server(
-            "0.0.0.0:3011",          // 🔊 Audio-Port
-            wav_dir,
-            move || ring.subscribe() // RingReader-Factory
-        ) {
-            error!("[audio] HTTP server failed: {}", e);
+    let mut service = HttpAudioService::new(cfg.http_audio.bind.clone())?;
+
+    for output in &cfg.http_audio.outputs {
+        match output {
+            HttpAudioOutputConfig::Live { route, codec } => {
+                service.register_output(Arc::new(HttpLiveOutput::new(
+                    route.clone(),
+                    codec.clone(),
+                    ring_factory.clone(),
+                )));
+            }
+            HttpAudioOutputConfig::Timeshift { route, codec } => {
+                service.register_output(Arc::new(HttpTimeshiftOutput::new(
+                    route.clone(),
+                    codec.clone(),
+                    wav_dir.clone(),
+                )));
+            }
         }
-    });
+    }
 
-    info!("[airlift] audio HTTP enabled (http://localhost:3011)");
+    service.start()?;
+    info!("[airlift] audio HTTP enabled ({})", cfg.http_audio.bind);
+}
+
+// ------------------------------------------------------------
+// Icecast Outputs
+// ------------------------------------------------------------
+{
+    let outputs = collect_icecast_outputs(&cfg);
+    for output in outputs.into_iter().filter(|o| o.enabled) {
+        let ring = agent.ring.subscribe();
+        std::thread::spawn(move || {
+            if let Err(e) = run_icecast_out(ring, output) {
+                error!("[icecast] fatal: {}", e);
+            }
+        });
+    }
 }
 
 
@@ -241,6 +275,55 @@ let influx = InfluxOut::new(
     info!("[airlift] shutdown complete");
 
     Ok(())
+}
+
+fn collect_icecast_outputs(cfg: &Config) -> Vec<IcecastOutputConfig> {
+    let mut outputs = cfg.icecast_outputs.clone();
+
+    if let Some(legacy) = &cfg.icecast_out {
+        outputs.push(IcecastOutputConfig {
+            enabled: legacy.enabled,
+            host: legacy.host.clone(),
+            port: legacy.port,
+            mount: legacy.mount.clone(),
+            user: legacy.user.clone(),
+            password: legacy.password.clone(),
+            name: legacy.name.clone(),
+            description: legacy.description.clone(),
+            genre: legacy.genre.clone(),
+            public: legacy.public,
+            codec: CodecConfig::Opus {
+                bitrate: legacy.bitrate,
+                vendor: "airlift".to_string(),
+            },
+        });
+    }
+
+    #[cfg(feature = "mp3")]
+    if let Some(legacy) = &cfg.mp3_out {
+        outputs.push(IcecastOutputConfig {
+            enabled: legacy.enabled,
+            host: legacy.host.clone(),
+            port: legacy.port,
+            mount: legacy.mount.clone(),
+            user: legacy.user.clone(),
+            password: legacy.password.clone(),
+            name: legacy.name.clone(),
+            description: legacy.description.clone(),
+            genre: legacy.genre.clone(),
+            public: legacy.public,
+            codec: CodecConfig::Mp3 {
+                bitrate: legacy.bitrate,
+            },
+        });
+    }
+
+    #[cfg(not(feature = "mp3"))]
+    if cfg.mp3_out.as_ref().map(|c| c.enabled).unwrap_or(false) {
+        warn!("[icecast] mp3_out configured but mp3 feature disabled");
+    }
+
+    outputs
 }
 
 fn start_monitoring(

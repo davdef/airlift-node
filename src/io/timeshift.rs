@@ -1,4 +1,4 @@
-// src/audio/timeshift.rs - KORRIGIERT (hound 3.5.1 compatible)
+// src/io/timeshift.rs - KORRIGIERT (hound 3.5.1 compatible)
 
 use std::path::PathBuf;
 use std::thread::sleep;
@@ -10,15 +10,13 @@ use log::{debug, info, warn};
 /// Audio-Parameter (müssen zu Recorder passen)
 const SAMPLE_RATE: u32 = 48_000;
 const CHANNELS: u16 = 2;
-const BYTES_PER_SAMPLE: u16 = 2;
-const FRAME_BYTES: usize = (CHANNELS * BYTES_PER_SAMPLE) as usize;
 
 /// Blockierender Timeshift-Reader mit hound.
-/// Ruft `on_pcm(bytes)` für jedes gelesene PCM-Chunk auf.
+/// Ruft `on_pcm(samples)` für jedes gelesene PCM-Chunk auf.
 pub fn stream_timeshift(
     wav_dir: PathBuf,
     start_ts_ms: u64,
-    mut on_pcm: impl FnMut(&[u8]) -> anyhow::Result<()>,
+    mut on_pcm: impl FnMut(&[i16]) -> anyhow::Result<()>,
 ) -> anyhow::Result<()> {
     info!("[timeshift] starting at ts={} ms", start_ts_ms);
     
@@ -100,7 +98,7 @@ pub fn stream_timeshift(
         // Streaming-Loop für diese Stunde
         let mut bytes_read_total = 0;
         let mut chunk_count = 0;
-        let mut samples_buf = vec![0i16; 4096]; // 2KB Samples = 4KB Bytes
+        let mut samples_buf = vec![0i16; 4800 * 2]; // 100ms stereo
         
         loop {
             // Samples mit hound lesen - KORRIGIERT für hound 3.5.1
@@ -145,17 +143,16 @@ pub fn stream_timeshift(
                 continue;
             }
             
-            // i16 Samples zu u8 Bytes konvertieren
             let samples_slice = &samples_buf[..samples_read];
-            let bytes = bytemuck::cast_slice::<i16, u8>(samples_slice);
+            let bytes_len = samples_read * 2;
             
-            bytes_read_total += bytes.len();
+            bytes_read_total += bytes_len;
             chunk_count += 1;
             
             // Debug: Ersten Chunk analysieren
             if chunk_count == 1 {
                 debug!("[timeshift] first chunk: {} samples = {} bytes", 
-                      samples_read, bytes.len());
+                      samples_read, bytes_len);
                 if samples_read >= 4 {
                     debug!("[timeshift] first few samples: {:?}", 
                           &samples_slice[0..4]);
@@ -169,7 +166,7 @@ pub fn stream_timeshift(
             }
             
             // PCM-Daten an Callback übergeben
-            if let Err(e) = on_pcm(bytes) {
+            if let Err(e) = on_pcm(samples_slice) {
                 warn!("[timeshift] callback error: {}", e);
                 return Ok(());
             }

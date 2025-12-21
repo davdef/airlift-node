@@ -10,7 +10,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::audio::timeshift::stream_timeshift;
+use crate::io::timeshift::stream_timeshift;
 use crate::ring::{RingRead, RingReader};
 
 #[derive(Deserialize)]
@@ -172,7 +172,8 @@ pub async fn historical_audio_stream(
         move || {
             let mut ff_stdin = ff_stdin;
             let result = stream_timeshift(wav_dir, start_ts_ms, |pcm| {
-                ff_stdin.write_all(pcm)?;
+                let bytes = bytemuck::cast_slice::<i16, u8>(pcm);
+                ff_stdin.write_all(bytes)?;
                 ff_stdin.flush()?;
                 Ok(())
             });

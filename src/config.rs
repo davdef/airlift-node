@@ -1,5 +1,7 @@
 use serde::Deserialize;
 
+use crate::codecs::CodecConfig;
+
 // ---------- Ring ----------
 #[derive(Debug, Deserialize, Clone)]
 pub struct RingConfig {
@@ -42,7 +44,23 @@ pub struct Mp3ConfigToml {
     pub bitrate: u32,
 }
 
-// ---------- Icecast (Opus) ----------
+// ---------- Icecast Output ----------
+#[derive(Debug, Deserialize, Clone)]
+pub struct IcecastOutputConfig {
+    pub enabled: bool,
+    pub host: String,
+    pub port: u16,
+    pub mount: String,
+    pub user: String,
+    pub password: String,
+    pub name: String,
+    pub description: String,
+    pub genre: String,
+    pub public: bool,
+    pub codec: CodecConfig,
+}
+
+// ---------- Icecast (legacy Opus) ----------
 #[derive(Debug, Deserialize, Clone)]
 pub struct IcecastOutConfig {
     pub enabled: bool,
@@ -58,7 +76,7 @@ pub struct IcecastOutConfig {
     pub public: bool,
 }
 
-// ---------- MP3 ----------
+// ---------- MP3 (legacy) ----------
 #[derive(Debug, Deserialize, Clone)]
 pub struct Mp3OutConfig {
     pub enabled: bool,
@@ -103,12 +121,57 @@ pub struct InfluxHistoryConfig {
     pub bucket: String,
 }
 
+// ---------- HTTP Audio ----------
+#[derive(Debug, Deserialize, Clone)]
+pub struct HttpAudioConfig {
+    pub enabled: bool,
+    pub bind: String,
+    #[serde(default)]
+    pub outputs: Vec<HttpAudioOutputConfig>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum HttpAudioOutputConfig {
+    Live { route: String, codec: CodecConfig },
+    Timeshift { route: String, codec: CodecConfig },
+}
+
+impl Default for HttpAudioConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            bind: "0.0.0.0:3011".to_string(),
+            outputs: vec![
+                HttpAudioOutputConfig::Live {
+                    route: "/audio/live".to_string(),
+                    codec: CodecConfig::Opus {
+                        bitrate: 128_000,
+                        vendor: "airlift-http".to_string(),
+                    },
+                },
+                HttpAudioOutputConfig::Timeshift {
+                    route: "/audio/at".to_string(),
+                    codec: CodecConfig::Opus {
+                        bitrate: 128_000,
+                        vendor: "airlift-http".to_string(),
+                    },
+                },
+            ],
+        }
+    }
+}
+
 // ---------- Root ----------
 #[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     pub ring: RingConfig,
     pub alsa_in: Option<AlsaInConfig>,
     pub udp_out: Option<UdpOutConfig>,
+    #[serde(default)]
+    pub icecast_outputs: Vec<IcecastOutputConfig>,
+    #[serde(default)]
+    pub http_audio: HttpAudioConfig,
     pub icecast_out: Option<IcecastOutConfig>,
     pub mp3_out: Option<Mp3OutConfig>,
     pub srt_in: Option<SrtInConfig>,

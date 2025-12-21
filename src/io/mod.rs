@@ -4,10 +4,12 @@ pub mod alsa_in;
 pub mod recorder;
 pub mod icecast_out;
 pub mod icecast_meta_out;
-#[cfg(feature = "mp3")]
-pub mod mp3_out;
 pub mod srt_in;
 pub mod srt_out;
 pub mod peak_analyzer;
 pub mod broadcast_http;
 pub mod influx_out;
+pub mod http_live_out;
+pub mod http_service;
+pub mod http_timeshift_out;
+pub mod timeshift;
