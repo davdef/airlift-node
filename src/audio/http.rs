@@ -7,7 +7,7 @@ use std::sync::{
     mpsc, Arc,
 };
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use log::{error, info, warn};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
@@ -253,124 +253,6 @@ fn handle_live_simple(req: tiny_http::Request, ring_factory: Arc<dyn Fn() -> Rin
     if req.respond(response).is_err() {
         stop.store(true, Ordering::Relaxed);
     }
-}
-
-// ============================================================================
-// Ogg/Opus Encoder (same as icecast_out.rs)
-// ============================================================================
-
-struct OggOpusEncoder {
-    enc: opus::Encoder,
-    pw: ogg::writing::PacketWriter<Vec<u8>>,
-    serial: u32,
-    gp: u64,
-}
-
-impl OggOpusEncoder {
-    fn new(bitrate: i32) -> anyhow::Result<Self> {
-        use opus::{Application, Channels, Encoder};
-        
-        let mut enc = Encoder::new(48_000, Channels::Stereo, Application::Audio)
-            .map_err(|e| anyhow::anyhow!("Opus encoder error: {}", e))?;
-        
-        enc.set_bitrate(opus::Bitrate::Bits(bitrate))
-            .map_err(|e| anyhow::anyhow!("Opus bitrate error: {}", e))?;
-
-        let serial = rand::random::<u32>();
-        let mut pw = ogg::writing::PacketWriter::new(Vec::with_capacity(64 * 1024));
-
-        // Write Ogg/Opus headers immediately (crucial for browser!)
-        pw.write_packet(
-            opus_head().into(),
-            serial,
-            ogg::PacketWriteEndInfo::EndPage,
-            0,
-        )?;
-        
-        pw.write_packet(
-            opus_tags("airlift-http").into(),
-            serial,
-            ogg::PacketWriteEndInfo::EndPage,
-            0,
-        )?;
-
-        Ok(Self {
-            enc,
-            pw,
-            serial,
-            gp: 0,
-        })
-    }
-
-    fn encode_100ms(&mut self, pcm: &[i16]) -> anyhow::Result<Vec<u8>> {
-        const OPUS_FRAME_SAMPLES_PER_CH: usize = 960; // 20 ms @ 48k
-        const CHANNELS: usize = 2;
-        const OPUS_FRAME_I16: usize = OPUS_FRAME_SAMPLES_PER_CH * CHANNELS;
-
-        if pcm.len() % OPUS_FRAME_I16 != 0 {
-            return Err(anyhow::anyhow!(
-                "PCM len {} not multiple of {} (20ms stereo frame)",
-                pcm.len(),
-                OPUS_FRAME_I16
-            ));
-        }
-
-        let mut opus_buf = [0u8; 4000];
-        let mut frames = pcm.chunks_exact(OPUS_FRAME_I16);
-        let n_frames = frames.len();
-        
-        if n_frames == 0 {
-            return Ok(Vec::new());
-        }
-        
-        let last = n_frames - 1;
-
-        for (i, frame) in frames.by_ref().enumerate() {
-            let n = self.enc.encode(frame, &mut opus_buf)
-                .map_err(|e| anyhow::anyhow!("Opus encode error: {}", e))?;
-
-            self.gp += OPUS_FRAME_SAMPLES_PER_CH as u64;
-
-            let end = if i == last {
-                ogg::PacketWriteEndInfo::EndPage
-            } else {
-                ogg::PacketWriteEndInfo::NormalPacket
-            };
-
-            self.pw.write_packet(
-                opus_buf[..n].to_vec().into_boxed_slice(),
-                self.serial,
-                end,
-                self.gp,
-            )?;
-        }
-
-        // Get encoded data without resetting writer
-        let mut out = Vec::new();
-        std::mem::swap(&mut out, self.pw.inner_mut());
-        Ok(out)
-    }
-}
-
-fn opus_head() -> Vec<u8> {
-    let mut p = Vec::new();
-    p.extend_from_slice(b"OpusHead");
-    p.push(1); // version
-    p.push(2); // channels
-    p.extend_from_slice(&312u16.to_le_bytes()); // pre-skip
-    p.extend_from_slice(&48_000u32.to_le_bytes());
-    p.extend_from_slice(&0i16.to_le_bytes()); // gain
-    p.push(0); // mapping family 0 (stereo)
-    p
-}
-
-fn opus_tags(vendor: &str) -> Vec<u8> {
-    let mut p = Vec::new();
-    p.extend_from_slice(b"OpusTags");
-    p.extend_from_slice(&(vendor.len() as u32).to_le_bytes());
-    p.extend_from_slice(vendor.as_bytes());
-    p.extend_from_slice(&0u32.to_le_bytes()); // no comments
-    p
 }
 
 // ============================================================================

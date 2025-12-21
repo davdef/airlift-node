@@ -2,6 +2,7 @@
 
 mod agent;
 mod audio;
+mod codecs;
 mod config;
 mod io;
 mod monitoring;
