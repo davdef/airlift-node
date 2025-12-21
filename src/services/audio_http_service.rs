@@ -1,0 +1,27 @@
+use log::{error, info};
+use std::path::PathBuf;
+
+use crate::audio::http::start_audio_http_server;
+use crate::ring::AudioRing;
+
+pub struct AudioHttpService {
+    bind: String,
+}
+
+impl AudioHttpService {
+    pub fn new(bind: impl Into<String>) -> Self {
+        Self { bind: bind.into() }
+    }
+
+    pub fn start(&self, wav_dir: PathBuf, ring: AudioRing) {
+        let bind = self.bind.clone();
+
+        std::thread::spawn(move || {
+            if let Err(e) = start_audio_http_server(&bind, wav_dir, move || ring.subscribe()) {
+                error!("[audio] HTTP server failed: {}", e);
+            }
+        });
+
+        info!("[airlift] audio HTTP enabled (http://{})", bind);
+    }
+}

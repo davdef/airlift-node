@@ -1,34 +1,34 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 // ---------- Ring ----------
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct RingConfig {
     pub slots: usize,
     pub prealloc_samples: usize,
 }
 
 // ---------- ALSA ----------
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct AlsaInConfig {
     pub enabled: bool,
     pub device: String,
 }
 
 // ---------- UDP ----------
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct UdpOutConfig {
     pub enabled: bool,
     pub target: String,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct SrtOutConfig {
     pub enabled: bool,
     pub target: String, // "host:port"
     pub latency_ms: u32,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RecorderConfigToml {
     pub enabled: bool,
     pub wav_dir: String,
@@ -36,14 +36,14 @@ pub struct RecorderConfigToml {
     pub mp3: Option<Mp3ConfigToml>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Mp3ConfigToml {
     pub dir: String,
     pub bitrate: u32,
 }
 
 // ---------- Icecast (Opus) ----------
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct IcecastOutConfig {
     pub enabled: bool,
     pub host: String,
@@ -59,7 +59,7 @@ pub struct IcecastOutConfig {
 }
 
 // ---------- MP3 ----------
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Mp3OutConfig {
     pub enabled: bool,
     pub host: String,
@@ -75,26 +75,26 @@ pub struct Mp3OutConfig {
 }
 
 // ---------- Recorder ----------
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct HourlyRecorderConfig {
     pub enabled: bool,
     pub base_dir: String,
 }
 
 // ---------- Monitoring ----------
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct MonitoringConfig {
     pub http_port: u16,
 }
 
 // ---------- Metadata ----------
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct MetadataConfig {
     pub default: String,
 }
 
 // ---------- Influx History ----------
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct InfluxHistoryConfig {
     pub enabled: bool,
     pub base_url: String,
@@ -104,7 +104,7 @@ pub struct InfluxHistoryConfig {
 }
 
 // ---------- Root ----------
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Config {
     pub ring: RingConfig,
     pub alsa_in: Option<AlsaInConfig>,
@@ -121,7 +121,7 @@ pub struct Config {
     pub influx_history: Option<InfluxHistoryConfig>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct SrtInConfig {
     pub enabled: bool,
     pub listen: String,

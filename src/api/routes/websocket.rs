@@ -1,14 +1,14 @@
+use axum::extract::ws::Message;
 use axum::{
     extract::{State, WebSocketUpgrade},
     response::Response,
 };
-use axum::extract::ws::Message;
 use futures::{SinkExt, StreamExt};
 use log::{debug, warn};
 use serde::Serialize;
 use tokio::sync::broadcast;
 
-use crate::web::WebState;
+use crate::api::ApiState;
 
 #[derive(Serialize)]
 struct WsPeak {
@@ -17,44 +17,37 @@ struct WsPeak {
     silence: bool,
 }
 
-pub async fn websocket_handler(ws: WebSocketUpgrade, State(state): State<WebState>) -> Response {
+pub async fn websocket_handler(ws: WebSocketUpgrade, State(state): State<ApiState>) -> Response {
     ws.on_upgrade(move |socket| handle(socket, state))
 }
 
-async fn handle(mut socket: axum::extract::ws::WebSocket, state: WebState) {
+async fn handle(mut socket: axum::extract::ws::WebSocket, state: ApiState) {
     let mut rx = state.peak_store.subscribe();
 
     debug!("[ws] client connected");
 
     loop {
         tokio::select! {
-
-Some(msg) = socket.next() => {
-    match msg {
-        Ok(Message::Ping(payload)) => {
-            // 🔥 WICHTIG
-            if socket.send(Message::Pong(payload)).await.is_err() {
-                break;
+            Some(msg) = socket.next() => {
+                match msg {
+                    Ok(Message::Ping(payload)) => {
+                        if socket.send(Message::Pong(payload)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(Message::Close(frame)) => {
+                        debug!("[ws] client closed connection: {:?}", frame);
+                        break;
+                    }
+                    Ok(Message::Pong(_)) => {}
+                    Ok(Message::Text(_)) => {}
+                    Ok(Message::Binary(_)) => {}
+                    Err(err) => {
+                        warn!("[ws] receive error: {}", err);
+                        break;
+                    }
+                }
             }
-        }
-        Ok(Message::Close(frame)) => {
-            debug!("[ws] client closed connection: {:?}", frame);
-            break;
-        }
-        Ok(Message::Pong(_)) => {
-            // optional: ignore
-        }
-        Ok(Message::Text(_)) => {
-            // optional: client commands später
-        }
-        Ok(Message::Binary(_)) => {}
-        Err(err) => {
-            warn!("[ws] receive error: {}", err);
-            break;
-        }
-    }
-}
-
             result = rx.recv() => {
                 match result {
                     Ok(peak) => {
