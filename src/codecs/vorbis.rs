@@ -15,8 +15,12 @@ pub struct VorbisEncoder {
 impl VorbisEncoder {
     pub fn new(_quality: f32) -> Result<Self> {
         // vorbis 0.1 kennt nur feste Presets
-        let enc = VorbisEnc::new(2, PCM_SAMPLE_RATE, VorbisQuality::Quality)
-            .map_err(|e| anyhow!("vorbis init failed: {:?}", e))?;
+        let enc = VorbisEnc::new(
+            2,
+            PCM_SAMPLE_RATE as u64,
+            VorbisQuality::Quality,
+        )
+        .map_err(|e| anyhow!("vorbis init failed: {:?}", e))?;
 
         Ok(Self {
             enc,

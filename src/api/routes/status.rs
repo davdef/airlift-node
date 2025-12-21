@@ -18,7 +18,7 @@ use crate::config::Config;
 use crate::control::{ControlState, ModuleSnapshot, now_ms};
 use crate::ring::RingStats;
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct RingStatus {
     pub capacity: usize,
     pub head_seq: u64,
@@ -29,7 +29,7 @@ pub struct RingStatus {
     pub fill_ratio: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct ControlInfo {
     pub action: String,
     pub label: String,
@@ -37,7 +37,7 @@ pub struct ControlInfo {
     pub reason: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct ModuleInfo {
     pub id: String,
     pub label: String,
@@ -47,7 +47,7 @@ pub struct ModuleInfo {
     pub controls: Vec<ControlInfo>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct InactiveModule {
     pub id: String,
     pub label: String,
@@ -58,26 +58,26 @@ pub struct InactiveModule {
     pub activate_action: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct GraphNode {
     pub id: String,
     pub label: String,
     pub kind: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct GraphEdge {
     pub from: String,
     pub to: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct GraphStatus {
     pub nodes: Vec<GraphNode>,
     pub edges: Vec<GraphEdge>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct RecorderStatus {
     pub enabled: bool,
     pub path: String,
@@ -87,7 +87,7 @@ pub struct RecorderStatus {
     pub controls: Vec<ControlInfo>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct StatusResponse {
     pub timestamp_ms: u64,
     pub ring: RingStatus,
