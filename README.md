@@ -46,3 +46,35 @@ flowchart LR
 - **Bootstrap & Runtime**: `src/main.rs`, `src/bootstrap.rs`
 - **Konfiguration**: `src/config.rs` (TOML)
 - **Module-Registry**: `src/api/registry.rs`
+
+## Konfiguration
+
+Die Konfiguration erfolgt über eine TOML-Datei (Default: `config.toml`). Beim
+Start kann eine alternative Datei als erstes Argument übergeben werden:
+
+```
+airlift-node ./config.vps.toml
+```
+
+### Beispielkonfiguration
+
+Die Datei `config.sample.toml` ist eine kommentierte Referenz für die aktuelle
+Graph-Pipeline. Wichtige Punkte:
+
+- **Graph aktivieren**: Sobald `ringbuffers`, `inputs`, `outputs` oder
+  `services` gesetzt sind, wird die Graph-Pipeline genutzt.
+- **Genau ein Ringbuffer & ein Input**: Aktuell ist genau ein Ringbuffer und
+  genau ein Input-Typ erlaubt.
+- **Input-Typen**:
+  - `srt` (Listener, benötigt `listen` + `latency_ms`)
+  - `http_stream`/`icecast` (benötigt `url`, erwartet Ogg/Opus)
+- **Buffer-Verknüpfung**: `buffer` muss exakt der Ringbuffer-ID entsprechen
+  (im Sample: `main`).
+- **Codecs**: Jeder Output benötigt ein `codec_id`, das in `[codecs.*]`
+  definiert ist.
+
+### VPS-Konfiguration (Icecast)
+
+Die Datei `config.vps.toml` ist für den Betrieb mit dem RFM-Icecast-Stream
+vorbereitet (`https://icecast.radiorfm.de/rfm.ogg`, 96 kbit/s Opus). Sie kann
+die lokale `config.toml` ersetzen oder direkt beim Start angegeben werden.

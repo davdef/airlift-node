@@ -138,6 +138,9 @@ pub struct ServiceConfig {
     pub input: Option<String>,
     pub buffer: Option<String>,
     pub codec_id: Option<String>,
+    pub url: Option<String>,
+    pub db: Option<String>,
+    pub interval_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -565,20 +568,39 @@ fn validate_services(
             }
         }
 
+        let allow_multiple = matches!(
+            service.service_type.as_str(),
+            "broadcast_http" | "influx_out"
+        );
+
         match service.service_type.as_str() {
             "audio_http" => {
                 require_service_field(id, "buffer", service.buffer.as_ref())?;
                 require_service_field(id, "codec_id", service.codec_id.as_ref())?;
             }
             "monitoring" => {}
+            "peak_analyzer" => {
+                require_service_field(id, "buffer", service.buffer.as_ref())?;
+                require_service_field(id, "interval_ms", service.interval_ms.as_ref())?;
+            }
+            "influx_out" => {
+                require_service_field(id, "url", service.url.as_ref())?;
+                require_service_field(id, "db", service.db.as_ref())?;
+                require_service_field(id, "interval_ms", service.interval_ms.as_ref())?;
+            }
+            "broadcast_http" => {
+                require_service_field(id, "url", service.url.as_ref())?;
+                require_service_field(id, "interval_ms", service.interval_ms.as_ref())?;
+            }
             other => {
                 anyhow::bail!("service '{}' has unsupported type '{}'", id, other);
             }
         }
 
-        if seen_types
-            .insert(service.service_type.clone(), id)
-            .is_some()
+        if !allow_multiple
+            && seen_types
+                .insert(service.service_type.clone(), id)
+                .is_some()
         {
             anyhow::bail!(
                 "multiple services of type '{}' are not supported",

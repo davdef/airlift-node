@@ -1,63 +1,68 @@
-# Airlift Node - Beispielkonfiguration (strukturierte Pipeline)
+# Airlift Node - Beispielkonfiguration (Graph-Pipeline)
+#
+# Hinweis:
+# - Sobald "ringbuffers/inputs/outputs/services" gesetzt sind, wird die Graph-Pipeline genutzt.
+# - Es wird aktuell genau ein Ringbuffer und genau ein Input-Typ unterstützt.
+# - Für Icecast/HTTP-Streams wird ein Ogg/Opus-Stream erwartet.
 
 [ring]
+# Legacy-Einstellung (wird nur genutzt, wenn keine Graph-Pipeline aktiv ist)
 slots = 6000
 prealloc_samples = 9600
-chunk_ms = 100
 
-[inputs.srt_listener]
+[monitoring]
+# HTTP-Port für /metrics und /health (Monitoring-Service)
+http_port = 8087
+
+[ringbuffers.main]
+# Ringbuffer-ID ist "main" und muss in input/output/service "buffer" referenziert werden.
+slots = 6000
+chunk_ms = 100
+prealloc_samples = 9600
+
+[inputs.source]
+# Typ: "srt" (Listener) oder "http_stream"/"icecast" (HTTP/Icecast-Stream)
+# Nur ein Input-Typ ist gleichzeitig erlaubt.
 type = "srt"
 enabled = true
+buffer = "main"
+
+# SRT-Listener (für type = "srt")
 listen = "0.0.0.0:9000"
 latency_ms = 200
 streamid = "airlift"
-buffer = "ring.main"
 
-[inputs.alsa_studio]
-type = "alsa"
+# Icecast/HTTP-Stream (für type = "http_stream" oder "icecast")
+# url = "https://example.com/stream.ogg"
+
+[services.monitoring]
+# Startet den Monitoring-Service (nutzt [monitoring].http_port)
+type = "monitoring"
+enabled = true
+
+[services.audio_http]
+# Optionaler Audio-HTTP-Endpunkt (z. B. für Debug/Preview)
+type = "audio_http"
 enabled = false
-device = "hw:0"
-buffer = "ring.main"
-
-[ringbuffers.main]
-slots = 6000
-chunk_ms = 100
-prealloc_samples = 9600
-
-[consumers.peak_analyzer]
-kind = "module"
-input = "srt_listener"
-buffer = "ring.main"
-interval_ms = 100
-
-[consumers.broadcast_http]
-kind = "service"
-input = "srt_listener"
-buffer = "ring.main"
-url = "http://localhost:3006/api/broadcast"
-interval_ms = 100
-
-[consumers.influx_out]
-kind = "service"
-input = "srt_listener"
-buffer = "ring.main"
-url = "http://localhost:8086/write"
-db = "rfm_aircheck"
-interval_ms = 100
+# codec_id = "pcm_s16le" # bei encoded Inputs (Icecast) angeben
 
 [outputs.srt_out]
-kind = "output"
-input = "srt_listener"
-buffer = "ring.main"
-codec = "pcm_s16le"
+# Optionaler SRT-Ausgang
+type = "srt_out"
+enabled = false
+input = "source"
+buffer = "main"
+codec_id = "pcm_s16le"
 target = "example.com:9000"
 latency_ms = 200
 
 [outputs.icecast_out]
-kind = "output"
-input = "srt_listener"
-buffer = "ring.main"
-codec = "opus_ogg"
+# Optionaler Icecast-Ausgang (Ogg/MP3)
+type = "icecast_out"
+enabled = false
+input = "source"
+buffer = "main"
+codec_id = "opus_ogg"
 host = "icecast.local"
 port = 8000
 mount = "/airlift"
@@ -70,19 +75,24 @@ genre = "news"
 public = false
 
 [outputs.recorder]
-kind = "output"
-input = "srt_listener"
-buffer = "ring.main"
-codec = "wav_archive"
+# Recorder schreibt den Encoded-Stream direkt (z. B. WAV oder OGG)
+type = "recorder"
+enabled = true
+input = "source"
+buffer = "main"
+# Für SRT/PCM: "wav_archive" | Für Icecast/HTTP-Streams: "opus_ogg"
+codec_id = "wav_archive"
 wav_dir = "/opt/rfm/airlift-node/aircheck/wav"
 retention_days = 7
 
 [codecs.pcm_s16le]
+# PCM-Codec (raw)
 type = "pcm"
 sample_rate = 48000
 channels = 2
 
 [codecs.opus_ogg]
+# Opus Ogg (Icecast-kompatibel)
 type = "opus_ogg"
 sample_rate = 48000
 channels = 2
@@ -91,6 +101,7 @@ bitrate = 128000
 application = "audio"
 
 [codecs.wav_archive]
+# PCM in WAV-Container (Recorder)
 type = "pcm"
 sample_rate = 48000
 channels = 2

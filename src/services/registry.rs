@@ -104,4 +104,21 @@ pub fn register_graph_services(
             ],
         });
     }
+
+    for (id, service) in graph.services.iter() {
+        if !service.enabled {
+            continue;
+        }
+
+        if matches!(
+            service.service_type.as_str(),
+            "peak_analyzer" | "influx_out" | "broadcast_http"
+        ) {
+            registry.register_service(ServiceDescriptor {
+                id: id.clone(),
+                service_type: service.service_type.clone(),
+                endpoints: Vec::new(),
+            });
+        }
+    }
 }

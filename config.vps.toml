@@ -1,75 +1,46 @@
-# Airlift Node - Beispielkonfiguration (strukturierte Pipeline)
+# Airlift Node - VPS-Konfiguration (Icecast/HTTP-Stream als Input)
+# Überschreibt die lokale config.toml für den Betrieb gegen den RFM-Stream.
 
-[ring]
-slots = 6000
-prealloc_samples = 9600
-chunk_ms = 100
-
-[inputs.srt_listener]
-type = "srt"
-enabled = true
-listen = "0.0.0.0:9000"
-latency_ms = 200
-streamid = "airlift"
-buffer = "ring.main"
+[monitoring]
+http_port = 8087
 
 [ringbuffers.main]
 slots = 6000
 chunk_ms = 100
 prealloc_samples = 9600
 
-[consumers.peak_analyzer]
-kind = "module"
-input = "srt_listener"
-buffer = "ring.main"
-interval_ms = 100
+[inputs.rfm_icecast]
+type = "http_stream"
+enabled = true
+buffer = "main"
+url = "https://icecast.radiorfm.de/rfm.ogg"
 
-[consumers.broadcast_http]
-kind = "service"
-input = "srt_listener"
-buffer = "ring.main"
-url = "http://localhost:3006/api/broadcast"
-interval_ms = 100
-
-[consumers.influx_out]
-kind = "service"
-input = "srt_listener"
-buffer = "ring.main"
-url = "http://localhost:8086/write"
-db = "rfm_aircheck"
-interval_ms = 100
-
-[outputs.srt_out]
-kind = "output"
-input = "srt_listener"
-buffer = "ring.main"
-codec = "pcm_s16le"
-target = "example.com:9000"
-latency_ms = 200
+[services.monitoring]
+type = "monitoring"
+enabled = true
 
 [outputs.recorder]
-kind = "output"
-input = "srt_listener"
-buffer = "ring.main"
-codec = "wav_archive"
-wav_dir = "/opt/rfm/airlift-node/aircheck/wav"
+# Recorder schreibt den Ogg/Opus-Stream direkt auf Platte
+type = "recorder"
+enabled = true
+input = "rfm_icecast"
+buffer = "main"
+codec_id = "opus_ogg"
+wav_dir = "/opt/rfm/airlift-node/aircheck/ogg"
 retention_days = 7
-
-[codecs.pcm_s16le]
-type = "pcm"
-sample_rate = 48000
-channels = 2
 
 [codecs.opus_ogg]
 type = "opus_ogg"
 sample_rate = 48000
 channels = 2
 frame_size_ms = 20
-bitrate = 128000
+bitrate = 96000
 application = "audio"
 
-[codecs.wav_archive]
-type = "pcm"
-sample_rate = 48000
-channels = 2
-container = "wav"
+[influx_history]
+# Optional: History-Abfragen aus InfluxDB
+enabled = true
+base_url = "http://localhost:8086"
+token = ""
+org = ""
+bucket = "rfm_aircheck"
