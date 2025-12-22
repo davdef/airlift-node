@@ -19,6 +19,13 @@ class AircheckPlayer {
         this.lastHistoryRequest = null;
         this.pendingHistoryWindow = null;
 
+        // === WEBSOCKET RECONNECT ===
+        this.ws = null;
+        this.wsReconnectAttempts = 0;
+        this.wsReconnectTimer = null;
+        this.wsReconnectBaseDelay = 1000;
+        this.wsReconnectMaxDelay = 30_000;
+
         // === VIEWPORT ===
         this.minVisibleDuration = 5_000;           // 5s
         this.maxVisibleDuration = 2 * 60 * 60_000; // 2h harte Obergrenze
@@ -224,13 +231,29 @@ class AircheckPlayer {
     //  WebSocket (Live-Peaks)
     // ---------------------------------------------------
     setupWebSocket() {
+        if (this.wsReconnectTimer) {
+            clearTimeout(this.wsReconnectTimer);
+            this.wsReconnectTimer = null;
+        }
         const proto = location.protocol === "https:" ? "wss://" : "ws://";
         const wsUrl = proto + window.location.host + '/ws';
+        if (this.ws) {
+            this.ws.onopen = null;
+            this.ws.onerror = null;
+            this.ws.onclose = null;
+            this.ws.onmessage = null;
+            try {
+                this.ws.close();
+            } catch {
+                // ignore close errors
+            }
+        }
         this.ws = new WebSocket(wsUrl);
 
         this.ws.onopen = () => {
             console.log("[WS] connected");
             this.setStatus("WebSocket verbunden");
+            this.wsReconnectAttempts = 0;
         };
 
         this.ws.onerror = (err) => {
@@ -241,7 +264,7 @@ class AircheckPlayer {
         this.ws.onclose = () => {
             console.warn("[WS] closed");
             this.setStatus("WebSocket getrennt");
-            // optional: Reconnect-Logik später
+            this.scheduleWebSocketReconnect();
         };
 
         this.ws.onmessage = (e) => {
@@ -277,6 +300,22 @@ class AircheckPlayer {
             this.trimHistory();
 
         };
+    }
+
+    scheduleWebSocketReconnect() {
+        if (this.wsReconnectTimer) return;
+        const attempt = this.wsReconnectAttempts + 1;
+        const delay = Math.min(
+            this.wsReconnectBaseDelay * Math.pow(2, this.wsReconnectAttempts),
+            this.wsReconnectMaxDelay
+        );
+        this.wsReconnectAttempts = attempt;
+        console.warn(`[WS] reconnecting in ${delay}ms (attempt ${attempt})`);
+        this.setStatus(`WebSocket reconnect in ${Math.ceil(delay / 1000)}s`);
+        this.wsReconnectTimer = setTimeout(() => {
+            this.wsReconnectTimer = null;
+            this.setupWebSocket();
+        }, delay);
     }
 
     // ---------------------------------------------------
