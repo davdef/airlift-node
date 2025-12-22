@@ -814,8 +814,6 @@ fn start_graph_outputs(
 ) -> anyhow::Result<()> {
     let ring_state = context.control_state.ring.clone();
     let ring = context.agent.ring.clone();
-    let encoded_ring = context.agent.encoded_ring.clone();
-    let uses_encoded_ring = graph_has_encoded_input(graph);
 
     for (_id, output) in graph.outputs.iter() {
         if !output.enabled {
@@ -826,19 +824,15 @@ fn start_graph_outputs(
             .codec_id
             .clone()
             .ok_or_else(|| anyhow::anyhow!("output requires codec_id"))?;
-        let encoded_reader = if uses_encoded_ring {
-            GraphEncodedSource::from_encoded(encoded_ring.subscribe())
-        } else {
-            let (codec_handle, codec_instance) =
-                context.codec_registry.build_codec_handle(&codec_id)?;
-            codec_instance.mark_ready();
-            let reader = ring.subscribe();
-            GraphEncodedSource::Encoded(EncodedRingSource::new(
-                reader,
-                codec_handle,
-                codec_instance,
-            ))
-        };
+        let (codec_handle, codec_instance) =
+            context.codec_registry.build_codec_handle(&codec_id)?;
+        codec_instance.mark_ready();
+        let reader = ring.subscribe();
+        let encoded_reader = GraphEncodedSource::Encoded(EncodedRingSource::new(
+            reader,
+            codec_handle,
+            codec_instance,
+        ));
 
         match output.output_type.as_str() {
             "srt_out" => {
@@ -981,32 +975,37 @@ fn start_graph_services(
     if let Some((_id, service)) = audio_http {
         if service.enabled {
             let audio_bind = "0.0.0.0:3011";
-            if graph_has_encoded_input(graph) {
-                let ring = context.agent.encoded_ring.clone();
-                let wav_dir = context.wav_dir.clone();
-                let codec_id = service.codec_id.clone();
-                let codec_registry = context.codec_registry.clone();
-                std::thread::spawn(move || {
-                    if let Err(e) = crate::audio::http::start_audio_http_server(
-                        audio_bind,
-                        wav_dir,
-                        move || GraphEncodedSource::from_encoded(ring.subscribe()),
-                        codec_id,
-                        codec_registry,
-                    ) {
-                        error!("[audio_http] server failed: {}", e);
-                    }
-                });
-                info!("[airlift] audio HTTP enabled (http://{})", audio_bind);
-            } else {
-                let audio_http_service = crate::services::AudioHttpService::new(audio_bind);
-                audio_http_service.start(
-                    context.wav_dir.clone(),
-                    context.agent.ring.clone(),
-                    service.codec_id.clone(),
-                    context.codec_registry.clone(),
-                );
-            }
+            let ring = context.agent.ring.clone();
+            let wav_dir = context.wav_dir.clone();
+            let codec_id = service
+                .codec_id
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("service requires codec_id"))?;
+            let codec_registry = context.codec_registry.clone();
+            let (codec_handle, codec_instance) = context
+                .codec_registry
+                .build_codec_handle(&codec_id)?;
+            codec_instance.mark_ready();
+            std::thread::spawn(move || {
+                let handle = codec_handle.clone();
+                let instance = codec_instance.clone();
+                if let Err(e) = crate::audio::http::start_audio_http_server(
+                    audio_bind,
+                    wav_dir,
+                    move || {
+                        GraphEncodedSource::Encoded(EncodedRingSource::new(
+                            ring.subscribe(),
+                            handle.clone(),
+                            instance.clone(),
+                        ))
+                    },
+                    codec_id,
+                    codec_registry,
+                ) {
+                    error!("[audio_http] server failed: {}", e);
+                }
+            });
+            info!("[airlift] audio HTTP enabled (http://{})", audio_bind);
         }
     }
 
@@ -1087,11 +1086,4 @@ fn start_graph_services(
     }
 
     Ok(())
-}
-
-fn graph_has_encoded_input(graph: &ValidatedGraphConfig) -> bool {
-    graph
-        .inputs
-        .values()
-        .any(|input| matches!(input.input_type.as_str(), "icecast" | "http_stream"))
 }

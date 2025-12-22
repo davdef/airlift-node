@@ -115,7 +115,7 @@ pub struct StatusResponse {
 pub async fn get_status(State(state): State<ApiState>) -> Json<StatusResponse> {
     Json(build_status(
         &state.control_state,
-        &select_ring_stats(&state),
+        &state.ring.stats(),
         &state.config,
         &state.registry,
         &state.codec_registry,
@@ -127,7 +127,6 @@ pub async fn events(
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
     let control_state = state.control_state.clone();
     let ring = state.ring.clone();
-    let encoded_ring = state.encoded_ring.clone();
     let config = state.config.clone();
     let registry = state.registry.clone();
     let codec_registry = state.codec_registry.clone();
@@ -135,11 +134,7 @@ pub async fn events(
     let stream = IntervalStream::new(interval(Duration::from_secs(1))).map(move |_| {
         let status = build_status(
             &control_state,
-            &if config.uses_icecast_input() {
-                encoded_ring.stats()
-            } else {
-                ring.stats()
-            },
+            &ring.stats(),
             &config,
             &registry,
             &codec_registry,
@@ -149,14 +144,6 @@ pub async fn events(
     });
 
     Sse::new(stream)
-}
-
-fn select_ring_stats(state: &ApiState) -> RingStats {
-    if state.config.uses_icecast_input() {
-        state.encoded_ring.stats()
-    } else {
-        state.ring.stats()
-    }
 }
 
 fn build_status(
