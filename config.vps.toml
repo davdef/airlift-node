@@ -19,6 +19,16 @@ url = "https://icecast.radiorfm.de/rfm.ogg"
 type = "monitoring"
 enabled = true
 
+[services.audio_http]
+type = "audio_http"
+enabled = true
+codec_id = "opus_ogg"
+
+[services.peak_analyzer]
+type = "peak_analyzer"
+enabled = true
+interval_ms = 100
+
 [outputs.recorder]
 # Recorder schreibt den Ogg/Opus-Stream direkt auf Platte
 type = "recorder"
