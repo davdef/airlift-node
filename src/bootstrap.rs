@@ -999,7 +999,7 @@ fn start_graph_services(
                             instance.clone(),
                         ))
                     },
-                    codec_id,
+                    Some(codec_id),
                     codec_registry,
                 ) {
                     error!("[audio_http] server failed: {}", e);
