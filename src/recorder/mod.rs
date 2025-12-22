@@ -1,22 +1,23 @@
 // src/recorder/mod.rs
 
-mod sink_wav;
-mod sink_mp3;
 mod recorder;
 mod retention_fs;
 
-pub use sink_wav::WavSink;
-pub use sink_mp3::Mp3Sink;
-pub use recorder::{run_recorder};
-
-use crate::ring::audio_ring::AudioSlot;
 use std::time::Duration;
+
+use crate::codecs::EncodedFrame;
+
+pub use recorder::run_recorder;
 pub use retention_fs::FsRetention;
 
-pub trait AudioSink: Send + Sync {
-    fn on_hour_change(&mut self, hour: u64) -> anyhow::Result<()>;
-    fn on_chunk(&mut self, slot: &AudioSlot) -> anyhow::Result<()>;
-    fn maintain_continuity(&mut self) -> anyhow::Result<()>;
+pub enum EncodedRead {
+    Frame { frame: EncodedFrame, utc_ns: u64 },
+    Gap { missed: u64 },
+    Empty,
+}
+
+pub trait EncodedFrameSource: Send {
+    fn poll(&mut self) -> anyhow::Result<EncodedRead>;
 }
 
 pub trait RetentionPolicy: Send + Sync {
@@ -26,5 +27,4 @@ pub trait RetentionPolicy: Send + Sync {
 pub struct RecorderConfig {
     pub idle_sleep: Duration,
     pub retention_interval: Duration,
-    pub continuity_interval: Duration,
 }

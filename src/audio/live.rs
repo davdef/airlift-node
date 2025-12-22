@@ -1,36 +1,38 @@
 // src/audio/live.rs
-use std::process::{Command, Stdio};
-use crate::ring::{RingRead, RingReader};
 use std::io::Write;
 
-pub fn stream_live(mut reader: RingReader) -> anyhow::Result<()> {
-    let mut ffmpeg = Command::new("ffmpeg")
-        .args([
-            "-loglevel", "quiet",
-            "-f", "s16le",
-            "-ar", "48000",
-            "-ac", "2",
-            "-i", "pipe:0",
-            "-f", "mp3",
-            "pipe:1",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            eprintln!("[audio] ffmpeg spawn failed: {}", e);
-            e
-        })?;
+use crate::codecs::EncodedFrame;
 
-    let mut stdin = ffmpeg.stdin.take().unwrap();
+pub enum EncodedRead {
+    Frame(EncodedFrame),
+    Gap { missed: u64 },
+    Empty,
+}
+
+pub trait EncodedFrameSource: Send {
+    fn poll(&mut self) -> anyhow::Result<EncodedRead>;
+}
+
+pub fn stream_live(mut reader: impl EncodedFrameSource) -> anyhow::Result<()> {
+    let mut stdout = std::io::stdout();
 
     loop {
-        match reader.poll() {
-            RingRead::Chunk(slot) => {
-                let bytes = bytemuck::cast_slice::<i16, u8>(&slot.pcm);
-                stdin.write_all(bytes)?;
+        match reader.poll()? {
+            EncodedRead::Frame(frame) => {
+                stdout.write_all(&frame.payload)?;
             }
-            _ => std::thread::sleep(std::time::Duration::from_millis(5)),
+            EncodedRead::Gap { missed } => {
+                eprintln!("[audio] live gap missed={}", missed);
+            }
+            EncodedRead::Empty => std::thread::sleep(std::time::Duration::from_millis(5)),
         }
+    }
+}
+
+impl EncodedFrameSource for crate::ring::RingReader {
+    fn poll(&mut self) -> anyhow::Result<EncodedRead> {
+        Err(anyhow::anyhow!(
+            "PCM ring reader not supported for encoded outputs"
+        ))
     }
 }

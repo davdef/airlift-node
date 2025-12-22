@@ -11,9 +11,8 @@ use tokio::time::{Duration, interval};
 use tokio_stream::{StreamExt, wrappers::IntervalStream};
 
 use crate::api::{ApiState, Registry, ServiceDescriptor};
-use crate::codecs::registry::{
-    CodecInstanceSnapshot, CodecRegistry, DEFAULT_CODEC_OPUS_OGG_ID, DEFAULT_CODEC_PCM_ID,
-};
+use crate::codecs::CodecInfo;
+use crate::codecs::registry::{CodecInstanceSnapshot, CodecRegistry};
 use crate::config::Config;
 use crate::control::{ControlState, ModuleSnapshot, now_ms};
 use crate::ring::RingStats;
@@ -45,6 +44,10 @@ pub struct ModuleInfo {
     pub module_type: String,
     pub runtime: ModuleSnapshot,
     pub controls: Vec<ControlInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codec_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codec_info: Option<CodecInfo>,
 }
 
 #[derive(Serialize, Clone)]
@@ -204,6 +207,8 @@ fn build_status(
         "buffer",
         ring_module.clone(),
         build_controls("ring", &ring_module, "Nicht unterstützt", None),
+        None,
+        None,
     );
     add_module_if_active(
         &mut modules,
@@ -212,6 +217,8 @@ fn build_status(
         "input",
         srt_in.clone(),
         srt_in_controls.clone(),
+        None,
+        None,
     );
     add_module_if_active(
         &mut modules,
@@ -220,7 +227,13 @@ fn build_status(
         "input",
         alsa_in.clone(),
         build_controls("alsa_in", &alsa_in, "Nicht unterstützt", None),
+        None,
+        None,
     );
+    let srt_out_codec_id = config.srt_out.as_ref().and_then(|cfg| cfg.codec_id.clone());
+    let srt_out_codec_info = srt_out_codec_id
+        .as_deref()
+        .and_then(|id| codec_registry.get_info(id).ok());
     add_module_if_active(
         &mut modules,
         "srt_out",
@@ -228,7 +241,16 @@ fn build_status(
         "output",
         srt_out.clone(),
         srt_out_controls.clone(),
+        srt_out_codec_id,
+        srt_out_codec_info,
     );
+    let icecast_codec_id = config
+        .icecast_out
+        .as_ref()
+        .and_then(|cfg| cfg.codec_id.clone());
+    let icecast_codec_info = icecast_codec_id
+        .as_deref()
+        .and_then(|id| codec_registry.get_info(id).ok());
     add_module_if_active(
         &mut modules,
         "icecast_out",
@@ -236,6 +258,8 @@ fn build_status(
         "output",
         icecast_out.clone(),
         build_controls("icecast_out", &icecast_out, "Nicht unterstützt", None),
+        icecast_codec_id,
+        icecast_codec_info,
     );
     add_module_if_active(
         &mut modules,
@@ -244,6 +268,8 @@ fn build_status(
         "output",
         recorder.clone(),
         recorder_controls.clone(),
+        None,
+        None,
     );
 
     for snapshot in codec_snapshots.iter() {
@@ -259,6 +285,8 @@ fn build_status(
                     "Nicht unterstützt",
                     None,
                 ),
+                codec_id: None,
+                codec_info: None,
             });
         }
     }
@@ -343,6 +371,8 @@ fn add_module_if_active(
     module_type: &str,
     snapshot: ModuleSnapshot,
     controls: Vec<ControlInfo>,
+    codec_id: Option<String>,
+    codec_info: Option<CodecInfo>,
 ) {
     if snapshot.enabled && snapshot.running {
         modules.push(ModuleInfo {
@@ -351,6 +381,8 @@ fn add_module_if_active(
             module_type: module_type.to_string(),
             runtime: snapshot,
             controls,
+            codec_id,
+            codec_info,
         });
     }
 }
@@ -467,11 +499,7 @@ fn build_graph(
         "SRT-OUT",
         srt_out,
         ring_active,
-        config
-            .srt_out
-            .as_ref()
-            .and_then(|cfg| cfg.codec_id.clone())
-            .unwrap_or_else(|| DEFAULT_CODEC_PCM_ID.to_string()),
+        config.srt_out.as_ref().and_then(|cfg| cfg.codec_id.clone()),
         codec_map,
     );
 
@@ -485,8 +513,7 @@ fn build_graph(
         config
             .icecast_out
             .as_ref()
-            .and_then(|cfg| cfg.codec_id.clone())
-            .unwrap_or_else(|| DEFAULT_CODEC_OPUS_OGG_ID.to_string()),
+            .and_then(|cfg| cfg.codec_id.clone()),
         codec_map,
     );
 
@@ -526,7 +553,7 @@ fn add_output_to_graph(
     label: &str,
     snapshot: &ModuleSnapshot,
     ring_active: bool,
-    codec_id: String,
+    codec_id: Option<String>,
     codec_map: &HashMap<String, CodecInstanceSnapshot>,
 ) {
     if !(snapshot.enabled && snapshot.running) {
@@ -539,12 +566,20 @@ fn add_output_to_graph(
         kind: "output".to_string(),
     });
 
-    let codec_snapshot = codec_map.get(&codec_id);
-    let codec_active = codec_snapshot
-        .map(|snapshot| snapshot.runtime_state.enabled && snapshot.runtime_state.running)
-        .unwrap_or(false);
-
     if ring_active {
+        let Some(codec_id) = codec_id else {
+            edges.push(GraphEdge {
+                from: "ring".to_string(),
+                to: id.to_string(),
+            });
+            return;
+        };
+
+        let codec_snapshot = codec_map.get(&codec_id);
+        let codec_active = codec_snapshot
+            .map(|snapshot| snapshot.runtime_state.enabled && snapshot.runtime_state.running)
+            .unwrap_or(false);
+
         if codec_active {
             let codec_node_id = format!("codec:{}", codec_id);
             if !nodes.iter().any(|node| node.id == codec_node_id) {

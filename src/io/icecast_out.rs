@@ -1,8 +1,7 @@
 // src/io/icecast_out.rs
 
-use crate::codecs::AudioCodec;
-use crate::codecs::registry::{CodecRegistry, DEFAULT_CODEC_OPUS_OGG_ID};
-use crate::ring::{RingRead, RingReader};
+use crate::codecs::registry::CodecRegistry;
+use crate::codecs::{CodecInfo, ContainerKind, EncodedFrame};
 use anyhow::{anyhow, Context, Result};
 use base64::{engine::general_purpose, Engine as _};
 use log::{info, warn};
@@ -34,12 +33,25 @@ pub struct IcecastConfig {
     pub codec_id: Option<String>,
 }
 
+pub enum EncodedRead {
+    Frame(EncodedFrame),
+    Gap { missed: u64 },
+    Empty,
+}
+
+pub trait EncodedFrameSource: Send {
+    fn poll(&mut self) -> Result<EncodedRead>;
+    fn fill(&self) -> u64 {
+        0
+    }
+}
+
 // ============================================================
 // Public entry
 // ============================================================
 
 pub fn run_icecast_out(
-    mut r: RingReader,
+    mut r: impl EncodedFrameSource + 'static,
     cfg: IcecastConfig,
     state: Arc<ModuleState>,
     ring_state: Arc<ModuleState>,
@@ -47,15 +59,12 @@ pub fn run_icecast_out(
 ) -> Result<()> {
     state.set_running(true);
     let mut backoff = Duration::from_secs(1);
+    let codec_id = require_codec_id(cfg.codec_id.as_deref())?;
+    let codec_info = codec_registry.get_info(codec_id)?;
+    validate_icecast_codec(codec_id, &codec_info)?;
 
     loop {
-        match connect_and_stream(
-            &mut r,
-            &cfg,
-            state.clone(),
-            ring_state.clone(),
-            codec_registry.clone(),
-        ) {
+        match connect_and_stream(&mut r, &cfg, state.clone(), ring_state.clone()) {
             Ok(_) => {
                 state.set_connected(false);
                 backoff = Duration::from_secs(1)
@@ -77,14 +86,16 @@ pub fn run_icecast_out(
 // ============================================================
 
 fn connect_and_stream(
-    r: &mut RingReader,
+    r: &mut impl EncodedFrameSource,
     cfg: &IcecastConfig,
     state: Arc<ModuleState>,
     ring_state: Arc<ModuleState>,
-    codec_registry: Arc<CodecRegistry>,
 ) -> Result<()> {
+    let first_frame = wait_for_frame(r)?;
+    let content_type = content_type_for_container(&first_frame.info)?;
+
     let mut stream = connect(cfg)?;
-    send_headers(&mut stream, cfg)?;
+    send_headers(&mut stream, cfg, content_type)?;
 
     info!(
         "[icecast] connected → {}:{}{}",
@@ -92,46 +103,34 @@ fn connect_and_stream(
     );
     state.set_connected(true);
 
-    let codec_id = cfg
-        .codec_id
-        .as_deref()
-        .unwrap_or(DEFAULT_CODEC_OPUS_OGG_ID);
-    let (mut codec, codec_instance) = codec_registry.build_codec(codec_id)?;
-    codec_instance.mark_ready();
-
     // --- Stats ---
     let mut gaps: u64 = 0;
     let mut missed_total: u64 = 0;
     let mut packets: u64 = 0;
     let mut last_log = Instant::now();
 
+    stream.write_all(&first_frame.payload)?;
+    packets += 1;
+    state.mark_tx(1);
+    ring_state.mark_tx(1);
+
     loop {
-        match r.poll() {
-            RingRead::Chunk(slot) => {
-                let frames = codec.encode(&slot.pcm).map_err(|e| {
-                    codec_instance.mark_error(&e.to_string());
-                    e
-                })?;
-                let mut bytes = 0u64;
-                let frame_count = frames.len() as u64;
-                for frame in frames {
-                    bytes += frame.payload.len() as u64;
-                    stream.write_all(&frame.payload)?;
-                    packets += 1;
-                    state.mark_tx(1);
-                    ring_state.mark_tx(1);
-                }
-                codec_instance.mark_encoded(1, frame_count, bytes);
+        match r.poll()? {
+            EncodedRead::Frame(frame) => {
+                stream.write_all(&frame.payload)?;
+                packets += 1;
+                state.mark_tx(1);
+                ring_state.mark_tx(1);
             }
 
-            RingRead::Gap { missed } => {
+            EncodedRead::Gap { missed } => {
                 gaps += 1;
                 missed_total += missed;
                 state.mark_drop(missed);
                 ring_state.mark_drop(missed);
             }
 
-            RingRead::Empty => {
+            EncodedRead::Empty => {
                 thread::sleep(Duration::from_millis(5));
             }
         }
@@ -164,14 +163,14 @@ fn connect(cfg: &IcecastConfig) -> Result<TcpStream> {
         .next()
         .ok_or_else(|| anyhow!("DNS resolve failed"))?;
 
-    let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))
-        .context("connect failed")?;
+    let stream =
+        TcpStream::connect_timeout(&addr, Duration::from_secs(5)).context("connect failed")?;
 
     stream.set_nodelay(true).ok();
     Ok(stream)
 }
 
-fn send_headers(stream: &mut TcpStream, cfg: &IcecastConfig) -> Result<()> {
+fn send_headers(stream: &mut TcpStream, cfg: &IcecastConfig, content_type: &str) -> Result<()> {
     let auth = format!("{}:{}", cfg.user, cfg.password);
     let auth = general_purpose::STANDARD.encode(auth);
 
@@ -180,7 +179,7 @@ fn send_headers(stream: &mut TcpStream, cfg: &IcecastConfig) -> Result<()> {
     let hdr = format!(
         "SOURCE {} HTTP/1.0\r\n\
          Authorization: Basic {}\r\n\
-         Content-Type: audio/ogg\r\n\
+         Content-Type: {}\r\n\
          Ice-Name: {}\r\n\
          Ice-Description: {}\r\n\
          Ice-Genre: {}\r\n\
@@ -189,6 +188,7 @@ fn send_headers(stream: &mut TcpStream, cfg: &IcecastConfig) -> Result<()> {
          \r\n",
         cfg.mount,
         auth,
+        content_type,
         sanitize(&cfg.name),
         sanitize(&cfg.description),
         sanitize(&cfg.genre),
@@ -203,6 +203,49 @@ fn sanitize(s: &str) -> String {
     s.replace('\r', " ").replace('\n', " ")
 }
 
-// ============================================================
-// Opus / Ogg encoder
-// ============================================================
+fn content_type_for_container(info: &CodecInfo) -> Result<&'static str> {
+    match info.container {
+        ContainerKind::Raw => Ok("application/octet-stream"),
+        ContainerKind::Ogg => Ok("application/ogg"),
+        ContainerKind::Mpeg => Ok("audio/mpeg"),
+        ContainerKind::Rtp => Ok("application/rtp"),
+    }
+}
+
+fn wait_for_frame(r: &mut impl EncodedFrameSource) -> Result<EncodedFrame> {
+    loop {
+        match r.poll()? {
+            EncodedRead::Frame(frame) => return Ok(frame),
+            EncodedRead::Gap { missed } => {
+                warn!(
+                    "[icecast] gap while waiting for first frame: missed {}",
+                    missed
+                );
+            }
+            EncodedRead::Empty => {
+                thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+}
+
+fn require_codec_id(codec_id: Option<&str>) -> Result<&str> {
+    codec_id.ok_or_else(|| anyhow!("missing codec_id for icecast output"))
+}
+
+fn validate_icecast_codec(codec_id: &str, info: &CodecInfo) -> Result<()> {
+    match info.container {
+        ContainerKind::Ogg | ContainerKind::Mpeg => Ok(()),
+        ContainerKind::Raw | ContainerKind::Rtp => Err(anyhow!(
+            "icecast output requires Ogg/MPEG container (codec_id '{}', container {:?})",
+            codec_id,
+            info.container
+        )),
+    }
+}
+
+impl EncodedFrameSource for crate::ring::RingReader {
+    fn poll(&mut self) -> Result<EncodedRead> {
+        Err(anyhow!("PCM ring reader not supported for encoded outputs"))
+    }
+}

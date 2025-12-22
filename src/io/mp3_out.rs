@@ -1,8 +1,7 @@
 // src/io/mp3_out.rs
-use crate::codecs::AudioCodec;
-use crate::codecs::registry::{CodecRegistry, DEFAULT_CODEC_MP3_ID};
+use crate::codecs::registry::CodecRegistry;
 use crate::ring::{RingRead, RingReader};
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use log::info;
 use std::io::Write;
 use std::net::{TcpStream, ToSocketAddrs};
@@ -22,7 +21,6 @@ pub struct Mp3Config {
     pub bitrate: u32,
     pub codec_id: Option<String>,
 }
-
 
 pub fn run_mp3_out(
     mut r: RingReader,
@@ -65,7 +63,7 @@ fn connect_and_stream_mp3(
 
     info!("[mp3] Connected to {}:{}{}", cfg.host, cfg.port, cfg.mount);
 
-    let codec_id = cfg.codec_id.as_deref().unwrap_or(DEFAULT_CODEC_MP3_ID);
+    let codec_id = require_codec_id(cfg.codec_id.as_deref())?;
     let (mut codec, codec_instance) = codec_registry.build_codec(codec_id)?;
     codec_instance.mark_ready();
     let mut packets = 0;
@@ -150,7 +148,7 @@ fn connect_mp3(cfg: &Mp3Config) -> Result<TcpStream> {
 }
 
 fn send_mp3_headers(stream: &mut TcpStream, cfg: &Mp3Config) -> Result<()> {
-    use base64::{Engine as _, engine::general_purpose};
+    use base64::{engine::general_purpose, Engine as _};
 
     let auth = format!("{}:{}", cfg.user, cfg.password);
     let auth = general_purpose::STANDARD.encode(auth);
@@ -177,4 +175,8 @@ fn send_mp3_headers(stream: &mut TcpStream, cfg: &Mp3Config) -> Result<()> {
     std::thread::sleep(Duration::from_millis(100));
 
     Ok(())
+}
+
+fn require_codec_id(codec_id: Option<&str>) -> Result<&str> {
+    codec_id.ok_or_else(|| anyhow!("missing codec_id for mp3 output"))
 }
