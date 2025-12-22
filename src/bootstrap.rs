@@ -842,6 +842,7 @@ fn start_graph_outputs(
 
         match output.output_type.as_str() {
             "srt_out" => {
+                context.control_state.srt_out.module.set_enabled(true);
                 let cfg = crate::config::SrtOutConfig {
                     enabled: output.enabled,
                     target: output.target.clone().unwrap_or_default(),
@@ -866,6 +867,7 @@ fn start_graph_outputs(
                 });
             }
             "icecast_out" => {
+                context.control_state.icecast_out.set_enabled(true);
                 let cfg = crate::io::icecast_out::IcecastConfig {
                     host: output.host.clone().unwrap_or_default(),
                     port: output.port.unwrap_or_default(),
@@ -912,6 +914,7 @@ fn start_graph_outputs(
                 });
             }
             "recorder" => {
+                context.control_state.recorder.set_enabled(true);
                 let base_dir = PathBuf::from(output.wav_dir.clone().unwrap_or_default());
                 let codec_info = context.codec_registry.get_info(&codec_id)?;
                 if matches!(codec_info.container, crate::codecs::ContainerKind::Rtp) {
@@ -959,6 +962,17 @@ fn start_graph_services(
     running: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     let peak_events = Arc::new(PeakEventFanout::default());
+    let peak_store = context.peak_store.clone();
+    peak_events.add_handler(Box::new(move |evt: &PeakEvent| {
+        peak_store.add_peak(PeakPoint {
+            timestamp: evt.utc_ns / 1_000_000,
+            peak_l: evt.peak_l,
+            peak_r: evt.peak_r,
+            rms: None,
+            lufs: None,
+            silence: evt.silence,
+        });
+    }));
 
     let audio_http = graph
         .services
