@@ -1,3 +1,5 @@
+// src/io/icecast_in.rs
+
 use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -5,6 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
 use log::{info, warn};
+
 use symphonia::core::audio::{AudioBufferRef, SampleBuffer};
 use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::errors::Error as SymphoniaError;
@@ -33,6 +36,7 @@ pub fn run_icecast_in(
     state.set_connected(false);
 
     let mut backoff = INITIAL_BACKOFF;
+
     while running.load(Ordering::Relaxed) {
         match connect_and_stream(
             &ring,
@@ -91,16 +95,16 @@ fn connect_and_stream(
 
     let reader = BufReader::with_capacity(READ_BUFFER_SIZE, response.into_reader());
     let source = NonSeekableSource::new(reader);
+
     let mss = MediaSourceStream::new(
         Box::new(source),
         MediaSourceStreamOptions {
-            seekable: false,
-            ..Default::default()
+            buffer_len: READ_BUFFER_SIZE,
         },
     );
 
     let mut hint = Hint::new();
-    if let Some(ext) = url.split('.').last().filter(|ext| ext.len() <= 8) {
+    if let Some(ext) = url.split('.').last().filter(|e| e.len() <= 8) {
         hint.with_extension(ext);
     }
 
@@ -112,10 +116,12 @@ fn connect_and_stream(
             &MetadataOptions::default(),
         )
         .context("failed to probe icecast stream")?;
+
     let track = probed
         .format
         .default_track()
         .ok_or_else(|| anyhow!("no audio tracks found"))?;
+
     let mut decoder = get_codecs()
         .make(&track.codec_params, &DecoderOptions::default())
         .context("failed to create decoder")?;
@@ -155,16 +161,17 @@ fn connect_and_stream(
 
 fn decode_to_pcm_i16(buffer: AudioBufferRef<'_>) -> Result<Vec<i16>> {
     let spec = *buffer.spec();
-    let mut sample_buf = SampleBuffer::<f32>::new(buffer.capacity() as u64, spec);
-    sample_buf.copy_interleaved_ref(buffer);
-    let channels = sample_buf.spec().channels.count();
-    let in_rate = sample_buf.spec().rate;
-    let frames = sample_buf.frames();
-    let samples = sample_buf.samples();
+    let channels = spec.channels.count();
+    let in_rate = spec.rate;
+    let frames = buffer.frames();
 
     if channels == 0 || frames == 0 {
         return Ok(Vec::new());
     }
+
+    let mut sample_buf = SampleBuffer::<f32>::new(frames as u64, spec);
+    sample_buf.copy_interleaved_ref(buffer);
+    let samples = sample_buf.samples();
 
     let out_frames = if in_rate == PCM_SAMPLE_RATE {
         frames
@@ -174,20 +181,26 @@ fn decode_to_pcm_i16(buffer: AudioBufferRef<'_>) -> Result<Vec<i16>> {
     };
 
     let mut out = Vec::with_capacity(out_frames * 2);
+
     for out_idx in 0..out_frames {
         let src_pos = if in_rate == PCM_SAMPLE_RATE {
             out_idx as f64
         } else {
             out_idx as f64 * in_rate as f64 / PCM_SAMPLE_RATE as f64
         };
+
         let base = src_pos.floor() as usize;
         let frac = (src_pos - base as f64) as f32;
+
         let idx0 = base.min(frames.saturating_sub(1));
         let idx1 = (base + 1).min(frames.saturating_sub(1));
+
         let (l0, r0) = stereo_from_frame(samples, channels, idx0);
         let (l1, r1) = stereo_from_frame(samples, channels, idx1);
+
         let left = l0 + (l1 - l0) * frac;
         let right = r0 + (r1 - r0) * frac;
+
         out.push(float_to_i16(left));
         out.push(float_to_i16(right));
     }
@@ -199,8 +212,8 @@ fn stereo_from_frame(samples: &[f32], channels: usize, frame: usize) -> (f32, f3
     match channels {
         0 => (0.0, 0.0),
         1 => {
-            let value = samples[frame];
-            (value, value)
+            let v = samples[frame];
+            (v, v)
         }
         _ => {
             let base = frame * channels;
@@ -231,7 +244,9 @@ impl PcmChunker {
         if pcm.is_empty() {
             return;
         }
+
         self.pending.extend_from_slice(pcm);
+
         while self.pending.len() >= PCM_I16_SAMPLES {
             let frame: Vec<i16> = self.pending.drain(..PCM_I16_SAMPLES).collect();
             let utc_ns = ts_state.next_frame_utc_ns();
@@ -251,9 +266,8 @@ struct PcmTimestampState {
 impl PcmTimestampState {
     fn next_frame_utc_ns(&mut self) -> u64 {
         let start = self.start_utc_ns.get_or_insert_with(now_utc_ns);
-        let offset_ns = self.samples_emitted * 1_000_000_000 / PCM_SAMPLE_RATE as u64;
-        // Icecast liefert keine RFMA-Zeitstempel wie SRT-In; wir synthetisieren lokal
-        // aus Startzeit + Sample-Fortschritt (Fallback).
+        let offset_ns =
+            self.samples_emitted * 1_000_000_000 / PCM_SAMPLE_RATE as u64;
         let utc_ns = *start + offset_ns;
         self.samples_emitted += PCM_SAMPLES_PER_CH as u64;
         utc_ns

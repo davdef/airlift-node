@@ -27,7 +27,12 @@ urlencoding = "2.1.3"
 ctrlc = "3.4"
 tiny_http = "0.12"
 bytemuck = "1.15"
-symphonia = { version = "0.5.4", features = ["all-codecs", "all-formats"] }
+symphonia = { version = "0.5.5", features = [
+    "ogg",
+    "vorbis",
+    "mp3",
+    "isomp4",
+] }
 
 #influxdb2 = { version = "0.5.1", features = ["reqwest"] }
 
