@@ -1,4 +1,5 @@
 /target
+/aircheck
 *.wav
 *.mp3
 .env
