@@ -866,6 +866,11 @@ let currentStatus = null;
 let latestStudioTime = null;
 let websocket = null;
 const rateHistory = new Map();
+let peaksMeta = null;
+let ringbufferHistory = [];
+let recorderHistory = [];
+let ringbufferEndTime = null;
+let recorderEndTime = null;
 const ringbufferConfig = {
     chunkMs: 100,
 };
@@ -931,6 +936,17 @@ function formatDuration(ms) {
     return `${minutes}m ${seconds % 60}s`;
 }
 
+function normalizeHistoryPoint(point) {
+    if (!point) return null;
+    const ts = point.ts || point.timestamp;
+    if (!ts) return null;
+    return {
+        ts,
+        peaks: point.peaks || [point.peak_l || 0, point.peak_r || 0],
+        silence: Boolean(point.silence)
+    };
+}
+
 function calculateRate(moduleId, currentCounters, timestamp) {
     if (!rateHistory.has(moduleId)) {
         rateHistory.set(moduleId, {
@@ -983,6 +999,51 @@ function formatNodeId(nodeId) {
     return nodeId;
 }
 
+function buildRingbufferLayers(history, ring, endTime, width) {
+    const capacity = ring.capacity || 6000;
+    const bufferDurationMs = capacity * ringbufferConfig.chunkMs;
+    const headIndex = ring.head_index || 0;
+    const current = Array.from({ length: width }, () => ({ l: 0, r: 0, silence: false }));
+    const ghost = Array.from({ length: width }, () => ({ l: 0, r: 0, silence: false }));
+    const maxAge = bufferDurationMs * 2;
+
+    history.forEach(point => {
+        const ts = point.ts;
+        if (!ts) return;
+        const ageMs = endTime - ts;
+        if (ageMs < 0 || ageMs >= maxAge) return;
+        const slotOffset = Math.floor(ageMs / ringbufferConfig.chunkMs);
+        const slotIndex = ((headIndex - slotOffset) % capacity + capacity) % capacity;
+        const x = Math.min(width - 1, Math.max(0, Math.floor((slotIndex / capacity) * width)));
+        const layer = slotOffset < capacity ? current : ghost;
+        const left = point.peaks[0] || 0;
+        const right = point.peaks[1] || 0;
+        if (left > layer[x].l) layer[x].l = left;
+        if (right > layer[x].r) layer[x].r = right;
+        if (point.silence) layer[x].silence = true;
+    });
+
+    return { current, ghost };
+}
+
+function drawWaveformLayer(ctx, layer, height, colors) {
+    const midY = height / 2;
+    for (let x = 0; x < layer.length; x++) {
+        const point = layer[x];
+        if (!point || (point.l === 0 && point.r === 0)) continue;
+        const leftHeight = Math.min(point.l * height * 0.45, height / 2);
+        const rightHeight = Math.min(point.r * height * 0.45, height / 2);
+        ctx.fillStyle = colors.left;
+        ctx.fillRect(x, midY - leftHeight, 1, leftHeight);
+        ctx.fillStyle = colors.right;
+        ctx.fillRect(x, midY, 1, rightHeight);
+        if (point.silence) {
+            ctx.fillStyle = colors.silence;
+            ctx.fillRect(x, 0, 1, height);
+        }
+    }
+}
+
 // Draw Ringbuffer Waveform (Zyklischer Buffer)
 function drawRingbuffer(status) {
     if (!ringbufferCtx || !status.ring) return;
@@ -1000,6 +1061,7 @@ function drawRingbuffer(status) {
     const headPos = ring.head_index || 0;
     const tailPos = ring.tail_index || 0;
     const bufferDurationMs = capacity * ringbufferConfig.chunkMs;
+    const endTime = ringbufferEndTime || latestStudioTime || Date.now();
     
     // Update info display
     document.getElementById('ringbufferInfo').textContent = `Füllstand: ${fillPercent}%`;
@@ -1018,43 +1080,19 @@ function drawRingbuffer(status) {
         ringbufferCtx.stroke();
     }
     
-    const segments = [];
-    const fillSlots = Math.min(capacity, ring.fill || 0);
-    if (fillSlots >= capacity) {
-        segments.push({ start: 0, end: capacity });
-    } else if (headPos !== tailPos) {
-        if (headPos > tailPos) {
-            segments.push({ start: tailPos, end: headPos });
-        } else {
-            segments.push({ start: tailPos, end: capacity });
-            segments.push({ start: 0, end: headPos });
-        }
+    if (ringbufferHistory.length > 0) {
+        const layers = buildRingbufferLayers(ringbufferHistory, ring, endTime, width);
+        drawWaveformLayer(ringbufferCtx, layers.ghost, height, {
+            left: 'rgba(90, 160, 255, 0.2)',
+            right: 'rgba(155, 89, 182, 0.2)',
+            silence: 'rgba(231, 76, 60, 0.1)'
+        });
+        drawWaveformLayer(ringbufferCtx, layers.current, height, {
+            left: 'rgba(90, 160, 255, 0.75)',
+            right: 'rgba(155, 89, 182, 0.75)',
+            silence: 'rgba(231, 76, 60, 0.25)'
+        });
     }
-
-    segments.forEach(({ start, end }) => {
-        const segmentWidth = ((end - start) / capacity) * width;
-        const segmentX = (start / capacity) * width;
-
-        ringbufferCtx.fillStyle = 'rgba(90, 160, 255, 0.15)';
-        ringbufferCtx.fillRect(segmentX, 0, segmentWidth, height);
-
-        ringbufferCtx.strokeStyle = '#5aa0ff';
-        ringbufferCtx.lineWidth = 2;
-        ringbufferCtx.beginPath();
-
-        const steps = Math.min(120, Math.max(1, Math.floor(segmentWidth)));
-        for (let i = 0; i <= steps; i++) {
-            const x = segmentX + (i / steps) * segmentWidth;
-            const progress = i / steps;
-            const baseFreq = 10;
-            const amplitude = 0.5 + Math.sin(progress * Math.PI) * 0.3;
-            const y = height / 2 + Math.sin(progress * baseFreq * Math.PI) * amplitude * (height / 2);
-
-            if (i === 0) ringbufferCtx.moveTo(x, y);
-            else ringbufferCtx.lineTo(x, y);
-        }
-        ringbufferCtx.stroke();
-    });
     
     // Update markers overlay
     const overlay = document.getElementById('ringbufferOverlay');
@@ -1078,10 +1116,9 @@ function drawRingbuffer(status) {
     
     // Update time display
     const timeDisplay = document.getElementById('ringbufferTime');
-    if (latestStudioTime) {
-        const currentTime = latestStudioTime;
-        const bufferStart = currentTime - bufferDurationMs;
-        timeDisplay.textContent = `${formatTime(bufferStart)} - ${formatTime(currentTime)}`;
+    if (endTime) {
+        const bufferStart = endTime - bufferDurationMs;
+        timeDisplay.textContent = `${formatTime(bufferStart)} - ${formatTime(endTime)}`;
     } else {
         timeDisplay.textContent = '–';
     }
@@ -1117,6 +1154,22 @@ function drawRingbuffer(status) {
     `;
 }
 
+function buildRecorderLayer(history, hourStart, hourEnd, width) {
+    const layer = Array.from({ length: width }, () => ({ l: 0, r: 0, silence: false }));
+    const span = hourEnd - hourStart;
+    if (span <= 0) return layer;
+    history.forEach(point => {
+        if (point.ts < hourStart || point.ts > hourEnd) return;
+        const x = Math.min(width - 1, Math.max(0, Math.floor(((point.ts - hourStart) / span) * width)));
+        const left = point.peaks[0] || 0;
+        const right = point.peaks[1] || 0;
+        if (left > layer[x].l) layer[x].l = left;
+        if (right > layer[x].r) layer[x].r = right;
+        if (point.silence) layer[x].silence = true;
+    });
+    return layer;
+}
+
 // Draw Recorder WAV File (1h Datei)
 function drawRecorder(status) {
     if (!recorderCtx || !status.recorder) return;
@@ -1133,7 +1186,7 @@ function drawRecorder(status) {
     const currentHour = Math.floor(Date.now() / 1000 / 3600);
     const hourStart = currentHour * 3600 * 1000;
     const hourEnd = hourStart + 3600 * 1000;
-    const now = latestStudioTime || Date.now();
+    const now = recorderEndTime || latestStudioTime || Date.now();
     
     // Fortschritt in der aktuellen Stunde
     const progress = Math.min(1, Math.max(0, (now - hourStart) / 3600000));
@@ -1162,29 +1215,19 @@ function drawRecorder(status) {
         recorderCtx.fillStyle = 'rgba(39, 174, 96, 0.15)';
         recorderCtx.fillRect(0, 0, filledWidth, height);
         
-        // Waveform im gefüllten Bereich
-        recorderCtx.strokeStyle = '#27ae60';
-        recorderCtx.lineWidth = 2;
-        recorderCtx.beginPath();
-        
-        const steps = Math.min(200, filledWidth);
-        for (let i = 0; i <= steps; i++) {
-            const x = (i / steps) * filledWidth;
-            
-            // Simuliere komplexere Waveform für WAV-Datei
-            const position = i / steps;
-            const freq1 = 8 * position;
-            const freq2 = 15 * position;
-            const amplitude = 0.4 + Math.sin(position * Math.PI) * 0.3;
-            const y = height / 2 + 
-                     (Math.sin(position * freq1 * Math.PI) * 0.6 + 
-                      Math.sin(position * freq2 * Math.PI) * 0.4) * 
-                     amplitude * (height / 2);
-            
-            if (i === 0) recorderCtx.moveTo(x, y);
-            else recorderCtx.lineTo(x, y);
+        if (recorderHistory.length > 0) {
+            const layer = buildRecorderLayer(recorderHistory, hourStart, hourEnd, width);
+            recorderCtx.save();
+            recorderCtx.beginPath();
+            recorderCtx.rect(0, 0, filledWidth, height);
+            recorderCtx.clip();
+            drawWaveformLayer(recorderCtx, layer, height, {
+                left: 'rgba(39, 174, 96, 0.8)',
+                right: 'rgba(46, 204, 113, 0.8)',
+                silence: 'rgba(231, 76, 60, 0.2)'
+            });
+            recorderCtx.restore();
         }
-        recorderCtx.stroke();
         
         // Write pointer (aktuelle Schreibposition)
         recorderCtx.strokeStyle = '#ffffff';
@@ -1595,9 +1638,19 @@ function updateSystemStatus() {
     const peaksBufferElement = document.getElementById('systemPeaksBuffer');
     const audioBufferElement = document.getElementById('systemAudioBuffer');
     
-    // Beispielwerte
-    peaksBufferElement.textContent = '600'; // 60s * 10 peaks/s
-    audioBufferElement.textContent = '60s';
+    if (peaksMeta && peaksMeta.ok) {
+        const durationMs = Math.max(0, peaksMeta.end - peaksMeta.start);
+        peaksBufferElement.textContent = Math.round(durationMs / ringbufferConfig.chunkMs).toLocaleString();
+    } else {
+        peaksBufferElement.textContent = '–';
+    }
+
+    if (currentStatus?.ring?.capacity) {
+        const durationMs = currentStatus.ring.capacity * ringbufferConfig.chunkMs;
+        audioBufferElement.textContent = `${Math.round(durationMs / 1000)}s`;
+    } else {
+        audioBufferElement.textContent = '–';
+    }
 }
 
 // Update UI
@@ -1615,10 +1668,8 @@ function updateUI(status) {
     renderControls(status);
     renderCodecs([]); // Wird später gefüllt
     
-    // Draw visualizations
+    // Prepare visualizations
     initCanvases();
-    drawRingbuffer(status);
-    drawRecorder(status);
     
     // Update system status
     updateSystemStatus();
@@ -1626,17 +1677,70 @@ function updateUI(status) {
     updateConnectionState(true);
 }
 
+async function fetchWaveformHistory(status) {
+    try {
+        const metaResponse = await fetch('/api/peaks');
+        const meta = await metaResponse.json();
+        peaksMeta = meta;
+
+        const capacity = status?.ring?.capacity || 6000;
+        const bufferDurationMs = capacity * ringbufferConfig.chunkMs;
+        const baseTime = meta && meta.ok ? meta.end : (latestStudioTime || Date.now());
+
+        ringbufferEndTime = baseTime;
+        recorderEndTime = baseTime;
+
+        const ringFrom = Math.max(0, baseTime - bufferDurationMs * 2);
+        const ringTo = baseTime;
+        const ringbufferResponse = await fetch(`/api/history?from=${ringFrom}&to=${ringTo}`);
+        if (ringbufferResponse.ok) {
+            const data = await ringbufferResponse.json();
+            ringbufferHistory = Array.isArray(data)
+                ? data.map(normalizeHistoryPoint).filter(Boolean)
+                : [];
+        } else {
+            ringbufferHistory = [];
+        }
+
+        const now = baseTime;
+        const currentHour = Math.floor(now / 1000 / 3600);
+        const hourStart = currentHour * 3600 * 1000;
+        const hourEnd = hourStart + 3600 * 1000;
+        const recorderFrom = hourStart;
+        const recorderTo = Math.min(now, hourEnd);
+        const recorderResponse = await fetch(`/api/history?from=${recorderFrom}&to=${recorderTo}`);
+        if (recorderResponse.ok) {
+            const data = await recorderResponse.json();
+            recorderHistory = Array.isArray(data)
+                ? data.map(normalizeHistoryPoint).filter(Boolean)
+                : [];
+        } else {
+            recorderHistory = [];
+        }
+
+        updateSystemStatus();
+    } catch (error) {
+        console.warn('Peaks history fetch failed:', error);
+        ringbufferHistory = [];
+        recorderHistory = [];
+    }
+}
+
 // Fetch all data
 async function fetchAllData() {
     try {
-        const statusResponse = await fetch('/api/status');
+        const [statusResponse, codecsResponse] = await Promise.all([
+            fetch('/api/status'),
+            fetch('/api/codecs')
+        ]);
         const status = await statusResponse.json();
-        
-        const codecsResponse = await fetch('/api/codecs');
         const codecs = await codecsResponse.json();
         
         updateUI(status);
         renderCodecs(codecs);
+        await fetchWaveformHistory(status);
+        drawRingbuffer(status);
+        drawRecorder(status);
         
         showMessage('Daten aktualisiert', 'success');
         
