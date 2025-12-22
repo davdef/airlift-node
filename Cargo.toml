@@ -29,6 +29,7 @@ tiny_http = "0.12"
 bytemuck = "1.15"
 symphonia = { version = "0.5.5", features = [
     "ogg",
+    "opus",
     "vorbis",
     "mp3",
     "isomp4",
