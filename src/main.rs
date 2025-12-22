@@ -104,6 +104,7 @@ fn main() -> anyhow::Result<()> {
         peak_store: context.peak_store.clone(),
         history_service: context.history_service.clone(),
         ring: context.agent.ring.clone(),
+        encoded_ring: context.agent.encoded_ring.clone(),
         control_state: context.control_state.clone(),
         config: cfg.clone(),
         registry: registry.clone(),
@@ -149,7 +150,11 @@ fn main() -> anyhow::Result<()> {
         std::thread::sleep(Duration::from_millis(100));
 
         if last_stats.elapsed() >= Duration::from_secs(5) {
-            let stats = context.agent.ring.stats();
+            let stats = if cfg.uses_icecast_input() {
+                context.agent.encoded_ring.stats()
+            } else {
+                context.agent.ring.stats()
+            };
             let fill = stats.head_seq - stats.next_seq.wrapping_sub(1);
             debug!("[airlift] head_seq={} fill={}", stats.head_seq, fill);
             last_stats = Instant::now();

@@ -3,7 +3,7 @@ use std::sync::{Arc, atomic::AtomicBool};
 
 use crate::agent;
 use crate::config::Config;
-use crate::monitoring::{self, Metrics};
+use crate::monitoring::{self, Metrics, RingStatsSource};
 
 pub struct MonitoringService;
 
@@ -16,7 +16,11 @@ impl MonitoringService {
     ) -> anyhow::Result<()> {
         monitoring::create_health_file()?;
 
-        let ring = agent.ring.clone();
+        let ring: Arc<dyn RingStatsSource> = if cfg.uses_icecast_input() {
+            Arc::new(agent.encoded_ring.clone())
+        } else {
+            Arc::new(agent.ring.clone())
+        };
         let port = cfg.monitoring.http_port;
 
         std::thread::spawn(move || {

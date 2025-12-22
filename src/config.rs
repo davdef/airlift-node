@@ -103,6 +103,7 @@ pub struct InputConfig {
     pub latency_ms: Option<u32>,
     pub streamid: Option<String>,
     pub device: Option<String>,
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -327,6 +328,12 @@ impl Config {
             || !self.services.is_empty()
     }
 
+    pub fn uses_icecast_input(&self) -> bool {
+        self.inputs
+            .values()
+            .any(|input| matches!(input.input_type.as_str(), "icecast" | "http_stream"))
+    }
+
     pub fn validate_graph(&self) -> anyhow::Result<Option<ValidatedGraphConfig>> {
         if !self.has_graph_config() {
             return Ok(None);
@@ -392,6 +399,11 @@ fn validate_inputs(
                 }
                 if input.latency_ms.is_none() {
                     anyhow::bail!("input '{}' requires latency_ms", id);
+                }
+            }
+            "icecast" | "http_stream" => {
+                if input.url.as_deref().unwrap_or("").is_empty() {
+                    anyhow::bail!("input '{}' requires url", id);
                 }
             }
             "alsa" => {
