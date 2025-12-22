@@ -17,6 +17,7 @@ class AircheckPlayer {
         this.lastWsPerf = null;
         this.loadingHistory = false;
         this.lastHistoryRequest = null;
+        this.pendingHistoryWindow = null;
 
         // === VIEWPORT ===
         this.minVisibleDuration = 5_000;           // 5s
@@ -750,7 +751,10 @@ class AircheckPlayer {
     // ---------------------------------------------------
     async loadHistoryWindow(from, to) {
         try {
-            if (this.loadingHistory) return;
+            if (this.loadingHistory) {
+                this.pendingHistoryWindow = { from, to };
+                return;
+            }
             this.loadingHistory = true;
             // VERHINDERE REQUEST MIT GLEICHEN ZEITEN ODER NEGATIVER SPANNE
             const span = to - from;
@@ -771,9 +775,9 @@ class AircheckPlayer {
             
             // console.log("[History] Loading:", url, "span:", span, "ms");
             
-            // RATE LIMITING: Verhindere zu häufige Requests
+            // LIGHT RATE LIMITING: Verhindere zu häufige Requests
             const nowPerf = performance.now();
-            if (this.lastHistoryRequest && (nowPerf - this.lastHistoryRequest < 2000)) {
+            if (this.lastHistoryRequest && (nowPerf - this.lastHistoryRequest < 150)) {
                 // console.log("[History] Rate limiting, skipping...");
                 return;
             }
@@ -810,6 +814,11 @@ class AircheckPlayer {
             console.error("[History] Load failed:", err);
         } finally {
             this.loadingHistory = false;
+            if (this.pendingHistoryWindow) {
+                const pending = this.pendingHistoryWindow;
+                this.pendingHistoryWindow = null;
+                this.loadHistoryWindow(pending.from, pending.to);
+            }
         }
     }
 
