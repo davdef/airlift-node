@@ -7,9 +7,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
 use log::{info, warn};
+use opus::{Decoder as OpusDecoder, Channels as OpusChannels};
 
 use symphonia::core::audio::{AudioBufferRef, SampleBuffer};
-use symphonia::core::codecs::DecoderOptions;
+use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_OPUS};
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::{MediaSource, MediaSourceStream, MediaSourceStreamOptions};
@@ -24,6 +25,7 @@ use crate::ring::AudioRing;
 const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const READ_BUFFER_SIZE: usize = 64 * 1024;
+const MAX_OPUS_FRAME_SAMPLES: usize = 5760;
 
 pub fn run_icecast_in(
     ring: AudioRing,
@@ -122,12 +124,30 @@ fn connect_and_stream(
         .default_track()
         .ok_or_else(|| anyhow!("no audio tracks found"))?;
 
+    let mut chunker = PcmChunker::default();
+    let mut ts_state = PcmTimestampState::default();
+
+    if track.codec_params.codec == Some(CODEC_TYPE_OPUS) {
+        if let Err(err) = stream_opus_packets(
+            &mut probed,
+            track.id,
+            ring,
+            running,
+            state.clone(),
+            ring_state.clone(),
+            &mut chunker,
+            &mut ts_state,
+        ) {
+            warn!("[icecast_in] opus decode error: {}", err);
+            return Err(err).context("opus decode error");
+        }
+
+        return Ok(());
+    }
+
     let mut decoder = get_codecs()
         .make(&track.codec_params, &DecoderOptions::default())
         .context("failed to create decoder")?;
-
-    let mut chunker = PcmChunker::default();
-    let mut ts_state = PcmTimestampState::default();
 
     while running.load(Ordering::Relaxed) {
         let packet = match probed.format.next_packet() {
@@ -157,6 +177,137 @@ fn connect_and_stream(
     }
 
     Ok(())
+}
+
+fn stream_opus_packets(
+    probed: &mut symphonia::core::probe::Probed,
+    track_id: u32,
+    ring: &AudioRing,
+    running: Arc<AtomicBool>,
+    state: Arc<ModuleState>,
+    ring_state: Arc<ModuleState>,
+    chunker: &mut PcmChunker,
+    ts_state: &mut PcmTimestampState,
+) -> Result<()> {
+    let mut decoder: Option<OpusDecoder> = None;
+    let mut channels: u8 = 0;
+    let mut pre_skip_remaining: usize = 0;
+    let mut saw_tags = false;
+    let mut decode_buf: Vec<i16> = Vec::new();
+
+    while running.load(Ordering::Relaxed) {
+        let packet = match probed.format.next_packet() {
+            Ok(packet) => packet,
+            Err(SymphoniaError::IoError(err))
+                if err.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                return Err(anyhow!("stream ended"));
+            }
+            Err(SymphoniaError::ResetRequired) => {
+                decoder = None;
+                channels = 0;
+                pre_skip_remaining = 0;
+                saw_tags = false;
+                continue;
+            }
+            Err(err) => return Err(err).context("failed reading packet"),
+        };
+
+        if packet.track_id() != track_id {
+            continue;
+        }
+
+        if decoder.is_none() {
+            if let Some(header) = parse_opus_head(packet.buf()) {
+                channels = header.channels;
+                pre_skip_remaining = header.pre_skip as usize;
+                decoder = Some(
+                    OpusDecoder::new(PCM_SAMPLE_RATE, opus_channels(header.channels)?)
+                        .context("failed to create opus decoder")?,
+                );
+                decode_buf = vec![0i16; MAX_OPUS_FRAME_SAMPLES * channels as usize];
+                continue;
+            }
+            continue;
+        }
+
+        if !saw_tags && is_opus_tags(packet.buf()) {
+            saw_tags = true;
+            continue;
+        }
+
+        let decoder = decoder.as_mut().expect("decoder initialized");
+        let frame_samples = decoder
+            .decode(packet.buf(), &mut decode_buf, false)
+            .context("opus decode failed")?;
+        let decoded_samples = frame_samples * channels as usize;
+        if decoded_samples == 0 {
+            continue;
+        }
+
+        let mut pcm = &decode_buf[..decoded_samples];
+        if pre_skip_remaining > 0 {
+            let skip = pre_skip_remaining.min(frame_samples);
+            let skip_samples = skip * channels as usize;
+            if skip_samples >= pcm.len() {
+                pre_skip_remaining -= skip;
+                continue;
+            }
+            pcm = &pcm[skip_samples..];
+            pre_skip_remaining -= skip;
+        }
+
+        let stereo_pcm = opus_to_stereo(pcm, channels);
+        chunker.push_frames(&stereo_pcm, ring, ts_state, &state, &ring_state);
+    }
+
+    Ok(())
+}
+
+fn parse_opus_head(data: &[u8]) -> Option<OpusHead> {
+    if data.len() < 19 || &data[..8] != b"OpusHead" {
+        return None;
+    }
+
+    let channels = data[9];
+    let pre_skip = u16::from_le_bytes([data[10], data[11]]);
+    Some(OpusHead { channels, pre_skip })
+}
+
+fn is_opus_tags(data: &[u8]) -> bool {
+    data.len() >= 8 && &data[..8] == b"OpusTags"
+}
+
+fn opus_channels(channels: u8) -> Result<OpusChannels> {
+    match channels {
+        1 => Ok(OpusChannels::Mono),
+        2 => Ok(OpusChannels::Stereo),
+        _ => Err(anyhow!("unsupported opus channel count {}", channels)),
+    }
+}
+
+fn opus_to_stereo(samples: &[i16], channels: u8) -> Vec<i16> {
+    match channels {
+        1 => samples
+            .iter()
+            .flat_map(|sample| [*sample, *sample])
+            .collect(),
+        _ => {
+            let mut out = Vec::with_capacity(samples.len());
+            let mut idx = 0;
+            while idx + 1 < samples.len() {
+                out.push(samples[idx]);
+                out.push(samples[idx + 1]);
+                idx += channels as usize;
+            }
+            out
+        }
+    }
+}
+
+struct OpusHead {
+    channels: u8,
+    pre_skip: u16,
 }
 
 fn decode_to_pcm_i16(buffer: AudioBufferRef<'_>) -> Result<Vec<i16>> {
