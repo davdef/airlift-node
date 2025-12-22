@@ -871,6 +871,7 @@ let ringbufferHistory = [];
 let recorderHistory = [];
 let ringbufferEndTime = null;
 let recorderEndTime = null;
+let wsMessageCount = 0;
 const ringbufferConfig = {
     chunkMs: 100,
 };
@@ -1083,9 +1084,9 @@ function drawRingbuffer(status) {
     if (ringbufferHistory.length > 0) {
         const layers = buildRingbufferLayers(ringbufferHistory, ring, endTime, width);
         drawWaveformLayer(ringbufferCtx, layers.ghost, height, {
-            left: 'rgba(90, 160, 255, 0.2)',
-            right: 'rgba(155, 89, 182, 0.2)',
-            silence: 'rgba(231, 76, 60, 0.1)'
+            left: 'rgba(90, 160, 255, 0.3)',
+            right: 'rgba(155, 89, 182, 0.3)',
+            silence: 'rgba(231, 76, 60, 0.15)'
         });
         drawWaveformLayer(ringbufferCtx, layers.current, height, {
             left: 'rgba(90, 160, 255, 0.75)',
@@ -1305,6 +1306,7 @@ function setupWebSocket() {
         try {
             const data = JSON.parse(e.data);
             if (data && typeof data.timestamp === 'number') {
+                wsMessageCount += 1;
                 latestStudioTime = data.timestamp;
                 
                 // Update Studio-Zeit im Header
@@ -1318,6 +1320,10 @@ function setupWebSocket() {
                 const systemLatency = document.getElementById('systemLatency');
                 const latency = Date.now() - latestStudioTime;
                 systemLatency.textContent = `${Math.max(0, latency)}ms`;
+
+                if (wsMessageCount % 10 === 0) {
+                    fetchAllData();
+                }
             }
         } catch (err) {
             console.warn('[WS] Parse error:', err);
@@ -1785,17 +1791,6 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Setup WebSocket
     setupWebSocket();
-    
-    // Auto-refresh
-    setInterval(fetchAllData, 2000);
-    
-    // Auto-redraw visualizations
-    setInterval(() => {
-        if (currentStatus) {
-            drawRingbuffer(currentStatus);
-            drawRecorder(currentStatus);
-        }
-    }, 100);
 });
 </script>
 </body>
