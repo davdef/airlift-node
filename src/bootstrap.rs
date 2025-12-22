@@ -1,21 +1,23 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::{atomic::AtomicBool, Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic::AtomicBool};
 use std::time::Duration;
 
 use log::{error, info};
 
 use crate::agent;
 use crate::api::registry::{ModuleDescriptor, ModuleRegistration, Registry};
-use crate::codecs::registry::{resolve_codec_configs, CodecRegistry, CodecInstance};
 use crate::codecs::AudioCodec;
+use crate::codecs::registry::{CodecInstance, CodecRegistry, resolve_codec_configs};
 use crate::config::{Config, ValidatedGraphConfig};
 use crate::control::ControlState;
 use crate::io::broadcast_http::BroadcastHttp;
 use crate::io::influx_out::InfluxOut;
 use crate::io::peak_analyzer::{PeakAnalyzer, PeakEvent};
 use crate::monitoring;
-use crate::recorder::{self, EncodedFrameSource, EncodedRead, FsRetention, RecorderConfig, run_recorder};
+use crate::recorder::{
+    self, EncodedFrameSource, EncodedRead, FsRetention, RecorderConfig, run_recorder,
+};
 use crate::ring::{EncodedRingRead, EncodedRingReader, RingRead, RingReader};
 use crate::web::influx_service::InfluxHistoryService;
 use crate::web::peaks::{PeakPoint, PeakStorage};
@@ -306,8 +308,13 @@ impl PeakEventFanout {
 }
 
 enum RingEncodedRead {
-    Frame { frame: crate::codecs::EncodedFrame, utc_ns: u64 },
-    Gap { missed: u64 },
+    Frame {
+        frame: crate::codecs::EncodedFrame,
+        utc_ns: u64,
+    },
+    Gap {
+        missed: u64,
+    },
     Empty,
 }
 
@@ -381,9 +388,7 @@ impl crate::io::srt_out::EncodedFrameSource for EncodedRingSource {
             RingEncodedRead::Frame { frame, .. } => {
                 Ok(crate::io::srt_out::EncodedRead::Frame(frame))
             }
-            RingEncodedRead::Gap { missed } => {
-                Ok(crate::io::srt_out::EncodedRead::Gap { missed })
-            }
+            RingEncodedRead::Gap { missed } => Ok(crate::io::srt_out::EncodedRead::Gap { missed }),
             RingEncodedRead::Empty => Ok(crate::io::srt_out::EncodedRead::Empty),
         }
     }
@@ -395,9 +400,7 @@ impl crate::io::udp_out::EncodedFrameSource for EncodedRingSource {
             RingEncodedRead::Frame { frame, .. } => {
                 Ok(crate::io::udp_out::EncodedRead::Frame(frame))
             }
-            RingEncodedRead::Gap { missed } => {
-                Ok(crate::io::udp_out::EncodedRead::Gap { missed })
-            }
+            RingEncodedRead::Gap { missed } => Ok(crate::io::udp_out::EncodedRead::Gap { missed }),
             RingEncodedRead::Empty => Ok(crate::io::udp_out::EncodedRead::Empty),
         }
     }
@@ -756,7 +759,7 @@ fn start_graph_inputs(
                     .ok_or_else(|| anyhow::anyhow!("input requires url"))?;
                 context.control_state.icecast_in.set_enabled(true);
                 let state = context.control_state.icecast_in.clone();
-                let ring_clone = encoded_ring.clone();
+                let ring_clone = ring.clone();
                 let running_clone = running.clone();
                 let ring_state = ring_state.clone();
                 std::thread::spawn(move || {
@@ -912,7 +915,10 @@ fn start_graph_outputs(
                 let base_dir = PathBuf::from(output.wav_dir.clone().unwrap_or_default());
                 let codec_info = context.codec_registry.get_info(&codec_id)?;
                 if matches!(codec_info.container, crate::codecs::ContainerKind::Rtp) {
-                    anyhow::bail!("recorder does not support RTP container (codec_id '{}')", codec_id);
+                    anyhow::bail!(
+                        "recorder does not support RTP container (codec_id '{}')",
+                        codec_id
+                    );
                 }
                 let retentions: Vec<Box<dyn recorder::RetentionPolicy>> = vec![Box::new(
                     FsRetention::new(base_dir.clone(), output.retention_days.unwrap_or(0)),

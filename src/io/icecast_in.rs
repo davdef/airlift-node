@@ -1,21 +1,29 @@
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
 use log::{info, warn};
+use symphonia::core::audio::{AudioBufferRef, SampleBuffer};
+use symphonia::core::codecs::DecoderOptions;
+use symphonia::core::errors::Error as SymphoniaError;
+use symphonia::core::formats::FormatOptions;
+use symphonia::core::io::{MediaSource, MediaSourceStream, MediaSourceStreamOptions};
+use symphonia::core::meta::MetadataOptions;
+use symphonia::core::probe::Hint;
+use symphonia::default::{get_codecs, get_probe};
 
-use crate::codecs::{CodecInfo, CodecKind, ContainerKind, EncodedFrame};
+use crate::codecs::{PCM_I16_SAMPLES, PCM_SAMPLE_RATE, PCM_SAMPLES_PER_CH};
 use crate::control::ModuleState;
-use crate::ring::EncodedRing;
+use crate::ring::AudioRing;
 
 const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const READ_BUFFER_SIZE: usize = 64 * 1024;
 
 pub fn run_icecast_in(
-    ring: EncodedRing,
+    ring: AudioRing,
     url: String,
     running: Arc<AtomicBool>,
     state: Arc<ModuleState>,
@@ -26,7 +34,13 @@ pub fn run_icecast_in(
 
     let mut backoff = INITIAL_BACKOFF;
     while running.load(Ordering::Relaxed) {
-        match connect_and_stream(&ring, &url, running.clone(), state.clone(), ring_state.clone()) {
+        match connect_and_stream(
+            &ring,
+            &url,
+            running.clone(),
+            state.clone(),
+            ring_state.clone(),
+        ) {
             Ok(()) => {
                 state.set_connected(false);
                 backoff = INITIAL_BACKOFF;
@@ -47,7 +61,7 @@ pub fn run_icecast_in(
 }
 
 fn connect_and_stream(
-    ring: &EncodedRing,
+    ring: &AudioRing,
     url: &str,
     running: Arc<AtomicBool>,
     state: Arc<ModuleState>,
@@ -55,15 +69,15 @@ fn connect_and_stream(
 ) -> Result<()> {
     info!("[icecast_in] connecting to {}", url);
 
-let agent = ureq::AgentBuilder::new()
-    .timeout_connect(Duration::from_secs(5))
-    .timeout_read(Duration::from_secs(10))
-    .build();
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(5))
+        .timeout_read(Duration::from_secs(10))
+        .build();
 
-let response = agent
-    .get(url)
-    .call()
-    .map_err(|e| anyhow!("http error: {}", e))?;
+    let response = agent
+        .get(url)
+        .call()
+        .map_err(|e| anyhow!("http error: {}", e))?;
 
     if response.status() >= 400 {
         return Err(anyhow!(
@@ -75,149 +89,210 @@ let response = agent
 
     state.set_connected(true);
 
-    let mut reader = BufReader::with_capacity(READ_BUFFER_SIZE, response.into_reader());
-    let mut packet_assembler = OggPacketAssembler::default();
-    let mut codec_info: Option<CodecInfo> = None;
-    let mut pending_pages: Vec<Vec<u8>> = Vec::new();
+    let reader = BufReader::with_capacity(READ_BUFFER_SIZE, response.into_reader());
+    let source = NonSeekableSource::new(reader);
+    let mss = MediaSourceStream::new(
+        Box::new(source),
+        MediaSourceStreamOptions {
+            seekable: false,
+            ..Default::default()
+        },
+    );
+
+    let mut hint = Hint::new();
+    if let Some(ext) = url.split('.').last().filter(|ext| ext.len() <= 8) {
+        hint.with_extension(ext);
+    }
+
+    let mut probed = get_probe()
+        .format(
+            &hint,
+            mss,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .context("failed to probe icecast stream")?;
+    let track = probed
+        .format
+        .default_track()
+        .ok_or_else(|| anyhow!("no audio tracks found"))?;
+    let mut decoder = get_codecs()
+        .make(&track.codec_params, &DecoderOptions::default())
+        .context("failed to create decoder")?;
+
+    let mut chunker = PcmChunker::default();
+    let mut ts_state = PcmTimestampState::default();
 
     while running.load(Ordering::Relaxed) {
-        let page = match read_ogg_page(&mut reader)? {
-            Some(page) => page,
-            None => return Err(anyhow!("stream ended")),
+        let packet = match probed.format.next_packet() {
+            Ok(packet) => packet,
+            Err(SymphoniaError::IoError(err))
+                if err.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                return Err(anyhow!("stream ended"));
+            }
+            Err(SymphoniaError::ResetRequired) => {
+                decoder.reset();
+                continue;
+            }
+            Err(err) => return Err(err).context("failed reading packet"),
         };
 
-        if codec_info.is_none() {
-            for packet in packet_assembler.push_page(&page) {
-                if let Some(info) = parse_opus_head(&packet) {
-                    codec_info = Some(info);
-                    break;
-                }
+        match decoder.decode(&packet) {
+            Ok(audio_buf) => {
+                let pcm = decode_to_pcm_i16(audio_buf)?;
+                chunker.push_frames(&pcm, ring, &mut ts_state, &state, &ring_state);
             }
-        } else {
-            packet_assembler.push_page(&page);
-        }
-
-        if let Some(info) = &codec_info {
-            if !pending_pages.is_empty() {
-                for pending in pending_pages.drain(..) {
-                    push_frame(ring, info, pending, &state, &ring_state);
-                }
+            Err(SymphoniaError::DecodeError(err)) => {
+                warn!("[icecast_in] decode error: {}", err);
             }
-            push_frame(ring, info, page, &state, &ring_state);
-        } else {
-            pending_pages.push(page);
+            Err(err) => return Err(err).context("decoder error"),
         }
     }
 
     Ok(())
 }
 
-fn push_frame(
-    ring: &EncodedRing,
-    info: &CodecInfo,
-    payload: Vec<u8>,
-    state: &ModuleState,
-    ring_state: &ModuleState,
-) {
-    let utc_ns = now_utc_ns();
-    ring.writer_push(
-        utc_ns,
-        EncodedFrame {
-            payload,
-            info: info.clone(),
-        },
-    );
-    state.mark_rx(1);
-    ring_state.mark_rx(1);
+fn decode_to_pcm_i16(buffer: AudioBufferRef<'_>) -> Result<Vec<i16>> {
+    let spec = *buffer.spec();
+    let mut sample_buf = SampleBuffer::<f32>::new(buffer.capacity() as u64, spec);
+    sample_buf.copy_interleaved_ref(buffer);
+    let channels = sample_buf.spec().channels.count();
+    let in_rate = sample_buf.spec().rate;
+    let frames = sample_buf.frames();
+    let samples = sample_buf.samples();
+
+    if channels == 0 || frames == 0 {
+        return Ok(Vec::new());
+    }
+
+    let out_frames = if in_rate == PCM_SAMPLE_RATE {
+        frames
+    } else {
+        let ratio = PCM_SAMPLE_RATE as f64 / in_rate as f64;
+        (frames as f64 * ratio).round() as usize
+    };
+
+    let mut out = Vec::with_capacity(out_frames * 2);
+    for out_idx in 0..out_frames {
+        let src_pos = if in_rate == PCM_SAMPLE_RATE {
+            out_idx as f64
+        } else {
+            out_idx as f64 * in_rate as f64 / PCM_SAMPLE_RATE as f64
+        };
+        let base = src_pos.floor() as usize;
+        let frac = (src_pos - base as f64) as f32;
+        let idx0 = base.min(frames.saturating_sub(1));
+        let idx1 = (base + 1).min(frames.saturating_sub(1));
+        let (l0, r0) = stereo_from_frame(samples, channels, idx0);
+        let (l1, r1) = stereo_from_frame(samples, channels, idx1);
+        let left = l0 + (l1 - l0) * frac;
+        let right = r0 + (r1 - r0) * frac;
+        out.push(float_to_i16(left));
+        out.push(float_to_i16(right));
+    }
+
+    Ok(out)
 }
 
-fn read_ogg_page(reader: &mut impl Read) -> Result<Option<Vec<u8>>> {
-    let mut header = [0u8; 27];
-    if let Err(err) = reader.read_exact(&mut header) {
-        if err.kind() == std::io::ErrorKind::UnexpectedEof {
-            return Ok(None);
+fn stereo_from_frame(samples: &[f32], channels: usize, frame: usize) -> (f32, f32) {
+    match channels {
+        0 => (0.0, 0.0),
+        1 => {
+            let value = samples[frame];
+            (value, value)
         }
-        return Err(err).context("failed to read ogg header");
+        _ => {
+            let base = frame * channels;
+            (samples[base], samples[base + 1])
+        }
     }
+}
 
-    if &header[..4] != b"OggS" {
-        return Err(anyhow!("invalid ogg capture pattern"));
-    }
-
-    let seg_count = header[26] as usize;
-    let mut segment_table = vec![0u8; seg_count];
-    reader
-        .read_exact(&mut segment_table)
-        .context("failed to read ogg segment table")?;
-
-    let body_size: usize = segment_table.iter().map(|v| *v as usize).sum();
-    let mut body = vec![0u8; body_size];
-    reader
-        .read_exact(&mut body)
-        .context("failed to read ogg page body")?;
-
-    let mut page = Vec::with_capacity(27 + seg_count + body_size);
-    page.extend_from_slice(&header);
-    page.extend_from_slice(&segment_table);
-    page.extend_from_slice(&body);
-    Ok(Some(page))
+fn float_to_i16(value: f32) -> i16 {
+    let clamped = value.clamp(-1.0, 1.0);
+    (clamped * i16::MAX as f32) as i16
 }
 
 #[derive(Default)]
-struct OggPacketAssembler {
-    buffer: Vec<u8>,
+struct PcmChunker {
+    pending: Vec<i16>,
 }
 
-impl OggPacketAssembler {
-    fn push_page(&mut self, page: &[u8]) -> Vec<Vec<u8>> {
-        if page.len() < 27 {
-            return Vec::new();
+impl PcmChunker {
+    fn push_frames(
+        &mut self,
+        pcm: &[i16],
+        ring: &AudioRing,
+        ts_state: &mut PcmTimestampState,
+        state: &ModuleState,
+        ring_state: &ModuleState,
+    ) {
+        if pcm.is_empty() {
+            return;
         }
-
-        let seg_count = page[26] as usize;
-        if page.len() < 27 + seg_count {
-            return Vec::new();
+        self.pending.extend_from_slice(pcm);
+        while self.pending.len() >= PCM_I16_SAMPLES {
+            let frame: Vec<i16> = self.pending.drain(..PCM_I16_SAMPLES).collect();
+            let utc_ns = ts_state.next_frame_utc_ns();
+            ring.writer_push(utc_ns, frame);
+            state.mark_rx(1);
+            ring_state.mark_rx(1);
         }
-
-        let segment_table = &page[27..27 + seg_count];
-        let mut offset = 27 + seg_count;
-        let mut packets = Vec::new();
-
-        for seg_len in segment_table.iter().copied() {
-            let seg_len = seg_len as usize;
-            if offset + seg_len > page.len() {
-                break;
-            }
-            self.buffer.extend_from_slice(&page[offset..offset + seg_len]);
-            offset += seg_len;
-
-            if seg_len < 255 {
-                packets.push(std::mem::take(&mut self.buffer));
-            }
-        }
-
-        packets
     }
 }
 
-fn parse_opus_head(packet: &[u8]) -> Option<CodecInfo> {
-    if packet.len() < 19 {
-        return None;
+#[derive(Default)]
+struct PcmTimestampState {
+    start_utc_ns: Option<u64>,
+    samples_emitted: u64,
+}
+
+impl PcmTimestampState {
+    fn next_frame_utc_ns(&mut self) -> u64 {
+        let start = self.start_utc_ns.get_or_insert_with(now_utc_ns);
+        let offset_ns = self.samples_emitted * 1_000_000_000 / PCM_SAMPLE_RATE as u64;
+        // Icecast liefert keine RFMA-Zeitstempel wie SRT-In; wir synthetisieren lokal
+        // aus Startzeit + Sample-Fortschritt (Fallback).
+        let utc_ns = *start + offset_ns;
+        self.samples_emitted += PCM_SAMPLES_PER_CH as u64;
+        utc_ns
     }
-    if !packet.starts_with(b"OpusHead") {
-        return None;
+}
+
+struct NonSeekableSource<R> {
+    reader: R,
+}
+
+impl<R> NonSeekableSource<R> {
+    fn new(reader: R) -> Self {
+        Self { reader }
     }
-    let channels = packet[9];
-    if channels == 0 {
-        return None;
+}
+
+impl<R: Read + Send + Sync> Read for NonSeekableSource<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.reader.read(buf)
+    }
+}
+
+impl<R: Read + Send + Sync> Seek for NonSeekableSource<R> {
+    fn seek(&mut self, _pos: SeekFrom) -> std::io::Result<u64> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "icecast stream is not seekable",
+        ))
+    }
+}
+
+impl<R: Read + Send + Sync> MediaSource for NonSeekableSource<R> {
+    fn is_seekable(&self) -> bool {
+        false
     }
 
-    Some(CodecInfo {
-        kind: CodecKind::OpusOgg,
-        sample_rate: 48_000,
-        channels,
-        container: ContainerKind::Ogg,
-    })
+    fn byte_len(&self) -> Option<u64> {
+        None
+    }
 }
 
 fn now_utc_ns() -> u64 {
