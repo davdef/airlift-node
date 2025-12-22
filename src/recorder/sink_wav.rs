@@ -113,6 +113,17 @@ impl WavSink {
             expected_samples
         }
     }
+
+    fn align_missing_samples(&self, missing_samples: u64) -> u64 {
+        let remainder = missing_samples % CHANNELS as u64;
+        if remainder != 0 && cfg!(debug_assertions) {
+            eprintln!(
+                "[wav_sink] missing samples not aligned to channels: {} (remainder {})",
+                missing_samples, remainder
+            );
+        }
+        missing_samples - remainder
+    }
 }
 
 impl AudioSink for WavSink {
@@ -130,8 +141,9 @@ impl AudioSink for WavSink {
         }
         
         let missing_samples = self.calculate_missing_samples();
-        if missing_samples > 0 {
-            self.write_silence(missing_samples)?;
+        let aligned_missing_samples = self.align_missing_samples(missing_samples);
+        if aligned_missing_samples > 0 {
+            self.write_silence(aligned_missing_samples)?;
         }
         
         if let Some(w) = self.writer.as_mut() {
@@ -154,10 +166,11 @@ impl AudioSink for WavSink {
         }
         
         let missing_samples = self.calculate_missing_samples();
-        let missing_ms = (missing_samples * 1000) / SAMPLES_PER_SECOND;
+        let aligned_missing_samples = self.align_missing_samples(missing_samples);
+        let missing_ms = (aligned_missing_samples * 1000) / SAMPLES_PER_SECOND;
         
         if missing_ms > 100 {
-            self.write_silence(missing_samples)?;
+            self.write_silence(aligned_missing_samples)?;
             self.last_audio_time = Instant::now();
             
             if missing_ms > 1000 {
