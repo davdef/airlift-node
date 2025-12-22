@@ -1,31 +1,22 @@
 // src/io/icecast_in.rs
 
-use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result, anyhow};
-use log::{info, warn};
+use anyhow::{Result, anyhow};
+use log::{info, warn, error};
 use opus::{Decoder as OpusDecoder, Channels as OpusChannels};
+use std::io::{Read, BufReader};
 
-use symphonia::core::audio::{AudioBufferRef, SampleBuffer};
-use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_OPUS};
-use symphonia::core::errors::Error as SymphoniaError;
-use symphonia::core::formats::FormatOptions;
-use symphonia::core::io::{MediaSource, MediaSourceStream, MediaSourceStreamOptions};
-use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
-use symphonia::default::{get_codecs, get_probe};
-
-use crate::codecs::{PCM_I16_SAMPLES, PCM_SAMPLE_RATE, PCM_SAMPLES_PER_CH};
+use crate::codecs::{PCM_I16_SAMPLES, PCM_SAMPLE_RATE};
 use crate::control::ModuleState;
 use crate::ring::AudioRing;
 
 const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 const READ_BUFFER_SIZE: usize = 64 * 1024;
-const MAX_OPUS_FRAME_SAMPLES: usize = 5760;
+const CHUNK_DURATION_NS: u64 = 100_000_000; // 100ms in nanoseconds
 
 pub fn run_icecast_in(
     ring: AudioRing,
@@ -94,370 +85,345 @@ fn connect_and_stream(
     }
 
     state.set_connected(true);
+    info!("[icecast_in] connected successfully");
 
     let reader = BufReader::with_capacity(READ_BUFFER_SIZE, response.into_reader());
-    let source = NonSeekableSource::new(reader);
-
-    let mss = MediaSourceStream::new(
-        Box::new(source),
-        MediaSourceStreamOptions {
-            buffer_len: READ_BUFFER_SIZE,
-        },
-    );
-
-    let mut hint = Hint::new();
-    if let Some(ext) = url.split('.').last().filter(|e| e.len() <= 8) {
-        hint.with_extension(ext);
-    }
-
-    let mut probed = get_probe()
-        .format(
-            &hint,
-            mss,
-            &FormatOptions::default(),
-            &MetadataOptions::default(),
-        )
-        .context("failed to probe icecast stream")?;
-
-    let track = probed
-        .format
-        .default_track()
-        .ok_or_else(|| anyhow!("no audio tracks found"))?;
-
-    let mut chunker = PcmChunker::default();
-    let mut ts_state = PcmTimestampState::default();
-
-    if track.codec_params.codec == Some(CODEC_TYPE_OPUS) {
-        if let Err(err) = stream_opus_packets(
-            &mut probed,
-            track.id,
-            ring,
-            running,
-            state.clone(),
-            ring_state.clone(),
-            &mut chunker,
-            &mut ts_state,
-        ) {
-            warn!("[icecast_in] opus decode error: {}", err);
-            return Err(err).context("opus decode error");
-        }
-
-        return Ok(());
-    }
-
-    let mut decoder = get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
-        .context("failed to create decoder")?;
-
-    while running.load(Ordering::Relaxed) {
-        let packet = match probed.format.next_packet() {
-            Ok(packet) => packet,
-            Err(SymphoniaError::IoError(err))
-                if err.kind() == std::io::ErrorKind::UnexpectedEof =>
-            {
-                return Err(anyhow!("stream ended"));
-            }
-            Err(SymphoniaError::ResetRequired) => {
-                decoder.reset();
-                continue;
-            }
-            Err(err) => return Err(err).context("failed reading packet"),
-        };
-
-        match decoder.decode(&packet) {
-            Ok(audio_buf) => {
-                let pcm = decode_to_pcm_i16(audio_buf)?;
-                chunker.push_frames(&pcm, ring, &mut ts_state, &state, &ring_state);
-            }
-            Err(SymphoniaError::DecodeError(err)) => {
-                warn!("[icecast_in] decode error: {}", err);
-            }
-            Err(err) => return Err(err).context("decoder error"),
-        }
-    }
-
-    Ok(())
+    
+    // Verwende den OGG-Parser
+    stream_with_ogg_parser(reader, ring, running, state, ring_state)
 }
 
-fn stream_opus_packets(
-    probed: &mut symphonia::core::probe::Probed,
-    track_id: u32,
+// ============================================================================
+// OGG-Parser mit korrekter Segment-Verarbeitung
+// ============================================================================
+
+struct OggStreamParser<R: Read> {
+    reader: R,
+    buffer: Vec<u8>,
+    current_page_pos: usize,
+    segments_in_current_page: Vec<u8>,
+    current_segment_idx: usize,
+    packet_accumulator: Vec<u8>,
+}
+
+impl<R: Read> OggStreamParser<R> {
+    fn new(reader: R) -> Self {
+        Self {
+            reader,
+            buffer: Vec::with_capacity(65536),
+            current_page_pos: 0,
+            segments_in_current_page: Vec::new(),
+            current_segment_idx: 0,
+            packet_accumulator: Vec::new(),
+        }
+    }
+    
+    fn next_packet(&mut self) -> Result<Option<Vec<u8>>> {
+        loop {
+            // Wenn wir eine aktive Seite haben, extrahiere das nächste Paket
+            if !self.segments_in_current_page.is_empty() && 
+               self.current_segment_idx < self.segments_in_current_page.len() {
+                if let Some(packet) = self.extract_next_packet() {
+                    return Ok(Some(packet));
+                }
+            }
+            
+            // Finde die nächste OGG-Seite
+            match self.find_and_parse_next_page() {
+                Ok(true) => {
+                    // Neue Seite geladen, weiter im Loop
+                    continue;
+                }
+                Ok(false) => {
+                    // Stream Ende
+                    return Ok(None);
+                }
+                Err(e) => {
+                    return Err(e);
+                }
+            }
+        }
+    }
+    
+    fn find_and_parse_next_page(&mut self) -> Result<bool> {
+        // Suche nach OGG-Seite im Buffer
+        loop {
+            // Finde "OggS" im Buffer
+            for i in self.current_page_pos..self.buffer.len().saturating_sub(27) {
+                if self.buffer[i..].starts_with(&[0x4f, 0x67, 0x67, 0x53]) {
+                    // Mögliche OGG-Seite gefunden
+                    if let Some(page_info) = self.parse_page_at(i) {
+                        // Seite erfolgreich geparsed
+                        self.current_page_pos = i + page_info.total_size;
+                        self.segments_in_current_page = page_info.segment_table;
+                        self.current_segment_idx = 0;
+                        return Ok(true);
+                    }
+                }
+            }
+            
+            // Keine Seite gefunden, lese mehr Daten
+            let mut temp_buf = [0u8; 8192];
+            match self.reader.read(&mut temp_buf) {
+                Ok(0) => {
+                    // Stream Ende
+                    return Ok(false);
+                }
+                Ok(n) => {
+                    self.buffer.extend_from_slice(&temp_buf[..n]);
+                    
+                    // Buffer begrenzen
+                    if self.buffer.len() > 131072 {
+                        // Entferne verarbeitete Daten
+                        if self.current_page_pos > 65536 {
+                            let to_remove = self.current_page_pos - 32768;
+                            self.buffer.drain(..to_remove);
+                            self.current_page_pos -= to_remove;
+                        }
+                    }
+                }
+                Err(e) => {
+                    return Err(anyhow!("Read error: {}", e));
+                }
+            }
+        }
+    }
+    
+    fn parse_page_at(&self, start: usize) -> Option<PageInfo> {
+        if start + 27 > self.buffer.len() {
+            return None;
+        }
+        
+        // Lese OGG Header
+        let capture_pattern = &self.buffer[start..start+4];
+        if capture_pattern != b"OggS" {
+            return None;
+        }
+        
+        let version = self.buffer[start + 4];
+        let header_type = self.buffer[start + 5];
+        let _granule_position = u64::from_le_bytes([
+            self.buffer[start + 6], self.buffer[start + 7],
+            self.buffer[start + 8], self.buffer[start + 9],
+            self.buffer[start + 10], self.buffer[start + 11],
+            self.buffer[start + 12], self.buffer[start + 13],
+        ]);
+        let _bitstream_serial = u32::from_le_bytes([
+            self.buffer[start + 14], self.buffer[start + 15],
+            self.buffer[start + 16], self.buffer[start + 17],
+        ]);
+        let _page_sequence = u32::from_le_bytes([
+            self.buffer[start + 18], self.buffer[start + 19],
+            self.buffer[start + 20], self.buffer[start + 21],
+        ]);
+        let _checksum = u32::from_le_bytes([
+            self.buffer[start + 22], self.buffer[start + 23],
+            self.buffer[start + 24], self.buffer[start + 25],
+        ]);
+        let page_segments = self.buffer[start + 26] as usize;
+        
+        // Prüfe ob Segment-Tabelle komplett ist
+        if start + 27 + page_segments > self.buffer.len() {
+            return None;
+        }
+        
+        // Lese Segment-Tabelle
+        let segment_table_start = start + 27;
+        let mut segment_table = Vec::with_capacity(page_segments);
+        let mut total_segment_size = 0;
+        
+        for i in 0..page_segments {
+            let seg_size = self.buffer[segment_table_start + i];
+            segment_table.push(seg_size);
+            total_segment_size += seg_size as usize;
+        }
+        
+        // Prüfe ob alle Segment-Daten da sind
+        let page_start = start;
+        let page_end = start + 27 + page_segments + total_segment_size;
+        
+        if page_end > self.buffer.len() {
+            return None;
+        }
+        
+        Some(PageInfo {
+            start: page_start,
+            total_size: page_end - page_start,
+            segment_table,
+            header_type,
+        })
+    }
+    
+    fn extract_next_packet(&mut self) -> Option<Vec<u8>> {
+        while self.current_segment_idx < self.segments_in_current_page.len() {
+            let segment_size = self.segments_in_current_page[self.current_segment_idx] as usize;
+            
+            // Berechne Position des Segments in der aktuellen Seite
+            let page_start = self.current_page_pos - self.segments_in_current_page.iter()
+                .map(|&s| s as usize)
+                .sum::<usize>() - 27 - self.segments_in_current_page.len();
+            
+            let segment_start = page_start + 27 + self.segments_in_current_page.len() + 
+                self.segments_in_current_page[..self.current_segment_idx]
+                    .iter()
+                    .map(|&s| s as usize)
+                    .sum::<usize>();
+            
+            if segment_start + segment_size <= self.buffer.len() {
+                let segment_data = &self.buffer[segment_start..segment_start + segment_size];
+                self.packet_accumulator.extend_from_slice(segment_data);
+            }
+            
+            self.current_segment_idx += 1;
+            
+            // Wenn dies das letzte Segment ist ODER Segment-Größe < 255,
+            // dann ist das Paket komplett
+            let is_last_segment = self.current_segment_idx == self.segments_in_current_page.len();
+            let segment_completes_packet = segment_size < 255;
+            
+            if is_last_segment || segment_completes_packet {
+                if !self.packet_accumulator.is_empty() {
+                    let packet = self.packet_accumulator.clone();
+                    self.packet_accumulator.clear();
+                    return Some(packet);
+                }
+            }
+            
+            // Wenn wir die letzte Segment erreicht haben, reset für nächste Seite
+            if is_last_segment {
+                self.segments_in_current_page.clear();
+                self.current_segment_idx = 0;
+            }
+        }
+        
+        None
+    }
+}
+
+struct PageInfo {
+    start: usize,
+    total_size: usize,
+    segment_table: Vec<u8>,
+    header_type: u8,
+}
+
+// ============================================================================
+// Haupt-Decoding-Loop mit OGG-Parser
+// ============================================================================
+
+fn stream_with_ogg_parser<R: Read>(
+    reader: R,
     ring: &AudioRing,
     running: Arc<AtomicBool>,
     state: Arc<ModuleState>,
     ring_state: Arc<ModuleState>,
-    chunker: &mut PcmChunker,
-    ts_state: &mut PcmTimestampState,
 ) -> Result<()> {
-    let mut decoder: Option<OpusDecoder> = None;
-    let mut channels: u8 = 0;
-    let mut pre_skip_remaining: usize = 0;
-    let mut saw_tags = false;
-    let mut decode_buf: Vec<i16> = Vec::new();
-
+    let mut parser = OggStreamParser::new(reader);
+    let mut opus_decoder: Option<OpusDecoder> = None;
+    let mut pcm_buffer: Vec<i16> = Vec::with_capacity(PCM_I16_SAMPLES * 2);
+    let mut chunk_start_ns = now_utc_ns();
+    let mut chunk_counter = 0;
+    let mut channels = 2;
+    let mut packets_processed = 0;
+    
+    info!("[icecast_in] starting OGG/Opus decoding with parser");
+    
     while running.load(Ordering::Relaxed) {
-        let packet = match probed.format.next_packet() {
-            Ok(packet) => packet,
-            Err(SymphoniaError::IoError(err))
-                if err.kind() == std::io::ErrorKind::UnexpectedEof =>
-            {
-                return Err(anyhow!("stream ended"));
+        match parser.next_packet() {
+            Ok(Some(packet)) => {
+                packets_processed += 1;
+                
+                // Opus Header erkennen
+                if packet.starts_with(b"OpusHead") && packet.len() >= 19 {
+                    channels = packet[9] as usize;
+                    opus_decoder = Some(OpusDecoder::new(
+                        PCM_SAMPLE_RATE,
+                        if channels == 1 { 
+                            OpusChannels::Mono 
+                        } else { 
+                            OpusChannels::Stereo 
+                        }
+                    ).map_err(|e| anyhow!("Failed to create Opus decoder: {}", e))?);
+                    
+                    info!("[icecast_in] Opus decoder: {} channels, {} Hz", 
+                          channels, PCM_SAMPLE_RATE);
+                    continue;
+                }
+                
+                // Tags ignorieren
+                if packet.starts_with(b"OpusTags") {
+                    continue;
+                }
+                
+                // Audio-Pakete dekodieren
+                if let Some(ref mut decoder) = opus_decoder {
+                    let mut decode_buf = vec![0i16; 5760 * 2];
+                    
+                    match decoder.decode(&packet, &mut decode_buf, false) {
+                        Ok(frame_samples) => {
+                            if frame_samples > 0 {
+                                // Zu Stereo PCM konvertieren
+                                let stereo_pcm = if channels == 1 {
+                                    let mut stereo = Vec::with_capacity(frame_samples * 2);
+                                    for &sample in &decode_buf[..frame_samples] {
+                                        stereo.push(sample);
+                                        stereo.push(sample);
+                                    }
+                                    stereo
+                                } else {
+                                    decode_buf[..frame_samples * 2].to_vec()
+                                };
+                                
+                                pcm_buffer.extend_from_slice(&stereo_pcm);
+                                
+                                // 100ms-Chunks senden
+                                while pcm_buffer.len() >= PCM_I16_SAMPLES {
+                                    let chunk: Vec<i16> = pcm_buffer.drain(..PCM_I16_SAMPLES).collect();
+                                    let timestamp = chunk_start_ns + (chunk_counter * CHUNK_DURATION_NS);
+                                    
+                                    ring.writer_push(timestamp, chunk.clone());
+                                    state.mark_rx(1);
+                                    ring_state.mark_rx(1);
+                                    
+                                    chunk_counter += 1;
+                                    
+                                    // Progress alle 10 Sekunden
+                                    if chunk_counter % 100 == 0 {
+                                        info!("[icecast_in] progress: {} chunks ({} seconds), {} packets", 
+                                              chunk_counter, chunk_counter / 10, packets_processed);
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("[icecast_in] decode error on packet {}: {}", packets_processed, e);
+                            state.mark_error(1);
+                        }
+                    }
+                } else {
+                    // Noch kein Decoder
+                    if packets_processed > 20 {
+                        warn!("[icecast_in] still no decoder after {} packets", packets_processed);
+                        return Err(anyhow!("No Opus decoder created"));
+                    }
+                }
             }
-            Err(SymphoniaError::ResetRequired) => {
-                decoder = None;
-                channels = 0;
-                pre_skip_remaining = 0;
-                saw_tags = false;
-                continue;
+            Ok(None) => {
+                info!("[icecast_in] stream ended after {} chunks, {} packets", 
+                      chunk_counter, packets_processed);
+                return Err(anyhow!("Stream ended"));
             }
-            Err(err) => return Err(err).context("failed reading packet"),
-        };
-
-        if packet.track_id() != track_id {
-            continue;
-        }
-
-        if decoder.is_none() {
-            if let Some(header) = parse_opus_head(packet.buf()) {
-                channels = header.channels;
-                pre_skip_remaining = header.pre_skip as usize;
-                decoder = Some(
-                    OpusDecoder::new(PCM_SAMPLE_RATE, opus_channels(header.channels)?)
-                        .context("failed to create opus decoder")?,
-                );
-                decode_buf = vec![0i16; MAX_OPUS_FRAME_SAMPLES * channels as usize];
-                continue;
+            Err(e) => {
+                error!("[icecast_in] parser error: {}", e);
+                state.mark_error(1);
+                std::thread::sleep(Duration::from_millis(10));
             }
-            continue;
         }
-
-        if !saw_tags && is_opus_tags(packet.buf()) {
-            saw_tags = true;
-            continue;
-        }
-
-        let decoder = decoder.as_mut().expect("decoder initialized");
-        let frame_samples = decoder
-            .decode(packet.buf(), &mut decode_buf, false)
-            .context("opus decode failed")?;
-        let decoded_samples = frame_samples * channels as usize;
-        if decoded_samples == 0 {
-            continue;
-        }
-
-        let mut pcm = &decode_buf[..decoded_samples];
-        if pre_skip_remaining > 0 {
-            let skip = pre_skip_remaining.min(frame_samples);
-            let skip_samples = skip * channels as usize;
-            if skip_samples >= pcm.len() {
-                pre_skip_remaining -= skip;
-                continue;
-            }
-            pcm = &pcm[skip_samples..];
-            pre_skip_remaining -= skip;
-        }
-
-        let stereo_pcm = opus_to_stereo(pcm, channels);
-        chunker.push_frames(&stereo_pcm, ring, ts_state, &state, &ring_state);
     }
-
+    
+    info!("[icecast_in] stopped after {} chunks, {} packets", 
+          chunk_counter, packets_processed);
     Ok(())
-}
-
-fn parse_opus_head(data: &[u8]) -> Option<OpusHead> {
-    if data.len() < 19 || &data[..8] != b"OpusHead" {
-        return None;
-    }
-
-    let channels = data[9];
-    let pre_skip = u16::from_le_bytes([data[10], data[11]]);
-    Some(OpusHead { channels, pre_skip })
-}
-
-fn is_opus_tags(data: &[u8]) -> bool {
-    data.len() >= 8 && &data[..8] == b"OpusTags"
-}
-
-fn opus_channels(channels: u8) -> Result<OpusChannels> {
-    match channels {
-        1 => Ok(OpusChannels::Mono),
-        2 => Ok(OpusChannels::Stereo),
-        _ => Err(anyhow!("unsupported opus channel count {}", channels)),
-    }
-}
-
-fn opus_to_stereo(samples: &[i16], channels: u8) -> Vec<i16> {
-    match channels {
-        1 => samples
-            .iter()
-            .flat_map(|sample| [*sample, *sample])
-            .collect(),
-        _ => {
-            let mut out = Vec::with_capacity(samples.len());
-            let mut idx = 0;
-            while idx + 1 < samples.len() {
-                out.push(samples[idx]);
-                out.push(samples[idx + 1]);
-                idx += channels as usize;
-            }
-            out
-        }
-    }
-}
-
-struct OpusHead {
-    channels: u8,
-    pre_skip: u16,
-}
-
-fn decode_to_pcm_i16(buffer: AudioBufferRef<'_>) -> Result<Vec<i16>> {
-    let spec = *buffer.spec();
-    let channels = spec.channels.count();
-    let in_rate = spec.rate;
-    let frames = buffer.frames();
-
-    if channels == 0 || frames == 0 {
-        return Ok(Vec::new());
-    }
-
-    let mut sample_buf = SampleBuffer::<f32>::new(frames as u64, spec);
-    sample_buf.copy_interleaved_ref(buffer);
-    let samples = sample_buf.samples();
-
-    let out_frames = if in_rate == PCM_SAMPLE_RATE {
-        frames
-    } else {
-        let ratio = PCM_SAMPLE_RATE as f64 / in_rate as f64;
-        (frames as f64 * ratio).round() as usize
-    };
-
-    let mut out = Vec::with_capacity(out_frames * 2);
-
-    for out_idx in 0..out_frames {
-        let src_pos = if in_rate == PCM_SAMPLE_RATE {
-            out_idx as f64
-        } else {
-            out_idx as f64 * in_rate as f64 / PCM_SAMPLE_RATE as f64
-        };
-
-        let base = src_pos.floor() as usize;
-        let frac = (src_pos - base as f64) as f32;
-
-        let idx0 = base.min(frames.saturating_sub(1));
-        let idx1 = (base + 1).min(frames.saturating_sub(1));
-
-        let (l0, r0) = stereo_from_frame(samples, channels, idx0);
-        let (l1, r1) = stereo_from_frame(samples, channels, idx1);
-
-        let left = l0 + (l1 - l0) * frac;
-        let right = r0 + (r1 - r0) * frac;
-
-        out.push(float_to_i16(left));
-        out.push(float_to_i16(right));
-    }
-
-    Ok(out)
-}
-
-fn stereo_from_frame(samples: &[f32], channels: usize, frame: usize) -> (f32, f32) {
-    match channels {
-        0 => (0.0, 0.0),
-        1 => {
-            let v = samples[frame];
-            (v, v)
-        }
-        _ => {
-            let base = frame * channels;
-            (samples[base], samples[base + 1])
-        }
-    }
-}
-
-fn float_to_i16(value: f32) -> i16 {
-    let clamped = value.clamp(-1.0, 1.0);
-    (clamped * i16::MAX as f32) as i16
-}
-
-#[derive(Default)]
-struct PcmChunker {
-    pending: Vec<i16>,
-}
-
-impl PcmChunker {
-    fn push_frames(
-        &mut self,
-        pcm: &[i16],
-        ring: &AudioRing,
-        ts_state: &mut PcmTimestampState,
-        state: &ModuleState,
-        ring_state: &ModuleState,
-    ) {
-        if pcm.is_empty() {
-            return;
-        }
-
-        self.pending.extend_from_slice(pcm);
-
-        while self.pending.len() >= PCM_I16_SAMPLES {
-            let frame: Vec<i16> = self.pending.drain(..PCM_I16_SAMPLES).collect();
-            let utc_ns = ts_state.next_frame_utc_ns();
-            ring.writer_push(utc_ns, frame);
-            state.mark_rx(1);
-            ring_state.mark_rx(1);
-        }
-    }
-}
-
-#[derive(Default)]
-struct PcmTimestampState {
-    start_utc_ns: Option<u64>,
-    samples_emitted: u64,
-}
-
-impl PcmTimestampState {
-    fn next_frame_utc_ns(&mut self) -> u64 {
-        let start = self.start_utc_ns.get_or_insert_with(now_utc_ns);
-        let offset_ns =
-            self.samples_emitted * 1_000_000_000 / PCM_SAMPLE_RATE as u64;
-        let utc_ns = *start + offset_ns;
-        self.samples_emitted += PCM_SAMPLES_PER_CH as u64;
-        utc_ns
-    }
-}
-
-struct NonSeekableSource<R> {
-    reader: R,
-}
-
-impl<R> NonSeekableSource<R> {
-    fn new(reader: R) -> Self {
-        Self { reader }
-    }
-}
-
-impl<R: Read + Send + Sync> Read for NonSeekableSource<R> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.reader.read(buf)
-    }
-}
-
-impl<R: Read + Send + Sync> Seek for NonSeekableSource<R> {
-    fn seek(&mut self, _pos: SeekFrom) -> std::io::Result<u64> {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "icecast stream is not seekable",
-        ))
-    }
-}
-
-impl<R: Read + Send + Sync> MediaSource for NonSeekableSource<R> {
-    fn is_seekable(&self) -> bool {
-        false
-    }
-
-    fn byte_len(&self) -> Option<u64> {
-        None
-    }
 }
 
 fn now_utc_ns() -> u64 {

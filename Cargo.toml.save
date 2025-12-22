@@ -14,7 +14,6 @@ axum = { version = "0.7", features = ["macros", "ws", "json"] }
 alsa = { version = "0.9", optional = true }
 byteorder = "1.5"
 vorbis = "0.1"
-minimp3 = "0.5"
 hound = "3.5.1"
 chrono = "0.4.42"
 log = "0.4"
