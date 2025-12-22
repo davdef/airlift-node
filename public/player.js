@@ -68,6 +68,7 @@ class AircheckPlayer {
 
         this.setStatus("Initialisiere Player...");
 
+        this.setupViewportHeight();
         this.setupCanvas();
         this.setupUI();
         this.setupInteraction();
@@ -158,6 +159,19 @@ class AircheckPlayer {
         };
         resize();
         window.addEventListener("resize", resize);
+    }
+
+    setupViewportHeight() {
+        const setVh = () => {
+            const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+            document.documentElement.style.setProperty("--vh", `${viewportHeight * 0.01}px`);
+        };
+
+        setVh();
+        window.addEventListener("resize", setVh);
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener("resize", setVh);
+        }
     }
 
     // ---------------------------------------------------
