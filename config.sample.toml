@@ -1,0 +1,97 @@
+# Airlift Node - Beispielkonfiguration (strukturierte Pipeline)
+
+[ring]
+slots = 6000
+prealloc_samples = 9600
+chunk_ms = 100
+
+[inputs.srt_listener]
+type = "srt"
+enabled = true
+listen = "0.0.0.0:9000"
+latency_ms = 200
+streamid = "airlift"
+buffer = "ring.main"
+
+[inputs.alsa_studio]
+type = "alsa"
+enabled = false
+device = "hw:0"
+buffer = "ring.main"
+
+[ringbuffers.main]
+slots = 6000
+chunk_ms = 100
+prealloc_samples = 9600
+
+[consumers.peak_analyzer]
+kind = "module"
+input = "srt_listener"
+buffer = "ring.main"
+interval_ms = 100
+
+[consumers.broadcast_http]
+kind = "service"
+input = "srt_listener"
+buffer = "ring.main"
+url = "http://localhost:3006/api/broadcast"
+interval_ms = 100
+
+[consumers.influx_out]
+kind = "service"
+input = "srt_listener"
+buffer = "ring.main"
+url = "http://localhost:8086/write"
+db = "rfm_aircheck"
+interval_ms = 100
+
+[outputs.srt_out]
+kind = "output"
+input = "srt_listener"
+buffer = "ring.main"
+codec = "pcm_s16le"
+target = "example.com:9000"
+latency_ms = 200
+
+[outputs.icecast_out]
+kind = "output"
+input = "srt_listener"
+buffer = "ring.main"
+codec = "opus_ogg"
+host = "icecast.local"
+port = 8000
+mount = "/airlift"
+user = "source"
+password = "hackme"
+bitrate = 128000
+name = "Airlift Node"
+description = "Live-Stream aus dem Ringbuffer"
+genre = "news"
+public = false
+
+[outputs.recorder]
+kind = "output"
+input = "srt_listener"
+buffer = "ring.main"
+codec = "wav_archive"
+wav_dir = "/opt/rfm/airlift-node/aircheck/wav"
+retention_days = 7
+
+[codecs.pcm_s16le]
+type = "pcm"
+sample_rate = 48000
+channels = 2
+
+[codecs.opus_ogg]
+type = "opus_ogg"
+sample_rate = 48000
+channels = 2
+frame_size_ms = 20
+bitrate = 128000
+application = "audio"
+
+[codecs.wav_archive]
+type = "pcm"
+sample_rate = 48000
+channels = 2
+container = "wav"

@@ -19,6 +19,8 @@
             --buffer: #9b59b6;
             --output: #27ae60;
             --codec: #e67e22;
+            --service: #e84393;
+            --processing: #f39c12;
             --wave-active: #5aa0ff;
             --wave-ghost: rgba(90, 160, 255, 0.3);
             --wave-bg: rgba(90, 160, 255, 0.1);
@@ -216,6 +218,8 @@
         .module-card.input { border-color: var(--input); }
         .module-card.buffer { border-color: var(--buffer); }
         .module-card.output { border-color: var(--output); }
+        .module-card.service { border-color: var(--service); }
+        .module-card.processing { border-color: var(--processing); }
 
         .module-header {
             display: flex;
@@ -236,6 +240,8 @@
         .type-input { background: var(--input); color: white; }
         .type-buffer { background: var(--buffer); color: white; }
         .type-output { background: var(--output); color: white; }
+        .type-service { background: var(--service); color: white; }
+        .type-processing { background: var(--processing); color: white; }
 
         .module-status {
             display: inline-flex;
@@ -281,6 +287,20 @@
         .module-stat {
             display: flex;
             flex-direction: column;
+        }
+
+        .consumer-group {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 6px;
+            min-width: 200px;
+        }
+
+        .consumer-children {
+            display: flex;
+            gap: 10px;
+            align-items: center;
         }
 
         .stat-label {
@@ -674,7 +694,7 @@
     <!-- Ringbuffer Visualization -->
     <section class="panel">
         <div class="panel-header">
-            <h2 class="panel-title">Ringbuffer (60s Audio Buffer)</h2>
+            <h2 class="panel-title" id="ringbufferTitle">Ringbuffer</h2>
             <div style="font-size: 11px; color: #888;">
                 <span id="ringbufferInfo">Füllstand: 0%</span>
             </div>
@@ -843,6 +863,9 @@ let currentStatus = null;
 let latestStudioTime = null;
 let websocket = null;
 const rateHistory = new Map();
+const ringbufferConfig = {
+    chunkMs: 100,
+};
 
 // Canvas setup
 const ringbufferCanvas = document.getElementById('ringbufferCanvas');
@@ -938,6 +961,25 @@ function getModuleStatus(runtime) {
     return { class: 'active', label: 'Aktiv', text: 'Aktiv' };
 }
 
+function getNodeStatus(node, moduleSnapshot) {
+    if (moduleSnapshot) {
+        return getModuleStatus(moduleSnapshot.runtime);
+    }
+    if (node.kind === 'service') {
+        return { class: 'active', label: 'Service', text: 'Service' };
+    }
+    if (node.kind === 'processing') {
+        return { class: 'standby', label: 'Codec', text: 'Codec' };
+    }
+    return { class: 'standby', label: 'Aktiv', text: 'Aktiv' };
+}
+
+function formatNodeId(nodeId) {
+    if (nodeId.startsWith('service:')) return nodeId.replace('service:', '');
+    if (nodeId.startsWith('codec:')) return nodeId.replace('codec:', '');
+    return nodeId;
+}
+
 // Draw Ringbuffer Waveform (Zyklischer Buffer)
 function drawRingbuffer(status) {
     if (!ringbufferCtx || !status.ring) return;
@@ -954,95 +996,62 @@ function drawRingbuffer(status) {
     const fillPercent = Math.round(ring.fill_ratio * 100);
     const headPos = ring.head_index || 0;
     const tailPos = ring.tail_index || 0;
+    const bufferDurationMs = capacity * ringbufferConfig.chunkMs;
     
     // Update info display
     document.getElementById('ringbufferInfo').textContent = `Füllstand: ${fillPercent}%`;
+    document.getElementById('ringbufferTitle').textContent = `Ringbuffer (${capacity} Chunks / ${Math.round(bufferDurationMs / 60000)}min)`;
     
     // Draw grid
     ringbufferCtx.strokeStyle = 'rgba(136, 136, 136, 0.2)';
     ringbufferCtx.lineWidth = 1;
     
-    // Vertical lines (Zeitmarker für 60s)
-    for (let i = 1; i < 6; i++) {
-        const x = (width / 6) * i;
+    // Vertical lines (Zeitmarker für 10min)
+    for (let i = 1; i < 10; i++) {
+        const x = (width / 10) * i;
         ringbufferCtx.beginPath();
         ringbufferCtx.moveTo(x, 0);
         ringbufferCtx.lineTo(x, height);
         ringbufferCtx.stroke();
     }
     
-    // Draw "Ghost" data from previous cycle (untere Ebene)
-    if (capacity > 0) {
-        // Bereiche für Ghost-Daten (alles außerhalb der aktuellen Head-Tail Span)
-        const ghostStart = tailPos;
-        const ghostEnd = headPos < tailPos ? capacity : headPos;
-        
-        if (ghostStart < ghostEnd) {
-            const ghostWidth = ((ghostEnd - ghostStart) / capacity) * width;
-            const ghostX = (ghostStart / capacity) * width;
-            
-            ringbufferCtx.fillStyle = 'rgba(90, 160, 255, 0.1)';
-            ringbufferCtx.fillRect(ghostX, 0, ghostWidth, height);
-            
-            // Ghost waveform (simuliert)
-            ringbufferCtx.strokeStyle = 'rgba(90, 160, 255, 0.2)';
-            ringbufferCtx.lineWidth = 1;
-            ringbufferCtx.beginPath();
-            
-            const steps = Math.min(50, ghostWidth);
-            for (let i = 0; i <= steps; i++) {
-                const x = ghostX + (i / steps) * ghostWidth;
-                const noise = Math.sin(i * 0.3) * 0.5 + 0.5;
-                const amplitude = 0.3 + noise * 0.4;
-                const y = height / 2 + Math.sin(i * 0.5) * amplitude * (height / 2);
-                
-                if (i === 0) ringbufferCtx.moveTo(x, y);
-                else ringbufferCtx.lineTo(x, y);
-            }
-            ringbufferCtx.stroke();
+    const segments = [];
+    const fillSlots = Math.min(capacity, ring.fill || 0);
+    if (fillSlots >= capacity) {
+        segments.push({ start: 0, end: capacity });
+    } else if (headPos !== tailPos) {
+        if (headPos > tailPos) {
+            segments.push({ start: tailPos, end: headPos });
+        } else {
+            segments.push({ start: tailPos, end: capacity });
+            segments.push({ start: 0, end: headPos });
         }
     }
-    
-    // Draw current active area (obere Ebene)
-    if (headPos !== tailPos && capacity > 0) {
-        let activeStart, activeEnd;
-        
-        if (headPos > tailPos) {
-            activeStart = tailPos;
-            activeEnd = headPos;
-        } else {
-            // Wrap-around
-            activeStart = tailPos;
-            activeEnd = capacity;
-        }
-        
-        const activeWidth = ((activeEnd - activeStart) / capacity) * width;
-        const activeX = (activeStart / capacity) * width;
-        
-        // Active area background
+
+    segments.forEach(({ start, end }) => {
+        const segmentWidth = ((end - start) / capacity) * width;
+        const segmentX = (start / capacity) * width;
+
         ringbufferCtx.fillStyle = 'rgba(90, 160, 255, 0.15)';
-        ringbufferCtx.fillRect(activeX, 0, activeWidth, height);
-        
-        // Active waveform
+        ringbufferCtx.fillRect(segmentX, 0, segmentWidth, height);
+
         ringbufferCtx.strokeStyle = '#5aa0ff';
         ringbufferCtx.lineWidth = 2;
         ringbufferCtx.beginPath();
-        
-        const steps = Math.min(100, activeWidth);
+
+        const steps = Math.min(120, Math.max(1, Math.floor(segmentWidth)));
         for (let i = 0; i <= steps; i++) {
-            const x = activeX + (i / steps) * activeWidth;
-            
-            // Simuliere Audio-Waveform basierend auf Position
+            const x = segmentX + (i / steps) * segmentWidth;
             const progress = i / steps;
             const baseFreq = 10;
             const amplitude = 0.5 + Math.sin(progress * Math.PI) * 0.3;
             const y = height / 2 + Math.sin(progress * baseFreq * Math.PI) * amplitude * (height / 2);
-            
+
             if (i === 0) ringbufferCtx.moveTo(x, y);
             else ringbufferCtx.lineTo(x, y);
         }
         ringbufferCtx.stroke();
-    }
+    });
     
     // Update markers overlay
     const overlay = document.getElementById('ringbufferOverlay');
@@ -1068,7 +1077,7 @@ function drawRingbuffer(status) {
     const timeDisplay = document.getElementById('ringbufferTime');
     if (latestStudioTime) {
         const currentTime = latestStudioTime;
-        const bufferStart = currentTime - 60000; // 60s Buffer
+        const bufferStart = currentTime - bufferDurationMs;
         timeDisplay.textContent = `${formatTime(bufferStart)} - ${formatTime(currentTime)}`;
     } else {
         timeDisplay.textContent = '–';
@@ -1081,6 +1090,11 @@ function drawRingbuffer(status) {
             <div class="waveform-stat-label">Füllstand</div>
             <div class="waveform-stat-value">${fillPercent}%</div>
             <div class="waveform-stat-sub">${ring.fill || 0} / ${capacity}</div>
+        </div>
+        <div class="waveform-stat">
+            <div class="waveform-stat-label">Zeitfenster</div>
+            <div class="waveform-stat-value">${Math.round(bufferDurationMs / 60000)}min</div>
+            <div class="waveform-stat-sub">${ringbufferConfig.chunkMs}ms pro Chunk</div>
         </div>
         <div class="waveform-stat">
             <div class="waveform-stat-label">Head</div>
@@ -1269,7 +1283,7 @@ function setupWebSocket() {
 function renderAudioPipeline(status) {
     const container = document.getElementById('pipelineTree');
     
-    if (!status.modules || status.modules.length === 0) {
+    if (!status.graph || !status.graph.nodes || status.graph.nodes.length === 0) {
         container.innerHTML = `
             <div class="empty-state">
                 <div class="icon">🔇</div>
@@ -1278,9 +1292,20 @@ function renderAudioPipeline(status) {
         return;
     }
     
-    const inputs = status.modules.filter(m => m.module_type === 'input');
-    const buffers = status.modules.filter(m => m.module_type === 'buffer');
-    const outputs = status.modules.filter(m => m.module_type === 'output');
+    const nodes = status.graph.nodes || [];
+    const edges = status.graph.edges || [];
+    const modulesById = new Map((status.modules || []).map(module => [module.id, module]));
+    const edgesByFrom = new Map();
+
+    edges.forEach(edge => {
+        if (!edgesByFrom.has(edge.from)) {
+            edgesByFrom.set(edge.from, []);
+        }
+        edgesByFrom.get(edge.from).push(edge.to);
+    });
+
+    const inputs = nodes.filter(node => node.kind === 'input');
+    const buffers = nodes.filter(node => node.kind === 'buffer');
     
     let pipelineHTML = '';
     
@@ -1289,7 +1314,7 @@ function renderAudioPipeline(status) {
             <div class="tree-level">
                 <div class="level-label">Input</div>
                 <div class="level-modules">
-                    ${inputs.map(module => renderPipelineModule(module, 'input')).join('')}
+                    ${inputs.map(node => renderPipelineNode(node, modulesById)).join('')}
                 </div>
             </div>
             <div style="text-align: center; color: var(--blue); font-size: 20px; margin: 4px 0;">↓</div>`;
@@ -1300,18 +1325,34 @@ function renderAudioPipeline(status) {
             <div class="tree-level">
                 <div class="level-label">Ringbuffer</div>
                 <div class="level-modules">
-                    ${buffers.map(module => renderPipelineModule(module, 'buffer')).join('')}
+                    ${buffers.map(node => renderPipelineNode(node, modulesById)).join('')}
                 </div>
             </div>
             <div style="text-align: center; color: var(--blue); font-size: 20px; margin: 4px 0;">↓</div>`;
     }
     
-    if (outputs.length > 0) {
+    if (buffers.length > 0) {
+        const consumerGroups = buffers.flatMap(buffer => {
+            const targets = edgesByFrom.get(buffer.id) || [];
+            return targets.map(targetId => {
+                const node = nodes.find(n => n.id === targetId);
+                if (!node) return '';
+                if (node.kind === 'processing') {
+                    const downstream = edgesByFrom.get(node.id) || [];
+                    const outputs = downstream
+                        .map(outputId => nodes.find(n => n.id === outputId))
+                        .filter(Boolean);
+                    return renderConsumerGroup(node, outputs, modulesById);
+                }
+                return renderConsumerGroup(node, [], modulesById);
+            });
+        }).filter(Boolean);
+
         pipelineHTML += `
             <div class="tree-level">
-                <div class="level-label">Output</div>
+                <div class="level-label">Konsumenten (Module & Services)</div>
                 <div class="level-modules">
-                    ${outputs.map(module => renderPipelineModule(module, 'output')).join('')}
+                    ${consumerGroups.join('')}
                 </div>
             </div>`;
     }
@@ -1319,41 +1360,60 @@ function renderAudioPipeline(status) {
     container.innerHTML = pipelineHTML;
 }
 
-function renderPipelineModule(module, type) {
-    const statusInfo = getModuleStatus(module.runtime);
+function renderPipelineNode(node, modulesById) {
+    const moduleSnapshot = modulesById.get(node.id);
+    const statusInfo = getNodeStatus(node, moduleSnapshot);
+    const type = node.kind;
     
     return `
         <div class="module-card ${type}">
             <div class="module-header">
-                <span class="module-type type-${type}">${module.module_type}</span>
+                <span class="module-type type-${type}">${type}</span>
                 <span class="module-status">
                     <span class="status-dot ${statusInfo.class}"></span>
                     <span>${statusInfo.label}</span>
                 </span>
             </div>
-            <div class="module-title">${module.label}</div>
-            <div class="module-id">${module.id}</div>
+            <div class="module-title">${node.label}</div>
+            <div class="module-id">${formatNodeId(node.id)}</div>
             
-            <div class="module-stats">
-                <div class="module-stat">
-                    <div class="stat-label">RX</div>
-                    <div class="stat-value">${module.runtime.counters.rx.toLocaleString()}</div>
+            ${moduleSnapshot ? `
+                <div class="module-stats">
+                    <div class="module-stat">
+                        <div class="stat-label">RX</div>
+                        <div class="stat-value">${moduleSnapshot.runtime.counters.rx.toLocaleString()}</div>
+                    </div>
+                    <div class="module-stat">
+                        <div class="stat-label">TX</div>
+                        <div class="stat-value">${moduleSnapshot.runtime.counters.tx.toLocaleString()}</div>
+                    </div>
+                    <div class="module-stat">
+                        <div class="stat-label">Errors</div>
+                        <div class="stat-value">${moduleSnapshot.runtime.counters.errors}</div>
+                    </div>
+                    <div class="module-stat">
+                        <div class="stat-label">Aktiv</div>
+                        <div class="stat-value">${formatDuration(Date.now() - moduleSnapshot.runtime.last_activity_ms)}</div>
+                    </div>
                 </div>
-                <div class="module-stat">
-                    <div class="stat-label">TX</div>
-                    <div class="stat-value">${module.runtime.counters.tx.toLocaleString()}</div>
-                </div>
-                <div class="module-stat">
-                    <div class="stat-label">Errors</div>
-                    <div class="stat-value">${module.runtime.counters.errors}</div>
-                </div>
-                <div class="module-stat">
-                    <div class="stat-label">Aktiv</div>
-                    <div class="stat-value">${formatDuration(Date.now() - module.runtime.last_activity_ms)}</div>
-                </div>
-            </div>
+            ` : ''}
         </div>
     `;
+}
+
+function renderConsumerGroup(node, outputs, modulesById) {
+    if (node.kind === 'processing' && outputs.length > 0) {
+        return `
+            <div class="consumer-group">
+                ${renderPipelineNode(node, modulesById)}
+                <div class="consumer-children">
+                    ${outputs.map(output => renderPipelineNode(output, modulesById)).join('')}
+                </div>
+            </div>
+        `;
+    }
+
+    return renderPipelineNode(node, modulesById);
 }
 
 // Render Tables and other components

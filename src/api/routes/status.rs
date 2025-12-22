@@ -10,7 +10,7 @@ use std::sync::Arc;
 use tokio::time::{Duration, interval};
 use tokio_stream::{StreamExt, wrappers::IntervalStream};
 
-use crate::api::ApiState;
+use crate::api::{ApiState, Registry, ServiceDescriptor};
 use crate::codecs::registry::{
     CodecInstanceSnapshot, CodecRegistry, DEFAULT_CODEC_OPUS_OGG_ID, DEFAULT_CODEC_PCM_ID,
 };
@@ -102,6 +102,7 @@ pub async fn get_status(State(state): State<ApiState>) -> Json<StatusResponse> {
         &state.control_state,
         &state.ring.stats(),
         &state.config,
+        &state.registry,
         &state.codec_registry,
     ))
 }
@@ -112,10 +113,17 @@ pub async fn events(
     let control_state = state.control_state.clone();
     let ring = state.ring.clone();
     let config = state.config.clone();
+    let registry = state.registry.clone();
     let codec_registry = state.codec_registry.clone();
 
     let stream = IntervalStream::new(interval(Duration::from_secs(1))).map(move |_| {
-        let status = build_status(&control_state, &ring.stats(), &config, &codec_registry);
+        let status = build_status(
+            &control_state,
+            &ring.stats(),
+            &config,
+            &registry,
+            &codec_registry,
+        );
         let data = serde_json::to_string(&status).unwrap_or_else(|_| "{}".to_string());
         Ok(Event::default().event("status").data(data))
     });
@@ -127,6 +135,7 @@ fn build_status(
     control_state: &Arc<ControlState>,
     ring_stats: &RingStats,
     config: &Config,
+    registry: &Registry,
     codec_registry: &CodecRegistry,
 ) -> StatusResponse {
     let fill = ring_stats
@@ -303,6 +312,7 @@ fn build_status(
         &recorder,
         &ring_module,
         config,
+        registry,
         &codec_map,
     );
 
@@ -388,6 +398,7 @@ fn build_graph(
     recorder: &ModuleSnapshot,
     ring: &ModuleSnapshot,
     config: &Config,
+    registry: &Registry,
     codec_map: &HashMap<String, CodecInstanceSnapshot>,
 ) -> GraphStatus {
     let mut nodes = Vec::new();
@@ -400,6 +411,25 @@ fn build_graph(
             label: "Ringbuffer".to_string(),
             kind: "buffer".to_string(),
         });
+    }
+
+    if ring_active {
+        for service in registry.list_services() {
+            if service_consumes_ring(&service) {
+                let service_id = format!("service:{}", service.id);
+                if !nodes.iter().any(|node| node.id == service_id) {
+                    nodes.push(GraphNode {
+                        id: service_id.clone(),
+                        label: humanize_service_label(&service),
+                        kind: "service".to_string(),
+                    });
+                    edges.push(GraphEdge {
+                        from: "ring".to_string(),
+                        to: service_id,
+                    });
+                }
+            }
+        }
     }
 
     if srt_in.enabled && srt_in.running {
@@ -475,6 +505,18 @@ fn build_graph(
     }
 
     GraphStatus { nodes, edges }
+}
+
+fn service_consumes_ring(service: &ServiceDescriptor) -> bool {
+    matches!(service.id.as_str(), "audio_http" | "monitoring")
+}
+
+fn humanize_service_label(service: &ServiceDescriptor) -> String {
+    match service.id.as_str() {
+        "audio_http" => "Audio HTTP".to_string(),
+        "monitoring" => "Monitoring".to_string(),
+        _ => service.service_type.replace('_', " ").to_string(),
+    }
 }
 
 fn add_output_to_graph(
