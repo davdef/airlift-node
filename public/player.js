@@ -14,6 +14,7 @@ class AircheckPlayer {
         // === HISTORY (von /history + WS) ===
         this.history = [];          // [{ ts, peaks: [...] }]
         this.latestWsTs = null;
+        this.lastWsPerf = null;
         this.loadingHistory = false;
         this.lastHistoryRequest = null;
 
@@ -21,8 +22,6 @@ class AircheckPlayer {
         this.minVisibleDuration = 5_000;           // 5s
         this.maxVisibleDuration = 2 * 60 * 60_000; // 2h harte Obergrenze
         this.visibleDuration    = 30_000;          // Start: 30s
-
-        const now = Date.now();
         this.viewportLeft = 0;
         this.viewportRight = 0;
         this.followLive = true;     // Viewport folgt Live
@@ -51,6 +50,7 @@ class AircheckPlayer {
         
         this.isPlaying = false;
         this.playbackServerStartTime = null; // ms
+        this.cacheBustCounter = 0;
 
         // === DEBUG-UI ===
         this.debug = {
@@ -113,7 +113,7 @@ class AircheckPlayer {
     getCurrentPlaybackTime() {
         if (this.isLiveAudio) {
             // Live: Aktuellste Server-Zeit
-            return this.latestWsTs ?? this.bufferEnd ?? 0;
+            return this.getServerNow() ?? this.bufferEnd ?? 0;
         }
         
         if (this.playbackServerStartTime != null) {
@@ -122,7 +122,31 @@ class AircheckPlayer {
         }
         
         // Fallback: Aktuellste verfügbare Server-Zeit
-        return this.latestWsTs ?? this.bufferEnd ?? 0;
+        return this.getServerNow() ?? this.bufferEnd ?? 0;
+    }
+
+    updateServerTime(ts) {
+        this.latestWsTs = ts;
+        this.lastWsPerf = performance.now();
+    }
+
+    getServerNow() {
+        if (this.latestWsTs != null && this.lastWsPerf != null) {
+            return this.latestWsTs + (performance.now() - this.lastWsPerf);
+        }
+        if (this.bufferEnd != null) {
+            return this.bufferEnd;
+        }
+        return null;
+    }
+
+    getCacheBustValue() {
+        const serverNow = this.getServerNow();
+        if (serverNow != null) {
+            return Math.floor(serverNow);
+        }
+        this.cacheBustCounter += 1;
+        return this.cacheBustCounter;
     }
 
     setupCanvas() {
@@ -215,7 +239,7 @@ class AircheckPlayer {
             if (!data || !Array.isArray(data.peaks) || typeof data.timestamp !== "number") return;
 
             const ts = data.timestamp;
-            this.latestWsTs = ts;
+            this.updateServerTime(ts);
             this.bufferEnd = ts;
 
             if (!this.followLive) {
@@ -286,9 +310,9 @@ class AircheckPlayer {
         
         // Füge einen Cache-Buster hinzu, um Caching-Probleme zu vermeiden
         if (this.audio.src.includes('?')) {
-            this.audio.src += '&_=' + Date.now();
+            this.audio.src += '&_=' + this.getCacheBustValue();
         } else {
-            this.audio.src += '?_=' + Date.now();
+            this.audio.src += '?_=' + this.getCacheBustValue();
         }
         
         // Preload deaktivieren für Live-Streams
@@ -314,7 +338,7 @@ class AircheckPlayer {
         }, 100);
         
         // Viewport auf Live-Bereich setzen
-        const ref = this.latestWsTs ?? this.bufferEnd ?? Date.now();
+        const ref = this.getServerNow() ?? this.bufferEnd ?? 0;
         this.viewportRight = ref;
         this.viewportLeft  = ref - this.visibleDuration;
         this.clampViewportToBuffer();
@@ -412,11 +436,12 @@ class AircheckPlayer {
     // ---------------------------------------------------
     setupInteraction() {
         const canvas = this.canvas;
+        let lastWheelAt = 0;
 
         // MOUSE
         canvas.addEventListener("mousedown", (e) => {
             // Verhindere Drag wenn kürzlich gezoomt wurde
-            if (wheelTimeout && Date.now() - wheelTimeout < 100) {
+            if (lastWheelAt && performance.now() - lastWheelAt < 100) {
                 return;
             }
             this.mouseDown = true;
@@ -473,6 +498,7 @@ class AircheckPlayer {
         
             // Debouncing für smoother Zoom
             if (wheelTimeout) return;
+            lastWheelAt = performance.now();
             wheelTimeout = setTimeout(() => {
                 wheelTimeout = null;
             }, 50);
@@ -676,7 +702,7 @@ class AircheckPlayer {
         this.followLive = false;
         this.playbackServerStartTime = targetServerTime;
 
-        const src = `/audio/at?ts=${Math.floor(targetServerTime)}&_=${Date.now()}`;
+        const src = `/audio/at?ts=${Math.floor(targetServerTime)}&_=${this.getCacheBustValue()}`;
         
         // Pausiere aktuellen Stream zuerst
         this.audio.pause();
@@ -746,12 +772,12 @@ class AircheckPlayer {
             // console.log("[History] Loading:", url, "span:", span, "ms");
             
             // RATE LIMITING: Verhindere zu häufige Requests
-            const now = Date.now();
-            if (this.lastHistoryRequest && (now - this.lastHistoryRequest < 2000)) {
+            const nowPerf = performance.now();
+            if (this.lastHistoryRequest && (nowPerf - this.lastHistoryRequest < 2000)) {
                 // console.log("[History] Rate limiting, skipping...");
                 return;
             }
-            this.lastHistoryRequest = now;
+            this.lastHistoryRequest = nowPerf;
             
             const res = await fetch(url);
             if (!res.ok) {
