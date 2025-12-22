@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
 use opus::Application;
@@ -11,15 +11,11 @@ use crate::codecs::mp3::Mp3Encoder;
 use crate::codecs::opus::{OggOpusEncoder, OpusWebRtcEncoder};
 use crate::codecs::pcm::PcmCodec;
 use crate::codecs::vorbis::VorbisEncoder;
-use crate::codecs::{AudioCodec, PCM_CHANNELS, PCM_FRAME_MS, PCM_SAMPLE_RATE};
+use crate::codecs::{
+    AudioCodec, CodecInfo, CodecKind, ContainerKind, PCM_CHANNELS, PCM_SAMPLE_RATE,
+};
 use crate::config::{CodecInstanceConfig, CodecType, Config};
 use crate::control::{ModuleSnapshot, ModuleState};
-
-pub const DEFAULT_CODEC_PCM_ID: &str = "codec_pcm";
-pub const DEFAULT_CODEC_OPUS_OGG_ID: &str = "codec_opus_ogg";
-pub const DEFAULT_CODEC_OPUS_WEBRTC_ID: &str = "codec_opus_webrtc";
-pub const DEFAULT_CODEC_MP3_ID: &str = "codec_mp3";
-pub const DEFAULT_CODEC_VORBIS_ID: &str = "codec_vorbis";
 
 #[derive(Clone, Serialize)]
 pub struct CodecMetricsSnapshot {
@@ -99,9 +95,14 @@ impl CodecInstance {
             id: self.id.clone(),
             codec_type: self.config.codec_type.clone(),
             config: self.config.clone(),
+            info: codec_info_from_config(&self.config),
             runtime_state: self.module.snapshot(),
             metrics: self.metrics.snapshot(),
-            last_error: self.last_error.lock().expect("codec last_error lock").clone(),
+            last_error: self
+                .last_error
+                .lock()
+                .expect("codec last_error lock")
+                .clone(),
         }
     }
 }
@@ -111,6 +112,7 @@ pub struct CodecInstanceSnapshot {
     pub id: String,
     pub codec_type: CodecType,
     pub config: CodecInstanceConfig,
+    pub info: CodecInfo,
     pub runtime_state: ModuleSnapshot,
     pub metrics: CodecMetricsSnapshot,
     pub last_error: Option<String>,
@@ -118,6 +120,7 @@ pub struct CodecInstanceSnapshot {
 
 pub struct CodecRegistry {
     instances: HashMap<String, Arc<CodecInstance>>,
+    codecs: Mutex<HashMap<String, Arc<Mutex<Box<dyn AudioCodec>>>>>,
 }
 
 impl CodecRegistry {
@@ -133,7 +136,10 @@ impl CodecRegistry {
                 (instance.id.clone(), instance)
             })
             .collect();
-        Self { instances }
+        Self {
+            instances,
+            codecs: Mutex::new(HashMap::new()),
+        }
     }
 
     pub fn list(&self) -> Vec<Arc<CodecInstance>> {
@@ -157,89 +163,45 @@ impl CodecRegistry {
         let codec = build_codec_from_config(&instance.config)?;
         Ok((codec, instance))
     }
+
+    pub fn build_codec_handle(
+        &self,
+        id: &str,
+    ) -> Result<(Arc<Mutex<Box<dyn AudioCodec>>>, Arc<CodecInstance>)> {
+        let instance = self
+            .instances
+            .get(id)
+            .cloned()
+            .ok_or_else(|| anyhow!("codec instance '{}' not found", id))?;
+
+        let mut codecs = self.codecs.lock().expect("codec registry lock");
+        if let Some(codec) = codecs.get(id) {
+            return Ok((codec.clone(), instance));
+        }
+
+        let codec = Arc::new(Mutex::new(build_codec_from_config(&instance.config)?));
+        codecs.insert(id.to_string(), codec.clone());
+        Ok((codec, instance))
+    }
+
+    pub fn get_instance(&self, id: &str) -> Result<Arc<CodecInstance>> {
+        self.instances
+            .get(id)
+            .cloned()
+            .ok_or_else(|| anyhow!("codec instance '{}' not found", id))
+    }
+
+    pub fn get_info(&self, id: &str) -> Result<CodecInfo> {
+        let instance = self
+            .instances
+            .get(id)
+            .ok_or_else(|| anyhow!("codec instance '{}' not found", id))?;
+        Ok(codec_info_from_config(&instance.config))
+    }
 }
 
 pub fn resolve_codec_configs(cfg: &Config) -> Vec<CodecInstanceConfig> {
-    if !cfg.codecs.is_empty() {
-        return cfg.codecs.clone();
-    }
-
-    let opus_bitrate = cfg
-        .icecast_out
-        .as_ref()
-        .map(|c| c.bitrate as u32)
-        .unwrap_or(96_000);
-    #[cfg(feature = "mp3")]
-    let mp3_bitrate = cfg
-        .mp3_out
-        .as_ref()
-        .map(|c| c.bitrate)
-        .or_else(|| cfg.recorder.as_ref().and_then(|r| r.mp3.as_ref().map(|m| m.bitrate)))
-        .unwrap_or(128);
-
-    vec![
-        CodecInstanceConfig {
-            id: DEFAULT_CODEC_PCM_ID.to_string(),
-            codec_type: CodecType::Pcm,
-            sample_rate: Some(PCM_SAMPLE_RATE),
-            channels: Some(PCM_CHANNELS),
-            frame_size_ms: Some(PCM_FRAME_MS),
-            bitrate: None,
-            container: Some("raw".to_string()),
-            mode: None,
-            application: None,
-            quality: None,
-        },
-        CodecInstanceConfig {
-            id: DEFAULT_CODEC_OPUS_OGG_ID.to_string(),
-            codec_type: CodecType::OpusOgg,
-            sample_rate: Some(PCM_SAMPLE_RATE),
-            channels: Some(PCM_CHANNELS),
-            frame_size_ms: Some(20),
-            bitrate: Some(opus_bitrate),
-            container: Some("ogg".to_string()),
-            mode: Some("stream".to_string()),
-            application: Some("audio".to_string()),
-            quality: None,
-        },
-        CodecInstanceConfig {
-            id: DEFAULT_CODEC_OPUS_WEBRTC_ID.to_string(),
-            codec_type: CodecType::OpusWebrtc,
-            sample_rate: Some(PCM_SAMPLE_RATE),
-            channels: Some(PCM_CHANNELS),
-            frame_size_ms: Some(20),
-            bitrate: Some(opus_bitrate),
-            container: Some("rtp".to_string()),
-            mode: Some("webrtc".to_string()),
-            application: Some("voip".to_string()),
-            quality: None,
-        },
-        #[cfg(feature = "mp3")]
-        CodecInstanceConfig {
-            id: DEFAULT_CODEC_MP3_ID.to_string(),
-            codec_type: CodecType::Mp3,
-            sample_rate: Some(PCM_SAMPLE_RATE),
-            channels: Some(PCM_CHANNELS),
-            frame_size_ms: Some(PCM_FRAME_MS),
-            bitrate: Some(mp3_bitrate),
-            container: Some("mpeg".to_string()),
-            mode: None,
-            application: None,
-            quality: None,
-        },
-        CodecInstanceConfig {
-            id: DEFAULT_CODEC_VORBIS_ID.to_string(),
-            codec_type: CodecType::Vorbis,
-            sample_rate: Some(PCM_SAMPLE_RATE),
-            channels: Some(PCM_CHANNELS),
-            frame_size_ms: Some(PCM_FRAME_MS),
-            bitrate: None,
-            container: Some("ogg".to_string()),
-            mode: None,
-            application: None,
-            quality: Some(0.4),
-        },
-    ]
+    cfg.codec_instances()
 }
 
 fn build_codec_from_config(config: &CodecInstanceConfig) -> Result<Box<dyn AudioCodec>> {
@@ -255,19 +217,15 @@ fn build_codec_from_config(config: &CodecInstanceConfig) -> Result<Box<dyn Audio
 
     match config.codec_type {
         CodecType::Pcm => Ok(Box::new(PcmCodec::new())),
-        CodecType::OpusOgg => {
-            Ok(Box::new(OggOpusEncoder::new_with_application(
-                bitrate as i32,
-                "airlift",
-                opus_application,
-            )?))
-        }
-        CodecType::OpusWebrtc => {
-            Ok(Box::new(OpusWebRtcEncoder::new_with_application(
-                bitrate as i32,
-                opus_application,
-            )?))
-        }
+        CodecType::OpusOgg => Ok(Box::new(OggOpusEncoder::new_with_application(
+            bitrate as i32,
+            "airlift",
+            opus_application,
+        )?)),
+        CodecType::OpusWebrtc => Ok(Box::new(OpusWebRtcEncoder::new_with_application(
+            bitrate as i32,
+            opus_application,
+        )?)),
         CodecType::Mp3 => {
             #[cfg(feature = "mp3")]
             {
@@ -279,8 +237,50 @@ fn build_codec_from_config(config: &CodecInstanceConfig) -> Result<Box<dyn Audio
             }
         }
         CodecType::Vorbis => Ok(Box::new(VorbisEncoder::new(quality)?)),
-        CodecType::AacLc | CodecType::Flac => {
-            Err(anyhow!("codec '{}' not implemented", config.id))
-        }
+        CodecType::AacLc | CodecType::Flac => Err(anyhow!("codec '{}' not implemented", config.id)),
+    }
+}
+
+fn codec_info_from_config(config: &CodecInstanceConfig) -> CodecInfo {
+    CodecInfo {
+        kind: codec_kind_from_type(&config.codec_type),
+        sample_rate: config.sample_rate.unwrap_or(PCM_SAMPLE_RATE),
+        channels: config.channels.unwrap_or(PCM_CHANNELS),
+        container: container_from_config(config),
+    }
+}
+
+fn codec_kind_from_type(codec_type: &CodecType) -> CodecKind {
+    match codec_type {
+        CodecType::Pcm => CodecKind::Pcm,
+        CodecType::OpusOgg => CodecKind::OpusOgg,
+        CodecType::OpusWebrtc => CodecKind::OpusWebRtc,
+        CodecType::Mp3 => CodecKind::Mp3,
+        CodecType::Vorbis => CodecKind::Vorbis,
+        CodecType::AacLc => CodecKind::AacLc,
+        CodecType::Flac => CodecKind::Flac,
+    }
+}
+
+fn container_from_config(config: &CodecInstanceConfig) -> ContainerKind {
+    if let Some(container) = config.container.as_deref() {
+        return match container.to_ascii_lowercase().as_str() {
+            "raw" => ContainerKind::Raw,
+            "ogg" => ContainerKind::Ogg,
+            "mpeg" => ContainerKind::Mpeg,
+            "rtp" => ContainerKind::Rtp,
+            _ => default_container_for_type(&config.codec_type),
+        };
+    }
+
+    default_container_for_type(&config.codec_type)
+}
+
+fn default_container_for_type(codec_type: &CodecType) -> ContainerKind {
+    match codec_type {
+        CodecType::Pcm | CodecType::AacLc | CodecType::Flac => ContainerKind::Raw,
+        CodecType::OpusOgg | CodecType::Vorbis => ContainerKind::Ogg,
+        CodecType::OpusWebrtc => ContainerKind::Rtp,
+        CodecType::Mp3 => ContainerKind::Mpeg,
     }
 }

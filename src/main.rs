@@ -23,9 +23,13 @@ use std::time::{Duration, Instant};
 use log::{debug, info};
 
 use crate::api::{ApiService, ApiState, Registry};
-use crate::bootstrap::{AppContext, register_modules, start_workers};
+use crate::bootstrap::{
+    AppContext, register_graph_modules, register_modules, start_graph_workers, start_workers,
+};
 use crate::config::Config;
-use crate::services::{AudioHttpService, MonitoringService, register_services};
+use crate::services::{
+    AudioHttpService, MonitoringService, register_graph_services, register_services,
+};
 
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
@@ -42,6 +46,8 @@ fn main() -> anyhow::Result<()> {
     let cfg: Arc<Config> = Arc::new(config::load(&cfg_path)?);
     info!("[airlift] loaded {}", cfg_path);
 
+    let graph = cfg.validate_graph()?;
+
     // ------------------------------------------------------------
     // Graceful shutdown
     // ------------------------------------------------------------
@@ -57,28 +63,42 @@ fn main() -> anyhow::Result<()> {
     // ------------------------------------------------------------
     // Bootstrap context (shared state)
     // ------------------------------------------------------------
-    let context = AppContext::new(&cfg);
+    let ring_config = graph
+        .as_ref()
+        .map(|graph| crate::config::RingConfig {
+            slots: graph.ringbuffer.slots,
+            prealloc_samples: graph.ringbuffer.prealloc_samples,
+        })
+        .unwrap_or_else(|| cfg.ring.clone());
+    let agent = agent::Agent::new(ring_config.slots, ring_config.prealloc_samples);
+    let codec_registry = Arc::new(if let Some(graph) = &graph {
+        crate::codecs::registry::CodecRegistry::new(graph.codecs.clone())
+    } else {
+        crate::codecs::registry::CodecRegistry::from_config(&cfg)
+    });
+    let context = AppContext::new(&cfg, agent, codec_registry.clone());
 
     // ------------------------------------------------------------
     // API registry (modules + services)
     // ------------------------------------------------------------
     let registry = Arc::new(Registry::new());
-    register_modules(&cfg, &registry);
+    if let Some(graph) = &graph {
+        register_graph_modules(graph, &registry);
+    } else {
+        register_modules(&cfg, &registry);
+    }
 
     // ------------------------------------------------------------
     // Services
     // ------------------------------------------------------------
-    MonitoringService::start(
-        &cfg,
-        &context.agent,
-        context.metrics.clone(),
-        running.clone(),
-    )?;
-
     let api_bind = "0.0.0.0:3008";
     let audio_bind = "0.0.0.0:3011";
 
-    register_services(&registry, api_bind, audio_bind, cfg.monitoring.http_port);
+    if let Some(graph) = &graph {
+        register_graph_services(&registry, api_bind, audio_bind, cfg.monitoring.http_port, graph);
+    } else {
+        register_services(&registry, api_bind, audio_bind, cfg.monitoring.http_port);
+    }
 
     let api_state = ApiState {
         peak_store: context.peak_store.clone(),
@@ -94,13 +114,29 @@ fn main() -> anyhow::Result<()> {
     let api_service = ApiService::new(api_bind.parse()?);
     api_service.start(api_state);
 
-    let audio_http_service = AudioHttpService::new(audio_bind);
-    audio_http_service.start(context.wav_dir.clone(), context.agent.ring.clone());
+    if let Some(graph) = &graph {
+        start_graph_workers(&cfg, graph, &context, running.clone())?;
+    } else {
+        MonitoringService::start(
+            &cfg,
+            &context.agent,
+            context.metrics.clone(),
+            running.clone(),
+        )?;
 
-    // ------------------------------------------------------------
-    // Module workers (audio pipeline, recorder, peaks)
-    // ------------------------------------------------------------
-    start_workers(&cfg, &context, running.clone())?;
+        let audio_http_service = AudioHttpService::new(audio_bind);
+        audio_http_service.start(
+            context.wav_dir.clone(),
+            context.agent.ring.clone(),
+            cfg.audio_http_codec_id.clone(),
+            context.codec_registry.clone(),
+        );
+
+        // ------------------------------------------------------------
+        // Module workers (audio pipeline, recorder, peaks)
+        // ------------------------------------------------------------
+        start_workers(&cfg, &context, running.clone())?;
+    }
 
     // ------------------------------------------------------------
     // Main loop

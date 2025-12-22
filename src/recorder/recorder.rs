@@ -1,78 +1,69 @@
-// src/recorder/recorder.rs - MIT CONTINUITY CHECKS
-use std::time::{Instant, Duration};
+// src/recorder/recorder.rs
+use std::fs::{create_dir_all, File};
+use std::io::{BufWriter, Write};
+use std::path::PathBuf;
+use std::time::Instant;
 
-use crate::ring::{RingRead, RingReader};
+use crate::codecs::{CodecInfo, ContainerKind};
 use crate::control::ModuleState;
-use super::{AudioSink, RetentionPolicy, RecorderConfig};
+
+use super::{EncodedFrameSource, EncodedRead, RecorderConfig, RetentionPolicy};
 
 pub fn run_recorder(
-    mut reader: RingReader,
+    mut reader: impl EncodedFrameSource,
     cfg: RecorderConfig,
-    mut sinks: Vec<Box<dyn AudioSink>>,
+    base_dir: PathBuf,
+    codec_id: String,
+    codec_info: CodecInfo,
     mut retentions: Vec<Box<dyn RetentionPolicy>>,
     state: std::sync::Arc<ModuleState>,
     ring_state: std::sync::Arc<ModuleState>,
 ) -> anyhow::Result<()> {
-
     state.set_running(true);
     state.set_connected(true);
+    create_dir_all(&base_dir)?;
+
     let mut current_hour: Option<u64> = None;
+    let mut writer: Option<BufWriter<File>> = None;
     let mut last_retention = Instant::now();
-    let mut last_continuity_check = Instant::now();
-    
-    // Kontinuitäts-Intervall (alle 100ms)
-    const CONTINUITY_INTERVAL: Duration = Duration::from_millis(100);
+
+    let extension = file_extension(&codec_id, &codec_info)?;
 
     loop {
-        match reader.poll() {
-            RingRead::Chunk(slot) => {
-                // UTC-Nanosekunden → Stundenindex
-                let hour = slot.utc_ns / 1_000_000_000 / 3600;
+        match reader.poll()? {
+            EncodedRead::Frame { frame, utc_ns } => {
+                let hour = utc_ns / 1_000_000_000 / 3600;
+                if frame.info.container != codec_info.container {
+                    anyhow::bail!(
+                        "recorder received container mismatch (codec_id '{}', expected {:?}, got {:?})",
+                        codec_id,
+                        codec_info.container,
+                        frame.info.container
+                    );
+                }
 
-                // Stundenwechsel
                 if current_hour != Some(hour) {
-                    for s in sinks.iter_mut() {
-                        s.on_hour_change(hour)?;
-                    }
+                    let path = base_dir.join(format!("{}.{}", hour, extension));
+                    writer = Some(BufWriter::new(File::create(path)?));
                     current_hour = Some(hour);
-                    
-                    // Nach Stundenwechsel sofort Kontinuität prüfen
-                    last_continuity_check = Instant::now();
                 }
 
-                // Chunk an alle Sinks
-                for s in sinks.iter_mut() {
-                    s.on_chunk(&slot)?;
+                if let Some(w) = writer.as_mut() {
+                    w.write_all(&frame.payload)?;
+                    w.flush()?;
+                    state.mark_tx(1);
+                    ring_state.mark_tx(1);
                 }
-                state.mark_tx(1);
-                ring_state.mark_tx(1);
-                
-                // Nach Audio auch Kontinuität zurücksetzen
-                last_continuity_check = Instant::now();
             }
-
-            RingRead::Gap { .. } => {
-                // Lücke - trotzdem Kontinuität wahren
-                state.mark_drop(1);
-                ring_state.mark_drop(1);
+            EncodedRead::Gap { missed } => {
+                state.mark_drop(missed);
+                ring_state.mark_drop(missed);
             }
-
-            RingRead::Empty => {
+            EncodedRead::Empty => {
                 std::thread::sleep(cfg.idle_sleep);
             }
         }
 
-        // REGELMÄSSIG: Kontinuität wahren (auch wenn keine Audio kommt)
-        if last_continuity_check.elapsed() >= CONTINUITY_INTERVAL {
-            for s in sinks.iter_mut() {
-                if let Err(e) = s.maintain_continuity() {
-                    eprintln!("[recorder] continuity error: {}", e);
-                }
-            }
-            last_continuity_check = Instant::now();
-        }
-
-        // Retention periodisch ausführen (z.B. 1×/h)
         if last_retention.elapsed() >= cfg.retention_interval {
             if let Some(h) = current_hour {
                 for r in retentions.iter_mut() {
@@ -83,5 +74,17 @@ pub fn run_recorder(
             }
             last_retention = Instant::now();
         }
+    }
+}
+
+fn file_extension(codec_id: &str, info: &CodecInfo) -> anyhow::Result<&'static str> {
+    match info.container {
+        ContainerKind::Ogg => Ok("ogg"),
+        ContainerKind::Mpeg => Ok("mp3"),
+        ContainerKind::Raw => Ok("raw"),
+        ContainerKind::Rtp => Err(anyhow::anyhow!(
+            "recorder does not support RTP container (codec_id '{}')",
+            codec_id
+        )),
     }
 }
