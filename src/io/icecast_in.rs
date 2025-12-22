@@ -54,11 +54,16 @@ fn connect_and_stream(
     ring_state: Arc<ModuleState>,
 ) -> Result<()> {
     info!("[icecast_in] connecting to {}", url);
-    let response = ureq::get(url)
-        .timeout_read(Duration::from_secs(10))
-        .timeout_connect(Duration::from_secs(5))
-        .call()
-        .map_err(|e| anyhow!("http error: {}", e))?;
+
+let agent = ureq::AgentBuilder::new()
+    .timeout_connect(Duration::from_secs(5))
+    .timeout_read(Duration::from_secs(10))
+    .build();
+
+let response = agent
+    .get(url)
+    .call()
+    .map_err(|e| anyhow!("http error: {}", e))?;
 
     if response.status() >= 400 {
         return Err(anyhow!(
