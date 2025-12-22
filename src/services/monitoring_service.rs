@@ -16,11 +16,7 @@ impl MonitoringService {
     ) -> anyhow::Result<()> {
         monitoring::create_health_file()?;
 
-        let ring: Arc<dyn RingStatsSource> = if cfg.uses_icecast_input() {
-            Arc::new(agent.encoded_ring.clone())
-        } else {
-            Arc::new(agent.ring.clone())
-        };
+        let ring: Arc<dyn RingStatsSource> = Arc::new(agent.ring.clone());
         let port = cfg.monitoring.http_port;
 
         std::thread::spawn(move || {

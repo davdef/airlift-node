@@ -150,11 +150,7 @@ fn main() -> anyhow::Result<()> {
         std::thread::sleep(Duration::from_millis(100));
 
         if last_stats.elapsed() >= Duration::from_secs(5) {
-            let stats = if cfg.uses_icecast_input() {
-                context.agent.encoded_ring.stats()
-            } else {
-                context.agent.ring.stats()
-            };
+            let stats = context.agent.ring.stats();
             let fill = stats.head_seq - stats.next_seq.wrapping_sub(1);
             debug!("[airlift] head_seq={} fill={}", stats.head_seq, fill);
             last_stats = Instant::now();
