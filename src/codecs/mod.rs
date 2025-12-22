@@ -46,7 +46,7 @@ pub enum ContainerKind {
     Rtp,
 }
 
-pub trait AudioCodec: Send + Sync {
+pub trait AudioCodec: Send {
     fn info(&self) -> &CodecInfo;
     fn encode(&mut self, pcm: &[i16]) -> anyhow::Result<Vec<EncodedFrame>>;
 }

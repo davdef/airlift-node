@@ -14,6 +14,11 @@ pub struct Mp3Encoder {
     info: CodecInfo,
 }
 
+// LAME ist NICHT thread-safe (enthält *mut c_void).
+// Wir garantieren aber: Mp3Encoder wird nur thread-lokal verwendet.
+// Daher: Send ja, Sync nein.
+unsafe impl Send for Mp3Encoder {}
+
 impl Mp3Encoder {
     pub fn new(bitrate: u32, sample_rate: u32) -> Result<Self> {
         const MP3_BUFFER_OVERHEAD: usize = 7200;
@@ -22,14 +27,16 @@ impl Mp3Encoder {
 
         let mut lame = Lame::new().ok_or_else(|| anyhow!("Failed to init LAME"))?;
 
-        // Korrektur: Kein Cast zu i32, da lame::Lame u32 erwartet
         lame.set_sample_rate(sample_rate)
             .map_err(|e| anyhow!("lame set_sample_rate: {:?}", e))?;
-        lame.set_channels(2).map_err(|e| anyhow!("lame set_channels: {:?}", e))?;
+        lame.set_channels(2)
+            .map_err(|e| anyhow!("lame set_channels: {:?}", e))?;
         lame.set_kilobitrate(bitrate as i32)
             .map_err(|e| anyhow!("lame set_kilobitrate: {:?}", e))?;
-        lame.set_quality(2).map_err(|e| anyhow!("lame set_quality: {:?}", e))?;
-        lame.init_params().map_err(|e| anyhow!("lame init_params: {:?}", e))?;
+        lame.set_quality(2)
+            .map_err(|e| anyhow!("lame set_quality: {:?}", e))?;
+        lame.init_params()
+            .map_err(|e| anyhow!("lame init_params: {:?}", e))?;
 
         Ok(Self {
             lame,
@@ -56,8 +63,6 @@ impl Mp3Encoder {
             ));
         }
 
-        // PCM-Daten in separate Kanäle aufteilen
-        // Sicherstellen, dass wir nicht über die Grenzen schreiben
         let frames_to_process = self.frames_per_100ms.min(pcm.len() / 2);
 
         for i in 0..frames_to_process {
@@ -66,7 +71,6 @@ impl Mp3Encoder {
             self.right[i] = pcm[idx + 1];
         }
 
-        // Bei unvollständigen Daten, Rest mit Nullen auffüllen
         if frames_to_process < self.frames_per_100ms {
             for i in frames_to_process..self.frames_per_100ms {
                 self.left[i] = 0;
@@ -74,13 +78,11 @@ impl Mp3Encoder {
             }
         }
 
-        // Enkodieren
         let encoded_bytes = self
             .lame
             .encode(&self.left, &self.right, &mut self.mp3_buffer)
             .map_err(|e| anyhow!("lame encode: {:?}", e))?;
 
-        // Ergebnis in out_buffer kopieren (ohne to_vec-Allokation)
         out_buffer.clear();
         out_buffer.extend_from_slice(&self.mp3_buffer[..encoded_bytes]);
 
@@ -96,6 +98,7 @@ impl AudioCodec for Mp3Encoder {
     fn encode(&mut self, pcm: &[i16]) -> Result<Vec<EncodedFrame>> {
         let mut out = Vec::with_capacity(self.mp3_buffer.len());
         let bytes_written = self.encode_100ms(pcm, &mut out)?;
+
         if bytes_written == 0 {
             return Ok(Vec::new());
         }
