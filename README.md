@@ -32,8 +32,8 @@ flowchart LR
     Codecs --> Icecast[Icecast Out]
     Codecs --> SRTOut[SRT Out]
 
-    Ring --> Recorder[Recorder (WAV/MP3)]
-    Ring --> AudioHTTP[Audio HTTP (live/timeshift)]
+    Ring --> Recorder[Recorder]
+    Ring --> AudioHTTP[Audio HTTP Endpoints]
 
     API[HTTP API] --> Control[Control State]
     Control --> Modules[Module Registry]
