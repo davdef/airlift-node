@@ -38,7 +38,7 @@ pub enum CodecKind {
     Flac,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub enum ContainerKind {
     Raw,
     Ogg,
@@ -46,7 +46,7 @@ pub enum ContainerKind {
     Rtp,
 }
 
-pub trait AudioCodec {
+pub trait AudioCodec: Send + Sync {
     fn info(&self) -> &CodecInfo;
     fn encode(&mut self, pcm: &[i16]) -> anyhow::Result<Vec<EncodedFrame>>;
 }

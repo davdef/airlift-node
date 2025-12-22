@@ -204,6 +204,7 @@ fn start_srt_in(cfg: &Config, context: &AppContext, running: Arc<AtomicBool>) {
     }
 }
 
+#[cfg(feature = "alsa")]
 fn start_alsa_in(cfg: &Config, context: &AppContext) {
     if let Some(alsa_cfg) = &cfg.alsa_in {
         context.control_state.alsa_in.set_enabled(alsa_cfg.enabled);
@@ -226,6 +227,11 @@ fn start_alsa_in(cfg: &Config, context: &AppContext) {
     } else {
         context.control_state.alsa_in.set_enabled(false);
     }
+}
+
+#[cfg(not(feature = "alsa"))]
+fn start_alsa_in(_cfg: &Config, context: &AppContext) {
+    context.control_state.alsa_in.set_enabled(false);
 }
 
 fn sync_output_states(cfg: &Config, context: &AppContext) {
@@ -279,7 +285,7 @@ fn start_peak_storage(context: &AppContext) {
 }
 
 enum RingEncodedRead {
-    Frame(crate::codecs::EncodedFrame),
+    Frame { frame: crate::codecs::EncodedFrame, utc_ns: u64 },
     Gap { missed: u64 },
     Empty,
 }
@@ -289,6 +295,7 @@ struct EncodedRingSource {
     codec: Arc<Mutex<Box<dyn AudioCodec>>>,
     codec_instance: Arc<CodecInstance>,
     pending: VecDeque<crate::codecs::EncodedFrame>,
+    pending_utc_ns: Option<u64>,
 }
 
 impl EncodedRingSource {
@@ -302,12 +309,14 @@ impl EncodedRingSource {
             codec,
             codec_instance,
             pending: VecDeque::new(),
+            pending_utc_ns: None,
         }
     }
 
     fn poll_next(&mut self) -> anyhow::Result<RingEncodedRead> {
         if let Some(frame) = self.pending.pop_front() {
-            return Ok(RingEncodedRead::Frame(frame));
+            let utc_ns = self.pending_utc_ns.unwrap_or_default();
+            return Ok(RingEncodedRead::Frame { frame, utc_ns });
         }
 
         match self.reader.poll() {
@@ -331,9 +340,13 @@ impl EncodedRingSource {
                 if frames.is_empty() {
                     return Ok(RingEncodedRead::Empty);
                 }
+                self.pending_utc_ns = Some(slot.utc_ns);
                 self.pending = frames.into_iter().collect();
                 let frame = self.pending.pop_front().expect("output pending frame");
-                Ok(RingEncodedRead::Frame(frame))
+                Ok(RingEncodedRead::Frame {
+                    frame,
+                    utc_ns: slot.utc_ns,
+                })
             }
             RingRead::Gap { missed } => Ok(RingEncodedRead::Gap { missed }),
             RingRead::Empty => Ok(RingEncodedRead::Empty),
@@ -344,7 +357,9 @@ impl EncodedRingSource {
 impl crate::io::srt_out::EncodedFrameSource for EncodedRingSource {
     fn poll(&mut self) -> anyhow::Result<crate::io::srt_out::EncodedRead> {
         match self.poll_next()? {
-            RingEncodedRead::Frame(frame) => Ok(crate::io::srt_out::EncodedRead::Frame(frame)),
+            RingEncodedRead::Frame { frame, .. } => {
+                Ok(crate::io::srt_out::EncodedRead::Frame(frame))
+            }
             RingEncodedRead::Gap { missed } => {
                 Ok(crate::io::srt_out::EncodedRead::Gap { missed })
             }
@@ -356,7 +371,9 @@ impl crate::io::srt_out::EncodedFrameSource for EncodedRingSource {
 impl crate::io::udp_out::EncodedFrameSource for EncodedRingSource {
     fn poll(&mut self) -> anyhow::Result<crate::io::udp_out::EncodedRead> {
         match self.poll_next()? {
-            RingEncodedRead::Frame(frame) => Ok(crate::io::udp_out::EncodedRead::Frame(frame)),
+            RingEncodedRead::Frame { frame, .. } => {
+                Ok(crate::io::udp_out::EncodedRead::Frame(frame))
+            }
             RingEncodedRead::Gap { missed } => {
                 Ok(crate::io::udp_out::EncodedRead::Gap { missed })
             }
@@ -368,11 +385,25 @@ impl crate::io::udp_out::EncodedFrameSource for EncodedRingSource {
 impl crate::io::icecast_out::EncodedFrameSource for EncodedRingSource {
     fn poll(&mut self) -> anyhow::Result<crate::io::icecast_out::EncodedRead> {
         match self.poll_next()? {
-            RingEncodedRead::Frame(frame) => Ok(crate::io::icecast_out::EncodedRead::Frame(frame)),
+            RingEncodedRead::Frame { frame, .. } => {
+                Ok(crate::io::icecast_out::EncodedRead::Frame(frame))
+            }
             RingEncodedRead::Gap { missed } => {
                 Ok(crate::io::icecast_out::EncodedRead::Gap { missed })
             }
             RingEncodedRead::Empty => Ok(crate::io::icecast_out::EncodedRead::Empty),
+        }
+    }
+}
+
+impl recorder::EncodedFrameSource for EncodedRingSource {
+    fn poll(&mut self) -> anyhow::Result<recorder::EncodedRead> {
+        match self.poll_next()? {
+            RingEncodedRead::Frame { frame, utc_ns } => {
+                Ok(recorder::EncodedRead::Frame { frame, utc_ns })
+            }
+            RingEncodedRead::Gap { missed } => Ok(recorder::EncodedRead::Gap { missed }),
+            RingEncodedRead::Empty => Ok(recorder::EncodedRead::Empty),
         }
     }
 }
@@ -550,6 +581,7 @@ fn start_graph_inputs(
                     }
                 });
             }
+            #[cfg(feature = "alsa")]
             "alsa" => {
                 let alsa_cfg = crate::config::AlsaInConfig {
                     enabled: input.enabled,
@@ -570,6 +602,10 @@ fn start_graph_inputs(
                         error!("[alsa] fatal: {}", e);
                     }
                 });
+            }
+            #[cfg(not(feature = "alsa"))]
+            "alsa" => {
+                context.control_state.alsa_in.set_enabled(false);
             }
             _ => {}
         }

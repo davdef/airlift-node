@@ -12,6 +12,9 @@ pub struct VorbisEncoder {
     info: CodecInfo,
 }
 
+unsafe impl Send for VorbisEncoder {}
+unsafe impl Sync for VorbisEncoder {}
+
 impl VorbisEncoder {
     pub fn new(_quality: f32) -> Result<Self> {
         // vorbis 0.1 kennt nur feste Presets

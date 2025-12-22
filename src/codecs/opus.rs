@@ -15,6 +15,9 @@ pub struct OggOpusEncoder {
     info: CodecInfo,
 }
 
+unsafe impl Send for OggOpusEncoder {}
+unsafe impl Sync for OggOpusEncoder {}
+
 impl OggOpusEncoder {
     pub fn new(bitrate: i32, vendor: &str) -> Result<Self> {
         Self::new_with_application(bitrate, vendor, Application::Audio)
@@ -133,6 +136,9 @@ pub struct OpusWebRtcEncoder {
     enc: Encoder,
     info: CodecInfo,
 }
+
+unsafe impl Send for OpusWebRtcEncoder {}
+unsafe impl Sync for OpusWebRtcEncoder {}
 
 impl OpusWebRtcEncoder {
     pub fn new(bitrate: i32) -> Result<Self> {
