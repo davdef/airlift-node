@@ -11,6 +11,7 @@ use crate::codecs::registry::{resolve_codec_configs, CodecRegistry, CodecInstanc
 use crate::codecs::AudioCodec;
 use crate::config::{Config, ValidatedGraphConfig};
 use crate::control::ControlState;
+use crate::io::broadcast_http::BroadcastHttp;
 use crate::io::influx_out::InfluxOut;
 use crate::io::peak_analyzer::{PeakAnalyzer, PeakEvent};
 use crate::monitoring;
@@ -256,6 +257,7 @@ fn sync_output_states(cfg: &Config, context: &AppContext) {
 }
 
 fn start_peak_storage(context: &AppContext) {
+    // Legacy: only started when the Graph-Pipeline is not active.
     let reader = context.agent.ring.subscribe();
     let store = context.peak_store.clone();
 
@@ -282,6 +284,25 @@ fn start_peak_storage(context: &AppContext) {
     std::thread::spawn(move || analyzer.run());
 
     info!("[airlift] peak_storage enabled");
+}
+
+#[derive(Default)]
+struct PeakEventFanout {
+    handlers: Mutex<Vec<Box<dyn Fn(&PeakEvent) + Send + Sync>>>,
+}
+
+impl PeakEventFanout {
+    fn add_handler(&self, handler: Box<dyn Fn(&PeakEvent) + Send + Sync>) {
+        let mut handlers = self.handlers.lock().expect("peak_event handlers lock");
+        handlers.push(handler);
+    }
+
+    fn emit(&self, evt: &PeakEvent) {
+        let handlers = self.handlers.lock().expect("peak_event handlers lock");
+        for handler in handlers.iter() {
+            handler(evt);
+        }
+    }
 }
 
 enum RingEncodedRead {
@@ -931,6 +952,8 @@ fn start_graph_services(
     context: &AppContext,
     running: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
+    let peak_events = Arc::new(PeakEventFanout::default());
+
     let audio_http = graph
         .services
         .iter()
@@ -979,6 +1002,67 @@ fn start_graph_services(
                 context.metrics.clone(),
                 running,
             )?;
+        }
+    }
+
+    for (_id, service) in graph.services.iter() {
+        if !service.enabled {
+            continue;
+        }
+
+        match service.service_type.as_str() {
+            "influx_out" => {
+                let url = service
+                    .url
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("service requires url"))?;
+                let db = service
+                    .db
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("service requires db"))?;
+                let interval_ms = service
+                    .interval_ms
+                    .ok_or_else(|| anyhow::anyhow!("service requires interval_ms"))?;
+                let influx = Arc::new(InfluxOut::new(url, db, interval_ms));
+                let handler = Box::new(move |evt: &PeakEvent| {
+                    influx.handle(evt);
+                });
+                peak_events.add_handler(handler);
+            }
+            "broadcast_http" => {
+                let url = service
+                    .url
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("service requires url"))?;
+                let interval_ms = service
+                    .interval_ms
+                    .ok_or_else(|| anyhow::anyhow!("service requires interval_ms"))?;
+                let broadcast = Arc::new(BroadcastHttp::new(url, interval_ms));
+                let handler = Box::new(move |evt: &PeakEvent| {
+                    broadcast.handle(evt);
+                });
+                peak_events.add_handler(handler);
+            }
+            _ => {}
+        }
+    }
+
+    if let Some((_id, service)) = graph
+        .services
+        .iter()
+        .find(|(_, svc)| svc.service_type == "peak_analyzer")
+    {
+        if service.enabled {
+            let interval_ms = service
+                .interval_ms
+                .ok_or_else(|| anyhow::anyhow!("service requires interval_ms"))?;
+            let reader = context.agent.ring.subscribe();
+            let peak_events = peak_events.clone();
+            let handler = Box::new(move |evt: &PeakEvent| {
+                peak_events.emit(evt);
+            });
+            let mut analyzer = PeakAnalyzer::new(reader, handler, interval_ms);
+            std::thread::spawn(move || analyzer.run());
         }
     }
 
