@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Airlift Audio Node</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+    <img src="rfm-logo.png" alt="RFM Logo">
+    <h1>Airlift Audio Node</h1>
+    <div class="header-meta">
+        <div class="conn-status">
+            <span class="conn-dot"></span>
+            <span id="connText">Verbinde...</span>
+        </div>
+        <div class="studio-time" id="studioTime">–</div>
+        <div style="font-size: 12px; color: #888;">
+            Aktualisiert: <span id="updateTime">–</span>
+        </div>
+    </div>
+</header>
+
+<main>
+    <!-- Audio Pipeline Tree - jetzt zweispaltig -->
+    <section class="panel pipeline-tree">
+        <div class="panel-header">
+            <h2 class="panel-title">Audio Pipeline</h2>
+            <button class="btn small" onclick="refreshAllData()" style="padding: 6px 10px; font-size: 11px;">
+                ↻ Aktualisieren
+            </button>
+        </div>
+        <div class="panel-content">
+            <div class="pipeline-container" id="pipelineTree">
+                <div class="empty-state" style="padding: 20px;">
+                    <div class="icon">🎵</div>
+                    <div class="message">Lade Audio-Pipeline...</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Zwei-Spalten-Layout für den Rest -->
+    <div class="main-content">
+        <!-- Linke Spalte -->
+        <div style="display: flex; flex-direction: column; gap: 16px;">
+            <!-- Ringbuffer Visualization -->
+            <section class="panel">
+                <div class="panel-header">
+                    <h2 class="panel-title" id="ringbufferTitle">Ringbuffer</h2>
+                    <div style="font-size: 11px; color: #888;">
+                        <span id="ringbufferInfo">Füllstand: 0%</span>
+                    </div>
+                </div>
+                <div class="panel-content">
+                    <div class="waveform-container">
+                        <canvas class="waveform-canvas" id="ringbufferCanvas"></canvas>
+                        <div class="waveform-overlay" id="ringbufferOverlay"></div>
+                        <div class="waveform-time-display" id="ringbufferTime">–</div>
+                    </div>
+                    <div class="waveform-stats" id="ringbufferStats">
+                        <!-- Stats will be added here -->
+                    </div>
+                </div>
+            </section>
+
+            <!-- Active Modules -->
+            <section class="panel">
+                <div class="panel-header">
+                    <h2 class="panel-title">Aktive Module</h2>
+                    <span style="font-size: 11px; color: #888;" id="activeModulesCount">0</span>
+                </div>
+                <div class="panel-content">
+                    <table class="compact-table" id="modulesTable">
+                        <thead>
+                            <tr>
+                                <th>Modul</th>
+                                <th>Typ</th>
+                                <th>Status</th>
+                                <th>Datenrate</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td colspan="4" class="empty-state">
+                                    <div class="icon">📦</div>
+                                    <div class="message">Lade Module...</div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Available Modules -->
+            <section class="panel">
+                <div class="panel-header">
+                    <h2 class="panel-title">Verfügbare Module</h2>
+                    <span style="font-size: 11px; color: #888;" id="inactiveModulesCount">0</span>
+                </div>
+                <div class="panel-content">
+                    <table class="compact-table" id="inactiveModulesTable">
+                        <thead>
+                            <tr>
+                                <th>Modul</th>
+                                <th>Typ</th>
+                                <th>Status</th>
+                                <th>Grund</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td colspan="4" class="empty-state">
+                                    <div class="icon">🔌</div>
+                                    <div class="message">Keine inaktiven Module</div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </div>
+
+        <!-- Rechte Spalte -->
+        <div style="display: flex; flex-direction: column; gap: 16px;">
+            <!-- Recorder WAV File -->
+            <section class="panel">
+                <div class="panel-header">
+                    <h2 class="panel-title">Recorder (1h WAV Datei)</h2>
+                    <div style="font-size: 11px; color: #888;">
+                        <span id="recorderProgress">0%</span>
+                    </div>
+                </div>
+                <div class="panel-content">
+                    <div class="waveform-container">
+                        <canvas class="waveform-canvas" id="recorderCanvas"></canvas>
+                        <div class="waveform-overlay" id="recorderOverlay"></div>
+                        <div class="waveform-time-display" id="recorderTime">–</div>
+                    </div>
+                    <div class="recorder-files" id="recorderFiles">
+                        <div class="empty-state" style="padding: 20px;">
+                            <div class="icon">📁</div>
+                            <div class="message">Lade Recorder-Info...</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Controls -->
+            <section class="panel">
+                <div class="panel-header">
+                    <h2 class="panel-title">Steuerung</h2>
+                </div>
+                <div class="panel-content">
+                    <div class="controls-grid" id="controlsGrid">
+                        <button class="btn" disabled>Lade...</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Codecs -->
+            <section class="panel">
+                <div class="panel-header">
+                    <h2 class="panel-title">Verfügbare Codecs</h2>
+                </div>
+                <div class="panel-content">
+                    <div class="codecs-list" id="codecsList">
+                        <div class="empty-state" style="padding: 20px;">
+                            <div class="icon">🔊</div>
+                            <div class="message">Lade Codecs...</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- System Status -->
+            <section class="panel">
+                <div class="panel-header">
+                    <h2 class="panel-title">System Status</h2>
+                </div>
+                <div class="panel-content">
+                    <div class="waveform-stats">
+                        <div class="waveform-stat">
+                            <div class="waveform-stat-label">Studio-Zeit</div>
+                            <div class="waveform-stat-value" id="systemStudioTime">–</div>
+                            <div class="waveform-stat-sub">Sendezeit aus Studio</div>
+                        </div>
+                        <div class="waveform-stat">
+                            <div class="waveform-stat-label">Latenz</div>
+                            <div class="waveform-stat-value" id="systemLatency">–</div>
+                            <div class="waveform-stat-sub">Verzögerung</div>
+                        </div>
+                        <div class="waveform-stat">
+                            <div class="waveform-stat-label">Peaks Buffer</div>
+                            <div class="waveform-stat-value" id="systemPeaksBuffer">–</div>
+                            <div class="waveform-stat-sub">100ms Punkte</div>
+                        </div>
+                        <div class="waveform-stat">
+                            <div class="waveform-stat-label">Audio Buffer</div>
+                            <div class="stat-value" id="systemAudioBuffer">–</div>
+                            <div class="waveform-stat-sub">Sekunden</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </div>
+</main>
+
+<div id="messageBar" class="message-bar"></div>
+
+<script src="main.js"></script>
+<script src="ui.js"></script>
+<script src="waveform.js"></script>
+</body>
+</html>
