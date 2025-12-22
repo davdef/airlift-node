@@ -1,0 +1,1334 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Airlift Audio Node</title>
+    <style>
+        :root {
+            --bg: #0a0e14;
+            --panel: #141922;
+            --panel-light: #1c212c;
+            --text: #e3e9f7;
+            --muted: #7c85a0;
+            --good: #2ecc71;
+            --warn: #f1c40f;
+            --bad: #e74c3c;
+            --accent: #3498db;
+            --input: #3498db;
+            --buffer: #9b59b6;
+            --codec: #e67e22;
+            --output: #27ae60;
+            --waveform: #1abc9c;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        header {
+            padding: 16px 24px;
+            background: var(--panel);
+            border-bottom: 1px solid #252d3d;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .header-left h1 {
+            margin: 0 0 4px 0;
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .header-subtitle {
+            font-size: 12px;
+            color: var(--muted);
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .conn-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .conn-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--muted);
+        }
+
+        .conn-dot.connected { background: var(--good); animation: pulse 2s infinite; }
+        .conn-dot.error { background: var(--bad); }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        main {
+            padding: 24px;
+            display: grid;
+            grid-template-columns: 1fr 400px;
+            gap: 24px;
+            min-height: calc(100vh - 70px);
+        }
+
+        @media (max-width: 1200px) {
+            main {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Left Column - Main Content */
+        .main-content {
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+
+        /* Audio Pipeline Tree */
+        .pipeline-tree {
+            background: var(--panel);
+            border: 1px solid #252d3d;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .pipeline-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid #252d3d;
+            background: var(--panel-light);
+        }
+
+        .pipeline-title {
+            margin: 0;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .pipeline-container {
+            padding: 30px;
+            min-height: 300px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+
+        /* Tree Levels */
+        .tree-level {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin-bottom: 40px;
+            width: 100%;
+            position: relative;
+        }
+
+        .tree-level:not(:last-child)::after {
+            content: '';
+            position: absolute;
+            left: 50%;
+            bottom: -20px;
+            transform: translateX(-50%);
+            width: 2px;
+            height: 20px;
+            background: linear-gradient(to bottom, var(--accent), transparent);
+        }
+
+        .level-label {
+            font-size: 12px;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 16px;
+            align-self: flex-start;
+            padding-left: 20px;
+            position: relative;
+        }
+
+        .level-label::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 12px;
+            height: 2px;
+            background: var(--accent);
+        }
+
+        .level-content {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            width: 100%;
+        }
+
+        /* Connection Arrows */
+        .connection-arrow {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            margin: 10px 0;
+            color: var(--accent);
+        }
+
+        .arrow-line {
+            width: 2px;
+            height: 20px;
+            background: linear-gradient(to bottom, var(--accent), rgba(52, 152, 219, 0.3));
+        }
+
+        .arrow-head {
+            font-size: 24px;
+            line-height: 1;
+        }
+
+        /* Module Cards */
+        .module-card {
+            background: var(--panel-light);
+            border: 2px solid;
+            border-radius: 8px;
+            padding: 20px;
+            min-width: 220px;
+            text-align: center;
+            position: relative;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        }
+
+        .module-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+        }
+
+        .module-card.input {
+            border-color: var(--input);
+            background: linear-gradient(145deg, rgba(52, 152, 219, 0.1), rgba(52, 152, 219, 0.05));
+        }
+
+        .module-card.buffer {
+            border-color: var(--buffer);
+            background: linear-gradient(145deg, rgba(155, 89, 182, 0.1), rgba(155, 89, 182, 0.05));
+        }
+
+        .module-card.output {
+            border-color: var(--output);
+            background: linear-gradient(145deg, rgba(39, 174, 96, 0.1), rgba(39, 174, 96, 0.05));
+        }
+
+        .module-header {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .module-type {
+            font-size: 10px;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .type-input { background: var(--input); color: white; }
+        .type-buffer { background: var(--buffer); color: white; }
+        .type-output { background: var(--output); color: white; }
+
+        .module-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 11px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+
+        .status-dot.active { background: var(--good); }
+        .status-dot.ready { background: var(--warn); }
+        .status-dot.inactive { background: var(--bad); }
+
+        .module-title {
+            font-weight: 600;
+            font-size: 18px;
+            margin-bottom: 6px;
+            color: var(--text);
+        }
+
+        .module-id {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            color: var(--muted);
+            margin-bottom: 16px;
+            word-break: break-all;
+        }
+
+        .module-stats {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 12px;
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid rgba(37, 45, 61, 0.5);
+        }
+
+        .module-stat {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .stat-label {
+            font-size: 10px;
+            color: var(--muted);
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+
+        .stat-value {
+            font-weight: 600;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 14px;
+        }
+
+        /* Ringbuffer Visualization */
+        .ringbuffer-section {
+            background: var(--panel);
+            border: 1px solid #252d3d;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .ringbuffer-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid #252d3d;
+            background: var(--panel-light);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .ringbuffer-title {
+            margin: 0;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .ringbuffer-container {
+            padding: 20px;
+        }
+
+        .ringbuffer-visual {
+            height: 120px;
+            background: #0d1220;
+            border-radius: 6px;
+            border: 1px solid #252d3d;
+            position: relative;
+            overflow: hidden;
+            margin-bottom: 16px;
+        }
+
+        .ringbuffer-fill {
+            height: 100%;
+            background: linear-gradient(90deg, 
+                rgba(39, 174, 96, 0.6), 
+                rgba(241, 196, 15, 0.6), 
+                rgba(231, 76, 60, 0.6));
+            transition: width 0.3s ease;
+        }
+
+        .ringbuffer-marker {
+            position: absolute;
+            top: -4px;
+            bottom: -4px;
+            width: 3px;
+            transform: translateX(-50%);
+            border-radius: 2px;
+            z-index: 2;
+        }
+
+        .ringbuffer-marker.head {
+            background: #ffffff;
+            box-shadow: 0 0 8px #ffffff;
+        }
+
+        .ringbuffer-marker.tail {
+            background: var(--warn);
+            box-shadow: 0 0 8px var(--warn);
+        }
+
+        .ringbuffer-marker-label {
+            position: absolute;
+            top: -20px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 10px;
+            color: var(--muted);
+            white-space: nowrap;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+
+        .ringbuffer-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 12px;
+        }
+
+        .stat-card {
+            background: var(--panel-light);
+            padding: 12px;
+            border-radius: 6px;
+            border-left: 3px solid var(--buffer);
+        }
+
+        .stat-label-small {
+            font-size: 11px;
+            color: var(--muted);
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+
+        .stat-value-small {
+            font-weight: 600;
+            font-size: 16px;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .stat-sub {
+            font-size: 11px;
+            color: var(--muted);
+            margin-top: 2px;
+        }
+
+        /* Right Column - Status Panels */
+        .status-panels {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .panel {
+            background: var(--panel);
+            border: 1px solid #252d3d;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .panel-header {
+            padding: 12px 16px;
+            border-bottom: 1px solid #252d3d;
+            background: var(--panel-light);
+        }
+
+        .panel-title {
+            margin: 0;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .panel-content {
+            padding: 16px;
+        }
+
+        /* Modules Table */
+        .modules-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+
+        .modules-table th {
+            text-align: left;
+            padding: 8px 12px;
+            color: var(--muted);
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 10px;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid #252d3d;
+        }
+
+        .modules-table td {
+            padding: 8px 12px;
+            border-bottom: 1px solid rgba(37, 45, 61, 0.5);
+        }
+
+        .modules-table tr:hover {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .module-name-cell {
+            min-width: 120px;
+        }
+
+        .module-name {
+            font-weight: 600;
+            margin-bottom: 2px;
+        }
+
+        .module-id {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px;
+            color: var(--muted);
+        }
+
+        /* Controls */
+        .controls-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+            gap: 8px;
+        }
+
+        .btn {
+            border: none;
+            background: var(--panel-light);
+            color: var(--text);
+            padding: 8px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            border: 1px solid #252d3d;
+            transition: all 0.2s ease;
+            text-align: center;
+        }
+
+        .btn:hover:not(:disabled) {
+            background: var(--accent);
+            color: white;
+            border-color: var(--accent);
+        }
+
+        .btn.primary {
+            background: var(--accent);
+            color: white;
+            border-color: var(--accent);
+        }
+
+        .btn.small {
+            padding: 6px 10px;
+            font-size: 11px;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Recorder Info */
+        .recorder-info {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .recorder-file {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px;
+            background: var(--panel-light);
+            border-radius: 6px;
+            border: 1px solid #252d3d;
+        }
+
+        .file-icon {
+            width: 32px;
+            height: 32px;
+            background: rgba(52, 152, 219, 0.1);
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--accent);
+        }
+
+        .file-info {
+            flex: 1;
+        }
+
+        .file-name {
+            font-weight: 600;
+            font-size: 13px;
+            margin-bottom: 2px;
+            word-break: break-all;
+        }
+
+        .file-path {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px;
+            color: var(--muted);
+        }
+
+        /* Codecs List */
+        .codecs-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .codec-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px;
+            background: var(--panel-light);
+            border-radius: 6px;
+            border: 1px solid #252d3d;
+        }
+
+        .codec-status {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .codec-info {
+            flex: 1;
+        }
+
+        .codec-name {
+            font-weight: 600;
+            font-size: 13px;
+            margin-bottom: 2px;
+        }
+
+        .codec-details {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px;
+            color: var(--muted);
+        }
+
+        /* Empty States */
+        .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 40px 20px;
+            text-align: center;
+            color: var(--muted);
+        }
+
+        .empty-state .icon {
+            font-size: 32px;
+            margin-bottom: 12px;
+            opacity: 0.5;
+        }
+
+        .empty-state .message {
+            font-size: 14px;
+        }
+
+        /* Message Bar */
+        .message-bar {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            background: var(--panel);
+            border: 1px solid;
+            border-radius: 6px;
+            padding: 12px 16px;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+            z-index: 1000;
+            max-width: 400px;
+            display: none;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        .message-bar.show {
+            display: block;
+        }
+
+        .message-bar.success {
+            border-color: var(--good);
+            background: rgba(46, 204, 113, 0.1);
+        }
+
+        .message-bar.error {
+            border-color: var(--bad);
+            background: rgba(231, 76, 60, 0.1);
+        }
+
+        .message-bar.warning {
+            border-color: var(--warn);
+            background: rgba(241, 196, 15, 0.1);
+        }
+    </style>
+</head>
+<body>
+<header>
+    <div class="header-left">
+        <h1>Airlift Audio Node</h1>
+        <div class="header-subtitle">
+            <span class="conn-status">
+                <span class="conn-dot"></span>
+                <span id="connText">Verbinde...</span>
+            </span>
+            <span>SRT → Ringbuffer → WAV Pipeline</span>
+        </div>
+    </div>
+    <div class="header-right">
+        <div class="update-time" id="updateTime">–</div>
+        <div style="margin-top: 8px;">
+            <button class="btn small" onclick="fetchAllData()" title="Aktualisieren">↻ Aktualisieren</button>
+        </div>
+    </div>
+</header>
+
+<main>
+    <!-- Left Column - Main Content -->
+    <div class="main-content">
+        <!-- Audio Pipeline Tree -->
+        <section class="pipeline-tree">
+            <div class="pipeline-header">
+                <h2 class="pipeline-title">Audio Pipeline</h2>
+            </div>
+            <div class="pipeline-container" id="pipelineContainer">
+                <div class="empty-state">
+                    <div class="icon">🎵</div>
+                    <div class="message">Lade Audio-Pipeline...</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Ringbuffer Visualization -->
+        <section class="ringbuffer-section">
+            <div class="ringbuffer-header">
+                <h2 class="ringbuffer-title">Ringbuffer (60s Audio Buffer)</h2>
+                <div style="font-size: 11px; color: var(--muted);">
+                    <span id="ringbufferTime">–</span>
+                </div>
+            </div>
+            <div class="ringbuffer-container">
+                <div class="ringbuffer-visual" id="ringbufferVisual">
+                    <div id="ringbufferFill" class="ringbuffer-fill" style="width: 0%;"></div>
+                    <!-- Markers will be added here -->
+                </div>
+                <div class="ringbuffer-stats" id="ringbufferStats">
+                    <!-- Stats will be added here -->
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <!-- Right Column - Status Panels -->
+    <div class="status-panels">
+        <!-- Active Modules -->
+        <section class="panel">
+            <div class="panel-header">
+                <h3 class="panel-title">Aktive Module</h3>
+            </div>
+            <div class="panel-content">
+                <table class="modules-table" id="modulesTable">
+                    <thead>
+                        <tr>
+                            <th class="module-name-cell">Modul</th>
+                            <th>Typ</th>
+                            <th>Status</th>
+                            <th>Datenrate</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td colspan="4" class="empty-state">
+                                <div class="icon">📦</div>
+                                <div class="message">Lade Module...</div>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Controls -->
+        <section class="panel">
+            <div class="panel-header">
+                <h3 class="panel-title">Steuerung</h3>
+            </div>
+            <div class="panel-content">
+                <div class="controls-grid" id="controlsGrid">
+                    <button class="btn" disabled>Lade...</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Recorder -->
+        <section class="panel">
+            <div class="panel-header">
+                <h3 class="panel-title">Recorder</h3>
+            </div>
+            <div class="panel-content">
+                <div class="recorder-info" id="recorderInfo">
+                    <div class="empty-state">
+                        <div class="icon">📁</div>
+                        <div class="message">Lade Recorder-Info...</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Codecs -->
+        <section class="panel">
+            <div class="panel-header">
+                <h3 class="panel-title">Verfügbare Codecs</h3>
+            </div>
+            <div class="panel-content">
+                <div class="codecs-list" id="codecsList">
+                    <div class="empty-state">
+                        <div class="icon">🔊</div>
+                        <div class="message">Lade Codecs...</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
+</main>
+
+<div id="messageBar" class="message-bar"></div>
+
+<script>
+// State
+let currentStatus = null;
+const rateHistory = new Map();
+
+// Helper functions
+function showMessage(text, type = 'info') {
+    const bar = document.getElementById('messageBar');
+    bar.textContent = text;
+    bar.className = `message-bar show ${type}`;
+    
+    setTimeout(() => {
+        bar.className = 'message-bar';
+    }, 3000);
+}
+
+function updateConnectionState(connected) {
+    const dot = document.querySelector('.conn-dot');
+    const text = document.getElementById('connText');
+    
+    if (connected) {
+        dot.className = 'conn-dot connected';
+        text.textContent = 'Verbunden';
+    } else {
+        dot.className = 'conn-dot error';
+        text.textContent = 'Getrennt';
+    }
+}
+
+function formatTime(ms) {
+    if (!ms) return '–';
+    const date = new Date(ms);
+    return date.toLocaleTimeString('de-DE', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+    });
+}
+
+function formatTimeAgo(ms) {
+    if (!ms || ms === 0) return 'nie';
+    const diff = Date.now() - ms;
+    const seconds = Math.floor(diff / 1000);
+    
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    return `${hours}h`;
+}
+
+function calculateRate(moduleId, currentCounters, timestamp) {
+    if (!rateHistory.has(moduleId)) {
+        rateHistory.set(moduleId, {
+            timestamp,
+            counters: currentCounters
+        });
+        return { rx: '–', tx: '–', rxRaw: 0, txRaw: 0 };
+    }
+    
+    const prev = rateHistory.get(moduleId);
+    const timeDiff = Math.max(1, timestamp - prev.timestamp);
+    
+    const rxRate = Math.round((currentCounters.rx - prev.counters.rx) * 60000 / timeDiff);
+    const txRate = Math.round((currentCounters.tx - prev.counters.tx) * 60000 / timeDiff);
+    
+    rateHistory.set(moduleId, {
+        timestamp,
+        counters: currentCounters
+    });
+    
+    return {
+        rx: rxRate.toLocaleString(),
+        tx: txRate.toLocaleString(),
+        rxRaw: rxRate,
+        txRaw: txRate
+    };
+}
+
+function getModuleStatus(runtime) {
+    if (!runtime.enabled) return { class: 'inactive', label: 'Aus', text: 'Deaktiviert' };
+    if (!runtime.running) return { class: 'standby', label: 'Bereit', text: 'Bereit' };
+    if (runtime.connected === false) return { class: 'ready', label: 'Bereit', text: 'Getrennt' };
+    return { class: 'active', label: 'Aktiv', text: 'Aktiv' };
+}
+
+// Render Audio Pipeline Tree
+function renderAudioPipeline(status) {
+    const container = document.getElementById('pipelineContainer');
+    
+    if (!status.modules || status.modules.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <div class="icon">🔇</div>
+                <div class="message">Keine aktiven Module</div>
+            </div>`;
+        return;
+    }
+    
+    // Get modules by type
+    const inputs = status.modules.filter(m => m.module_type === 'input');
+    const buffers = status.modules.filter(m => m.module_type === 'buffer');
+    const outputs = status.modules.filter(m => m.module_type === 'output');
+    
+    // Get graph edges for connections
+    const edges = status.graph?.edges || [];
+    
+    let pipelineHTML = '';
+    
+    // Input Level
+    if (inputs.length > 0) {
+        pipelineHTML += `
+            <div class="tree-level">
+                <div class="level-label">Input</div>
+                <div class="level-content">
+                    ${inputs.map(module => renderPipelineModule(module, 'input')).join('')}
+                </div>
+            </div>
+            <div class="connection-arrow">
+                <div class="arrow-line"></div>
+                <div class="arrow-head">↓</div>
+            </div>`;
+    }
+    
+    // Buffer Level
+    if (buffers.length > 0) {
+        pipelineHTML += `
+            <div class="tree-level">
+                <div class="level-label">Ringbuffer</div>
+                <div class="level-content">
+                    ${buffers.map(module => renderPipelineModule(module, 'buffer')).join('')}
+                </div>
+            </div>
+            <div class="connection-arrow">
+                <div class="arrow-line"></div>
+                <div class="arrow-head">↓</div>
+                <div style="font-size: 11px; color: var(--muted);">
+                    ${outputs.length} Consumer
+                </div>
+            </div>`;
+    }
+    
+    // Output Level
+    if (outputs.length > 0) {
+        pipelineHTML += `
+            <div class="tree-level">
+                <div class="level-label">Output</div>
+                <div class="level-content">
+                    ${outputs.map(module => renderPipelineModule(module, 'output')).join('')}
+                </div>
+            </div>`;
+    }
+    
+    container.innerHTML = pipelineHTML;
+}
+
+function renderPipelineModule(module, type) {
+    const statusInfo = getModuleStatus(module.runtime);
+    
+    return `
+        <div class="module-card ${type}">
+            <div class="module-header">
+                <span class="module-type type-${type}">${module.module_type}</span>
+                <span class="module-status">
+                    <span class="status-dot ${statusInfo.class}"></span>
+                    <span>${statusInfo.label}</span>
+                </span>
+            </div>
+            <div class="module-title">${module.label}</div>
+            <div class="module-id">${module.id}</div>
+            
+            <div class="module-stats">
+                <div class="module-stat">
+                    <div class="stat-label">RX</div>
+                    <div class="stat-value">${module.runtime.counters.rx.toLocaleString()}</div>
+                </div>
+                <div class="module-stat">
+                    <div class="stat-label">TX</div>
+                    <div class="stat-value">${module.runtime.counters.tx.toLocaleString()}</div>
+                </div>
+                <div class="module-stat">
+                    <div class="stat-label">Errors</div>
+                    <div class="stat-value">${module.runtime.counters.errors}</div>
+                </div>
+                <div class="module-stat">
+                    <div class="stat-label">Aktiv</div>
+                    <div class="stat-value">${formatTimeAgo(module.runtime.last_activity_ms)}</div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+// Render Ringbuffer Visualization
+function renderRingbuffer(status) {
+    const ring = status.ring;
+    if (!ring) return;
+    
+    const capacity = ring.capacity || 1;
+    const fillPercent = Math.round(ring.fill_ratio * 100);
+    
+    // Update time
+    const timeElement = document.getElementById('ringbufferTime');
+    const now = Date.now();
+    timeElement.textContent = `${formatTime(now)} | Fill: ${fillPercent}%`;
+    
+    // Update fill bar
+    const fillBar = document.getElementById('ringbufferFill');
+    fillBar.style.width = `${fillPercent}%`;
+    
+    // Update markers
+    const visual = document.getElementById('ringbufferVisual');
+    const oldMarkers = visual.querySelectorAll('.ringbuffer-marker');
+    oldMarkers.forEach(m => m.remove());
+    
+    if (capacity > 0) {
+        // Head marker
+        const headPos = (ring.head_index / capacity) * 100;
+        const headMarker = document.createElement('div');
+        headMarker.className = 'ringbuffer-marker head';
+        headMarker.style.left = `${headPos}%`;
+        const headLabel = document.createElement('div');
+        headLabel.className = 'ringbuffer-marker-label';
+        headLabel.textContent = 'Head';
+        headMarker.appendChild(headLabel);
+        visual.appendChild(headMarker);
+        
+        // Tail marker
+        const tailPos = (ring.tail_index / capacity) * 100;
+        const tailMarker = document.createElement('div');
+        tailMarker.className = 'ringbuffer-marker tail';
+        tailMarker.style.left = `${tailPos}%`;
+        const tailLabel = document.createElement('div');
+        tailLabel.className = 'ringbuffer-marker-label';
+        tailLabel.textContent = 'Tail';
+        tailMarker.appendChild(tailLabel);
+        visual.appendChild(tailMarker);
+    }
+    
+    // Update stats
+    const statsContainer = document.getElementById('ringbufferStats');
+    statsContainer.innerHTML = `
+        <div class="stat-card">
+            <div class="stat-label-small">Füllstand</div>
+            <div class="stat-value-small">${fillPercent}%</div>
+            <div class="stat-sub">${ring.fill} / ${capacity} Slots</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label-small">Head Seq</div>
+            <div class="stat-value-small">${ring.head_seq}</div>
+            <div class="stat-sub">Schreibposition</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label-small">Next Seq</div>
+            <div class="stat-value-small">${ring.next_seq}</div>
+            <div class="stat-sub">Leseposition</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label-small">Buffer</div>
+            <div class="stat-value-small">${capacity}</div>
+            <div class="stat-sub">Kapazität</div>
+        </div>
+    `;
+}
+
+// Render Modules Table
+function renderModulesTable(status) {
+    const table = document.getElementById('modulesTable');
+    
+    if (!status.modules || status.modules.length === 0) {
+        table.innerHTML = `
+            <tbody>
+                <tr>
+                    <td colspan="4" class="empty-state">
+                        <div class="icon">📦</div>
+                        <div class="message">Keine aktiven Module</div>
+                    </td>
+                </tr>
+            </tbody>`;
+        return;
+    }
+    
+    let tableHTML = '<tbody>';
+    
+    status.modules.forEach(module => {
+        const rate = calculateRate(module.id, module.runtime.counters, status.timestamp_ms);
+        const statusInfo = getModuleStatus(module.runtime);
+        const typeClass = `type-${module.module_type}`;
+        
+        tableHTML += `
+            <tr>
+                <td class="module-name-cell">
+                    <div class="module-name">${module.label}</div>
+                    <div class="module-id">${module.id}</div>
+                </td>
+                <td>
+                    <span class="module-type ${typeClass}" style="display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 10px; background: var(--${module.module_type}); color: white;">
+                        ${module.module_type}
+                    </span>
+                </td>
+                <td>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span class="status-dot ${statusInfo.class}"></span>
+                        <span>${statusInfo.text}</span>
+                    </div>
+                </td>
+                <td>
+                    <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px;">
+                        <div>RX: ${rate.rx}/min</div>
+                        <div>TX: ${rate.tx}/min</div>
+                    </div>
+                </td>
+            </tr>
+        `;
+    });
+    
+    tableHTML += '</tbody>';
+    table.innerHTML = tableHTML;
+}
+
+// Render Controls
+function renderControls(status) {
+    const container = document.getElementById('controlsGrid');
+    
+    // Collect all unique controls from modules
+    const allControls = [];
+    if (status.modules) {
+        status.modules.forEach(module => {
+            if (module.controls) {
+                module.controls.forEach(control => {
+                    if (!allControls.some(c => c.action === control.action)) {
+                        allControls.push(control);
+                    }
+                });
+            }
+        });
+    }
+    
+    if (allControls.length === 0) {
+        container.innerHTML = '<button class="btn" disabled>Keine Steuerung verfügbar</button>';
+        return;
+    }
+    
+    container.innerHTML = allControls.map(control => `
+        <button class="btn ${control.enabled ? 'primary' : ''}"
+                onclick="sendControl('${control.action}')"
+                ${!control.enabled ? 'disabled' : ''}
+                title="${control.reason || ''}">
+            ${control.label}
+        </button>
+    `).join('');
+}
+
+// Render Recorder Info
+function renderRecorderInfo(status) {
+    const container = document.getElementById('recorderInfo');
+    const recorder = status.recorder;
+    
+    if (!recorder || !recorder.enabled) {
+        container.innerHTML = '<div class="empty-state">Recorder nicht aktiv</div>';
+        return;
+    }
+    
+    let filesHTML = '';
+    if (recorder.current_files && recorder.current_files.length > 0) {
+        filesHTML = recorder.current_files.map(file => `
+            <div class="recorder-file">
+                <div class="file-icon">📁</div>
+                <div class="file-info">
+                    <div class="file-name">${file.split('/').pop()}</div>
+                    <div class="file-path">${file}</div>
+                </div>
+            </div>
+        `).join('');
+    } else {
+        filesHTML = '<div style="color: var(--muted); font-style: italic;">Keine aktiven Dateien</div>';
+    }
+    
+    container.innerHTML = `
+        <div style="margin-bottom: 12px;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                <span style="color: var(--muted);">Format:</span>
+                <span style="font-weight: 600;">${recorder.format || '–'}</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                <span style="color: var(--muted);">Pfad:</span>
+                <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; text-align: right;">${recorder.path}</span>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+                <span style="color: var(--muted);">Retention:</span>
+                <span>${recorder.retention_days || 0} Tage</span>
+            </div>
+        </div>
+        ${filesHTML}
+    `;
+}
+
+// Render Codecs
+function renderCodecs(codecs) {
+    const container = document.getElementById('codecsList');
+    
+    if (!codecs || codecs.length === 0) {
+        container.innerHTML = '<div class="empty-state">Keine Codecs verfügbar</div>';
+        return;
+    }
+    
+    container.innerHTML = codecs.map(codec => {
+        const status = codec.runtime_state;
+        const statusClass = status.enabled ? (status.running ? 'active' : 'standby') : 'inactive';
+        const statusText = status.enabled ? (status.running ? 'Aktiv' : 'Bereit') : 'Deaktiviert';
+        const bitrate = codec.config.bitrate ? `${codec.config.bitrate}bps` : 'Variable';
+        
+        return `
+            <div class="codec-item">
+                <div class="codec-status">
+                    <span class="status-dot ${statusClass}"></span>
+                </div>
+                <div class="codec-info">
+                    <div class="codec-name">${codec.id}</div>
+                    <div class="codec-details">${codec.codec_type} @ ${codec.config.sample_rate}Hz, ${bitrate}</div>
+                </div>
+                <div style="font-size: 11px; color: var(--muted);">
+                    ${codec.metrics.frames} Frames
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+// Update UI
+function updateUI(status) {
+    currentStatus = status;
+    
+    // Update timestamp
+    const updateTime = document.getElementById('updateTime');
+    updateTime.textContent = formatTime(status.timestamp_ms);
+    
+    // Render all components
+    renderAudioPipeline(status);
+    renderRingbuffer(status);
+    renderModulesTable(status);
+    renderControls(status);
+    renderRecorderInfo(status);
+    
+    updateConnectionState(true);
+}
+
+// Fetch all data
+async function fetchAllData() {
+    try {
+        // Fetch status
+        const statusResponse = await fetch('/api/status');
+        const status = await statusResponse.json();
+        
+        // Fetch codecs
+        const codecsResponse = await fetch('/api/codecs');
+        const codecs = await codecsResponse.json();
+        
+        // Update UI with status
+        updateUI(status);
+        
+        // Render codecs
+        renderCodecs(codecs);
+        
+        showMessage('Daten aktualisiert', 'success');
+        
+    } catch (error) {
+        console.error('Fehler beim Abrufen der Daten:', error);
+        updateConnectionState(false);
+        showMessage('Verbindung zum Server fehlgeschlagen', 'error');
+    }
+}
+
+// Control actions
+async function sendControl(action) {
+    try {
+        const response = await fetch('/api/control', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action })
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+            showMessage(data.message || 'Aktion erfolgreich', 'success');
+        } else {
+            showMessage(data.message || 'Fehler bei der Aktion', 'error');
+        }
+        
+        // Refresh data
+        setTimeout(fetchAllData, 500);
+        
+    } catch (error) {
+        showMessage(`Netzwerkfehler: ${error.message}`, 'error');
+    }
+}
+
+// Initialize
+document.addEventListener('DOMContentLoaded', () => {
+    // Initial fetch
+    fetchAllData();
+    
+    // Polling for updates
+    setInterval(fetchAllData, 1000);
+});
+</script>
+</body>
+</html>

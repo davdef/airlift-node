@@ -1,0 +1,1544 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Airlift Audio Node</title>
+    <style>
+        :root {
+            --bg: #0b0e11;
+            --panel: #14171c;
+            --panel-light: #1c2128;
+            --blue: #5aa0ff;
+            --blue-light: #8cc2ff;
+            --text: #d8e4f0;
+            --good: #2ecc71;
+            --warn: #f1c40f;
+            --bad: #e74c3c;
+            --input: #3498db;
+            --buffer: #9b59b6;
+            --output: #27ae60;
+            --codec: #e67e22;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--text);
+            font-family: system-ui, sans-serif;
+            overflow-x: hidden;
+        }
+
+        /* HEADER --------------------------------------------------- */
+        header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 16px;
+            background: var(--panel);
+            border-bottom: 1px solid #222;
+        }
+
+        header img {
+            height: 36px;
+            opacity: 0.95;
+        }
+
+        header h1 {
+            font-size: 22px;
+            font-weight: bold;
+            color: #ffffff;
+            font-weight: 500;
+            text-transform: uppercase;
+            margin: 0;
+        }
+
+        .header-meta {
+            margin-left: auto;
+            text-align: right;
+            font-size: 12px;
+        }
+
+        .conn-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .conn-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #888;
+        }
+
+        .conn-dot.connected { background: var(--good); animation: pulse 2s infinite; }
+        .conn-dot.error { background: var(--bad); }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* MAIN LAYOUT ---------------------------------------------- */
+        main {
+            padding: 16px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+
+        @media (max-width: 1200px) {
+            main {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* PANELS --------------------------------------------------- */
+        .panel {
+            background: var(--panel);
+            border: 1px solid #222;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .panel-header {
+            padding: 12px 16px;
+            background: var(--panel-light);
+            border-bottom: 1px solid #222;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .panel-title {
+            margin: 0;
+            font-size: 14px;
+            font-weight: 600;
+            text-transform: uppercase;
+            color: var(--blue-light);
+        }
+
+        .panel-content {
+            padding: 16px;
+        }
+
+        /* AUDIO PIPELINE TREE -------------------------------------- */
+        .pipeline-tree {
+            grid-column: 1 / -1;
+            min-height: 300px;
+        }
+
+        .tree-container {
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .tree-level {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            width: 100%;
+            position: relative;
+        }
+
+        .tree-level:not(:last-child)::after {
+            content: '';
+            position: absolute;
+            left: 50%;
+            bottom: -20px;
+            transform: translateX(-50%);
+            width: 2px;
+            height: 20px;
+            background: linear-gradient(to bottom, var(--blue), transparent);
+        }
+
+        .level-label {
+            font-size: 12px;
+            color: #888;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 16px;
+            align-self: flex-start;
+            padding-left: 20px;
+            position: relative;
+        }
+
+        .level-label::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 12px;
+            height: 2px;
+            background: var(--blue);
+        }
+
+        .level-modules {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            width: 100%;
+        }
+
+        /* MODULE CARDS -------------------------------------------- */
+        .module-card {
+            background: var(--panel-light);
+            border: 2px solid;
+            border-radius: 8px;
+            padding: 16px;
+            min-width: 200px;
+            text-align: center;
+            position: relative;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        }
+
+        .module-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+        }
+
+        .module-card.input { border-color: var(--input); }
+        .module-card.buffer { border-color: var(--buffer); }
+        .module-card.output { border-color: var(--output); }
+        .module-card.codec { border-color: var(--codec); }
+
+        .module-header {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .module-type {
+            font-size: 10px;
+            padding: 3px 8px;
+            border-radius: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .type-input { background: var(--input); color: white; }
+        .type-buffer { background: var(--buffer); color: white; }
+        .type-output { background: var(--output); color: white; }
+        .type-codec { background: var(--codec); color: white; }
+
+        .module-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 11px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+
+        .status-dot.active { background: var(--good); }
+        .status-dot.ready { background: var(--warn); }
+        .status-dot.inactive { background: var(--bad); }
+        .status-dot.standby { background: #888; }
+
+        .module-title {
+            font-weight: 600;
+            font-size: 16px;
+            margin-bottom: 4px;
+        }
+
+        .module-id {
+            font-family: monospace;
+            font-size: 11px;
+            color: #888;
+            margin-bottom: 12px;
+            word-break: break-all;
+        }
+
+        .module-stats {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid #222;
+        }
+
+        .module-stat {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .stat-label {
+            font-size: 10px;
+            color: #888;
+            text-transform: uppercase;
+            margin-bottom: 2px;
+        }
+
+        .stat-value {
+            font-weight: 600;
+            font-family: monospace;
+            font-size: 13px;
+        }
+
+        /* RINGBUFFER & RECORDER CANVAS ---------------------------- */
+        .peaks-canvas-container {
+            position: relative;
+            background: #0d1117;
+            border-radius: 6px;
+            border: 1px solid #222;
+            overflow: hidden;
+        }
+
+        .canvas-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            background: rgba(0, 0, 0, 0.3);
+            border-bottom: 1px solid #222;
+        }
+
+        .canvas-time-info {
+            font-size: 11px;
+            color: #888;
+        }
+
+        .canvas-content {
+            padding: 4px;
+        }
+
+        .peaks-canvas {
+            width: 100%;
+            height: 120px;
+            display: block;
+        }
+
+        /* TIMELINE GRID ------------------------------------------- */
+        .timeline-grid {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            pointer-events: none;
+        }
+
+        .timeline-tick {
+            position: absolute;
+            top: 0;
+            width: 1px;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .timeline-label {
+            position: absolute;
+            top: 4px;
+            transform: translateX(-50%);
+            font-size: 10px;
+            color: rgba(255, 255, 255, 0.4);
+            white-space: nowrap;
+        }
+
+        .canvas-legend {
+            display: flex;
+            gap: 12px;
+            margin-top: 8px;
+            font-size: 11px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .legend-color {
+            width: 12px;
+            height: 4px;
+            border-radius: 2px;
+        }
+
+        .legend-left { background: var(--input); }
+        .legend-right { background: var(--buffer); }
+
+        /* TABLES -------------------------------------------------- */
+        .compact-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+
+        .compact-table th {
+            text-align: left;
+            padding: 8px 12px;
+            color: #888;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 10px;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid #222;
+        }
+
+        .compact-table td {
+            padding: 8px 12px;
+            border-bottom: 1px solid rgba(34, 34, 34, 0.5);
+        }
+
+        .compact-table tr:hover {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        /* CONTROLS ------------------------------------------------ */
+        .controls-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+            gap: 8px;
+        }
+
+        button {
+            padding: 8px 12px;
+            font-size: 12px;
+            border-radius: 6px;
+            border: none;
+            color: var(--bg);
+            background: var(--blue);
+            cursor: pointer;
+            font-weight: 500;
+            border: 1px solid var(--blue);
+            transition: all 0.2s ease;
+            text-align: center;
+        }
+
+        button:hover:not(:disabled) {
+            background: var(--blue-light);
+            border-color: var(--blue-light);
+        }
+
+        button.primary {
+            background: var(--blue);
+            color: var(--bg);
+        }
+
+        button.small {
+            padding: 6px 10px;
+            font-size: 11px;
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* RECORDER INFO ------------------------------------------- */
+        .recorder-files {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+
+        .file-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px;
+            background: var(--panel-light);
+            border-radius: 4px;
+            border: 1px solid #222;
+        }
+
+        .file-icon {
+            width: 24px;
+            height: 24px;
+            background: rgba(90, 160, 255, 0.1);
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--blue);
+        }
+
+        .file-info {
+            flex: 1;
+        }
+
+        .file-name {
+            font-weight: 600;
+            font-size: 12px;
+            margin-bottom: 2px;
+        }
+
+        .file-path {
+            font-family: monospace;
+            font-size: 10px;
+            color: #888;
+        }
+
+        /* CODECS LIST --------------------------------------------- */
+        .codecs-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .codec-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px;
+            background: var(--panel-light);
+            border-radius: 4px;
+            border: 1px solid #222;
+        }
+
+        .codec-status {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .codec-info {
+            flex: 1;
+        }
+
+        .codec-name {
+            font-weight: 600;
+            font-size: 12px;
+            margin-bottom: 2px;
+        }
+
+        .codec-details {
+            font-family: monospace;
+            font-size: 10px;
+            color: #888;
+        }
+
+        /* EMPTY STATES -------------------------------------------- */
+        .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 40px 20px;
+            text-align: center;
+            color: #888;
+        }
+
+        .empty-state .icon {
+            font-size: 32px;
+            margin-bottom: 12px;
+            opacity: 0.5;
+        }
+
+        .empty-state .message {
+            font-size: 14px;
+        }
+
+        /* MESSAGE BAR --------------------------------------------- */
+        .message-bar {
+            position: fixed;
+            bottom: 16px;
+            right: 16px;
+            background: var(--panel);
+            border: 1px solid var(--blue);
+            border-radius: 6px;
+            padding: 10px 14px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            z-index: 1000;
+            max-width: 300px;
+            display: none;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        .message-bar.show {
+            display: block;
+        }
+
+        .message-bar.success {
+            border-color: var(--good);
+            background: rgba(46, 204, 113, 0.1);
+        }
+
+        .message-bar.error {
+            border-color: var(--bad);
+            background: rgba(231, 76, 60, 0.1);
+        }
+
+        .message-bar.warning {
+            border-color: var(--warn);
+            background: rgba(241, 196, 15, 0.1);
+        }
+
+        /* RESPONSIVE ---------------------------------------------- */
+        @media (max-width: 768px) {
+            main {
+                padding: 12px;
+                gap: 12px;
+            }
+            
+            .level-modules {
+                flex-direction: column;
+                align-items: center;
+            }
+            
+            .module-card {
+                width: 100%;
+                max-width: 280px;
+            }
+            
+            .compact-table {
+                font-size: 11px;
+            }
+            
+            .compact-table th,
+            .compact-table td {
+                padding: 6px 8px;
+            }
+        }
+    </style>
+</head>
+<body>
+<header>
+    <img src="rfm-logo.png" alt="RFM Logo">
+    <h1>Airlift Audio Node</h1>
+    <div class="header-meta">
+        <div class="conn-status">
+            <span class="conn-dot"></span>
+            <span id="connText">Verbinde...</span>
+        </div>
+        <div style="font-size: 11px; color: #888; margin-top: 2px;">
+            <span id="updateTime">–</span>
+        </div>
+    </div>
+</header>
+
+<main>
+    <!-- Audio Pipeline Tree -->
+    <section class="panel pipeline-tree">
+        <div class="panel-header">
+            <h2 class="panel-title">Audio Pipeline</h2>
+            <button class="btn small" onclick="fetchAllData()">↻ Aktualisieren</button>
+        </div>
+        <div class="tree-container" id="pipelineTree">
+            <div class="empty-state">
+                <div class="icon">🎵</div>
+                <div class="message">Lade Audio-Pipeline...</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Left Column -->
+    <div style="display: flex; flex-direction: column; gap: 16px;">
+        <!-- Ringbuffer Peaks (10 Minuten) -->
+        <section class="panel">
+            <div class="panel-header">
+                <h2 class="panel-title">Ringbuffer Peaks (letzte 10 Minuten)</h2>
+                <div class="canvas-time-info" id="ringbufferTimeRange">–</div>
+            </div>
+            <div class="panel-content">
+                <div class="peaks-canvas-container">
+                    <div class="canvas-header">
+                        <div style="font-size: 11px; color: var(--blue-light)">
+                            <span id="ringbufferStatsText">Head: – Tail: – Fill: –</span>
+                        </div>
+                    </div>
+                    <div class="canvas-content">
+                        <canvas class="peaks-canvas" id="ringbufferCanvas"></canvas>
+                        <div class="timeline-grid" id="ringbufferTimeline"></div>
+                    </div>
+                </div>
+                <div class="canvas-legend">
+                    <div class="legend-item">
+                        <div class="legend-color legend-left"></div>
+                        <span>Left Channel</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color legend-right"></div>
+                        <span>Right Channel</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Recorder -->
+        <section class="panel">
+            <div class="panel-header">
+                <h2 class="panel-title">Recorder (aktuelle Stunde)</h2>
+                <div class="canvas-time-info" id="recorderTimeRange">–</div>
+            </div>
+            <div class="panel-content">
+                <div class="recorder-files" id="recorderInfo">
+                    <div class="empty-state">
+                        <div class="icon">📁</div>
+                        <div class="message">Lade Recorder-Info...</div>
+                    </div>
+                </div>
+                
+                <div class="peaks-canvas-container">
+                    <div class="canvas-header">
+                        <div style="font-size: 11px; color: var(--blue-light)">
+                            <span id="recorderFileInfo">–</span>
+                        </div>
+                    </div>
+                    <div class="canvas-content">
+                        <canvas class="peaks-canvas" id="recorderCanvas"></canvas>
+                        <div class="timeline-grid" id="recorderTimeline"></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <!-- Right Column -->
+    <div style="display: flex; flex-direction: column; gap: 16px;">
+        <!-- Active Modules -->
+        <section class="panel">
+            <div class="panel-header">
+                <h2 class="panel-title">Aktive Module</h2>
+                <span style="font-size: 11px; color: #888;" id="activeModulesCount">0</span>
+            </div>
+            <div class="panel-content">
+                <table class="compact-table" id="modulesTable">
+                    <thead>
+                        <tr>
+                            <th>Modul</th>
+                            <th>Typ</th>
+                            <th>Status</th>
+                            <th>Datenrate</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td colspan="4" class="empty-state">
+                                <div class="icon">📦</div>
+                                <div class="message">Lade Module...</div>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Controls -->
+        <section class="panel">
+            <div class="panel-header">
+                <h2 class="panel-title">Steuerung</h2>
+            </div>
+            <div class="panel-content">
+                <div class="controls-grid" id="controlsGrid">
+                    <button class="btn" disabled>Lade...</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Available Modules -->
+        <section class="panel">
+            <div class="panel-header">
+                <h2 class="panel-title">Verfügbare Module</h2>
+                <span style="font-size: 11px; color: #888;" id="inactiveModulesCount">0</span>
+            </div>
+            <div class="panel-content">
+                <table class="compact-table" id="inactiveModulesTable">
+                    <thead>
+                        <tr>
+                            <th>Modul</th>
+                            <th>Typ</th>
+                            <th>Status</th>
+                            <th>Grund</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td colspan="4" class="empty-state">
+                                <div class="icon">🔌</div>
+                                <div class="message">Keine inaktiven Module</div>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Codecs -->
+        <section class="panel">
+            <div class="panel-header">
+                <h2 class="panel-title">Verfügbare Codecs</h2>
+            </div>
+            <div class="panel-content">
+                <div class="codecs-list" id="codecsList">
+                    <div class="empty-state">
+                        <div class="icon">🔊</div>
+                        <div class="message">Lade Codecs...</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
+</main>
+
+<div id="messageBar" class="message-bar"></div>
+
+<script>
+// State
+let currentStatus = null;
+let ringbufferPeaks = [];      // 10 Minuten Ringbuffer-Daten
+let recorderPeaks = [];        // Aktuelle Stunde Recorder-Daten
+const rateHistory = new Map();
+
+// Canvas contexts
+const ringbufferCanvas = document.getElementById('ringbufferCanvas');
+const ringbufferCtx = ringbufferCanvas.getContext('2d');
+const recorderCanvas = document.getElementById('recorderCanvas');
+const recorderCtx = recorderCanvas.getContext('2d');
+
+// WebSocket
+let ws = null;
+let reconnectTimeout = null;
+let lastPeakTimestamp = 0;
+
+// Time windows (in milliseconds)
+const RINGBUFFER_WINDOW = 10 * 60 * 1000;      // 10 Minuten
+const RECORDER_WINDOW = 60 * 60 * 1000;        // 1 Stunde
+
+// Initialize canvas
+function initCanvas() {
+    ringbufferCanvas.width = ringbufferCanvas.offsetWidth;
+    ringbufferCanvas.height = ringbufferCanvas.offsetHeight;
+    recorderCanvas.width = recorderCanvas.offsetWidth;
+    recorderCanvas.height = recorderCanvas.offsetHeight;
+    
+    drawTimeline('ringbufferTimeline', RINGBUFFER_WINDOW);
+    drawTimeline('recorderTimeline', RECORDER_WINDOW);
+}
+
+window.addEventListener('resize', initCanvas);
+
+// Helper functions
+function showMessage(text, type = 'info') {
+    const bar = document.getElementById('messageBar');
+    bar.textContent = text;
+    bar.className = `message-bar show ${type}`;
+    
+    setTimeout(() => {
+        bar.className = 'message-bar';
+    }, 3000);
+}
+
+function updateConnectionState(connected) {
+    const dot = document.querySelector('.conn-dot');
+    const text = document.getElementById('connText');
+    
+    if (connected) {
+        dot.className = 'conn-dot connected';
+        text.textContent = 'Verbunden (Live)';
+    } else {
+        dot.className = 'conn-dot error';
+        text.textContent = 'Getrennt';
+    }
+}
+
+function formatTime(ms) {
+    if (!ms) return '–';
+    const date = new Date(ms);
+    return date.toLocaleTimeString('de-DE', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+    });
+}
+
+function formatDuration(ms) {
+    if (!ms) return '0s';
+    const seconds = Math.floor(ms / 1000);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    return `${hours}h ${minutes % 60}m`;
+}
+
+function getModuleStatus(runtime) {
+    if (!runtime.enabled) return { class: 'inactive', label: 'Aus', text: 'Deaktiviert' };
+    if (!runtime.running) return { class: 'standby', label: 'Bereit', text: 'Bereit' };
+    if (runtime.connected === false) return { class: 'ready', label: 'Bereit', text: 'Getrennt' };
+    return { class: 'active', label: 'Aktiv', text: 'Aktiv' };
+}
+
+// Timeline drawing
+function drawTimeline(containerId, timeWindow) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    
+    container.innerHTML = '';
+    
+    const width = container.parentElement.querySelector('.peaks-canvas').width;
+    const ticks = 6;
+    const tickInterval = timeWindow / ticks;
+    
+    for (let i = 0; i <= ticks; i++) {
+        const x = (i / ticks) * width;
+        const timeLabel = `-${Math.round((timeWindow - (i * tickInterval)) / 60000)}m`;
+        
+        const tick = document.createElement('div');
+        tick.className = 'timeline-tick';
+        tick.style.left = `${x}px`;
+        
+        const label = document.createElement('div');
+        label.className = 'timeline-label';
+        label.style.left = `${x}px`;
+        label.textContent = i === 0 ? 'JETZT' : timeLabel;
+        
+        container.appendChild(tick);
+        if (i > 0) container.appendChild(label);
+    }
+}
+
+// Draw peaks on canvas
+function drawPeaks(canvas, ctx, peaks, timeWindow, showGrid = true) {
+    if (!canvas || !ctx) return;
+    
+    const width = canvas.width;
+    const height = canvas.height;
+    const midY = height / 2;
+    
+    // Clear canvas
+    ctx.fillStyle = '#0d1117';
+    ctx.fillRect(0, 0, width, height);
+    
+    if (!peaks || peaks.length === 0) {
+        // Draw empty state
+        ctx.fillStyle = 'rgba(136, 136, 136, 0.5)';
+        ctx.font = '12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('Keine Peak-Daten verfügbar', width / 2, height / 2);
+        return;
+    }
+    
+    // Calculate time range
+    const now = Date.now();
+    const startTime = now - timeWindow;
+    
+    // Draw peaks as vertical lines
+    peaks.forEach(point => {
+        // Calculate x position based on time
+        const x = ((point.ts - startTime) / timeWindow) * width;
+        
+        // Skip if outside canvas
+        if (x < 0 || x > width) return;
+        
+        // Get peaks (handle both old and new format)
+        let leftPeak, rightPeak;
+        if (point.peaks && Array.isArray(point.peaks)) {
+            leftPeak = point.peaks[0] || 0;
+            rightPeak = point.peaks[1] || 0;
+        } else {
+            leftPeak = point.peak_l || 0;
+            rightPeak = point.peak_r || 0;
+        }
+        
+        // Left channel (top half)
+        const leftHeight = Math.min(leftPeak * height * 0.4, height / 2);
+        ctx.fillStyle = 'rgba(52, 152, 219, 0.7)';
+        ctx.fillRect(x, midY - leftHeight, 1, leftHeight);
+        
+        // Right channel (bottom half)
+        const rightHeight = Math.min(rightPeak * height * 0.4, height / 2);
+        ctx.fillStyle = 'rgba(155, 89, 182, 0.7)';
+        ctx.fillRect(x, midY, 1, rightHeight);
+        
+        // Silence indicator
+        if (point.silence) {
+            ctx.fillStyle = 'rgba(231, 76, 60, 0.2)';
+            ctx.fillRect(x, 0, 1, height);
+        }
+    });
+}
+
+// Add new peak data
+function addPeakData(point) {
+    const now = Date.now();
+    
+    // Convert to unified format
+    const peak = {
+        ts: point.timestamp || point.ts,
+        peaks: point.peaks || [point.peak_l || 0, point.peak_r || 0],
+        silence: point.silence || false
+    };
+    
+    // Add to ringbuffer (10 minutes)
+    ringbufferPeaks.push(peak);
+    
+    // Remove old data (older than 10 minutes)
+    const ringbufferCutoff = now - RINGBUFFER_WINDOW;
+    ringbufferPeaks = ringbufferPeaks.filter(p => p.ts >= ringbufferCutoff);
+    
+    // Add to recorder (1 hour)
+    recorderPeaks.push(peak);
+    
+    // Remove old data (older than 1 hour)
+    const recorderCutoff = now - RECORDER_WINDOW;
+    recorderPeaks = recorderPeaks.filter(p => p.ts >= recorderCutoff);
+    
+    // Update visualizations
+    drawPeaks(ringbufferCanvas, ringbufferCtx, ringbufferPeaks, RINGBUFFER_WINDOW);
+    drawPeaks(recorderCanvas, recorderCtx, recorderPeaks, RECORDER_WINDOW);
+    
+    // Update time ranges
+    updateTimeRanges();
+}
+
+// Update time range displays
+function updateTimeRanges() {
+    const now = Date.now();
+    
+    // Ringbuffer time range
+    const ringbufferStart = now - RINGBUFFER_WINDOW;
+    const ringbufferRange = document.getElementById('ringbufferTimeRange');
+    if (ringbufferRange) {
+        ringbufferRange.textContent = `${formatTime(ringbufferStart)} - ${formatTime(now)}`;
+    }
+    
+    // Recorder time range
+    const recorderStart = now - RECORDER_WINDOW;
+    const recorderRange = document.getElementById('recorderTimeRange');
+    if (recorderRange) {
+        recorderRange.textContent = `${formatTime(recorderStart)} - ${formatTime(now)}`;
+    }
+}
+
+// WebSocket connection
+function connectWebSocket() {
+    if (ws) {
+        ws.close();
+    }
+    
+    const proto = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+    const wsUrl = proto + window.location.host + '/ws';
+    
+    ws = new WebSocket(wsUrl);
+    
+    ws.onopen = () => {
+        console.log('WebSocket verbunden');
+        updateConnectionState(true);
+        if (reconnectTimeout) {
+            clearTimeout(reconnectTimeout);
+            reconnectTimeout = null;
+        }
+    };
+    
+    ws.onerror = (error) => {
+        console.error('WebSocket Fehler:', error);
+        updateConnectionState(false);
+    };
+    
+    ws.onclose = () => {
+        console.log('WebSocket geschlossen');
+        updateConnectionState(false);
+        
+        // Reconnect after 5 seconds
+        if (!reconnectTimeout) {
+            reconnectTimeout = setTimeout(() => {
+                connectWebSocket();
+            }, 5000);
+        }
+    };
+    
+    ws.onmessage = (e) => {
+        try {
+            const data = JSON.parse(e.data);
+            if (data && (data.peaks || data.peak_l !== undefined)) {
+                addPeakData(data);
+            }
+        } catch (error) {
+            console.error('Fehler beim Parsen der WebSocket-Nachricht:', error);
+        }
+    };
+}
+
+// Fetch initial history data
+async function fetchInitialHistory() {
+    try {
+        const now = Date.now();
+        const ringbufferFrom = now - RINGBUFFER_WINDOW;
+        const recorderFrom = now - RECORDER_WINDOW;
+        
+        // Fetch ringbuffer history
+        const ringbufferResponse = await fetch(`/api/history?from=${ringbufferFrom}&to=${now}`);
+        if (ringbufferResponse.ok) {
+            const data = await ringbufferResponse.json();
+            if (Array.isArray(data)) {
+                ringbufferPeaks = data.map(point => ({
+                    ts: point.ts,
+                    peaks: [point.peak_l, point.peak_r],
+                    silence: point.silence || false
+                }));
+                drawPeaks(ringbufferCanvas, ringbufferCtx, ringbufferPeaks, RINGBUFFER_WINDOW);
+            }
+        }
+        
+        // Fetch recorder history
+        const recorderResponse = await fetch(`/api/history?from=${recorderFrom}&to=${now}`);
+        if (recorderResponse.ok) {
+            const data = await recorderResponse.json();
+            if (Array.isArray(data)) {
+                recorderPeaks = data.map(point => ({
+                    ts: point.ts,
+                    peaks: [point.peak_l, point.peak_r],
+                    silence: point.silence || false
+                }));
+                drawPeaks(recorderCanvas, recorderCtx, recorderPeaks, RECORDER_WINDOW);
+            }
+        }
+        
+        updateTimeRanges();
+        
+    } catch (error) {
+        console.error('Fehler beim Laden der History:', error);
+    }
+}
+
+// Render Audio Pipeline Tree
+function renderAudioPipeline(status) {
+    const container = document.getElementById('pipelineTree');
+    
+    if (!status.modules || status.modules.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <div class="icon">🔇</div>
+                <div class="message">Keine aktiven Module</div>
+            </div>`;
+        return;
+    }
+    
+    // Group modules by type
+    const inputs = status.modules.filter(m => m.module_type === 'input');
+    const buffers = status.modules.filter(m => m.module_type === 'buffer');
+    const outputs = status.modules.filter(m => m.module_type === 'output');
+    
+    let pipelineHTML = '';
+    
+    // Input Level
+    if (inputs.length > 0) {
+        pipelineHTML += `
+            <div class="tree-level">
+                <div class="level-label">Input</div>
+                <div class="level-modules">
+                    ${inputs.map(module => renderPipelineModule(module, 'input')).join('')}
+                </div>
+            </div>
+            <div style="text-align: center; color: var(--blue); font-size: 24px; margin: 8px 0;">↓</div>`;
+    }
+    
+    // Buffer Level
+    if (buffers.length > 0) {
+        pipelineHTML += `
+            <div class="tree-level">
+                <div class="level-label">Ringbuffer</div>
+                <div class="level-modules">
+                    ${buffers.map(module => renderPipelineModule(module, 'buffer')).join('')}
+                </div>
+            </div>
+            <div style="text-align: center; color: var(--blue); font-size: 24px; margin: 8px 0;">↓</div>`;
+    }
+    
+    // Output Level
+    if (outputs.length > 0) {
+        pipelineHTML += `
+            <div class="tree-level">
+                <div class="level-label">Output</div>
+                <div class="level-modules">
+                    ${outputs.map(module => renderPipelineModule(module, 'output')).join('')}
+                </div>
+            </div>`;
+    }
+    
+    container.innerHTML = pipelineHTML;
+}
+
+function renderPipelineModule(module, type) {
+    const statusInfo = getModuleStatus(module.runtime);
+    
+    return `
+        <div class="module-card ${type}">
+            <div class="module-header">
+                <span class="module-type type-${type}">${module.module_type}</span>
+                <span class="module-status">
+                    <span class="status-dot ${statusInfo.class}"></span>
+                    <span>${statusInfo.label}</span>
+                </span>
+            </div>
+            <div class="module-title">${module.label}</div>
+            <div class="module-id">${module.id}</div>
+            
+            <div class="module-stats">
+                <div class="module-stat">
+                    <div class="stat-label">RX</div>
+                    <div class="stat-value">${module.runtime.counters.rx.toLocaleString()}</div>
+                </div>
+                <div class="module-stat">
+                    <div class="stat-label">TX</div>
+                    <div class="stat-value">${module.runtime.counters.tx.toLocaleString()}</div>
+                </div>
+                <div class="module-stat">
+                    <div class="stat-label">Errors</div>
+                    <div class="stat-value">${module.runtime.counters.errors}</div>
+                </div>
+                <div class="module-stat">
+                    <div class="stat-label">Aktiv</div>
+                    <div class="stat-value">${formatDuration(Date.now() - module.runtime.last_activity_ms)}</div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+// Render Ringbuffer info
+function renderRingbufferInfo(status) {
+    const ring = status.ring;
+    if (!ring) return;
+    
+    const fillPercent = Math.round((ring.fill_ratio || 0) * 100);
+    const statsText = document.getElementById('ringbufferStatsText');
+    
+    if (statsText) {
+        statsText.textContent = `Head: ${ring.head_seq || 0} | Tail: ${ring.tail_seq || 0} | Fill: ${fillPercent}%`;
+    }
+}
+
+// Render Modules Table
+function renderModulesTable(status) {
+    const table = document.getElementById('modulesTable');
+    const countElement = document.getElementById('activeModulesCount');
+    
+    const modules = status.modules || [];
+    countElement.textContent = modules.length;
+    
+    if (modules.length === 0) {
+        table.innerHTML = `
+            <tbody>
+                <tr>
+                    <td colspan="4" class="empty-state">
+                        <div class="icon">📦</div>
+                        <div class="message">Keine aktiven Module</div>
+                    </td>
+                </tr>
+            </tbody>`;
+        return;
+    }
+    
+    let tableHTML = '<tbody>';
+    
+    modules.forEach(module => {
+        const statusInfo = getModuleStatus(module.runtime);
+        
+        tableHTML += `
+            <tr>
+                <td>
+                    <div style="font-weight: 600;">${module.label}</div>
+                    <div style="font-family: monospace; font-size: 10px; color: #888;">${module.id}</div>
+                </td>
+                <td>
+                    <span style="display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 10px; background: var(--${module.module_type}); color: white;">
+                        ${module.module_type}
+                    </span>
+                </td>
+                <td>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span class="status-dot ${statusInfo.class}"></span>
+                        <span>${statusInfo.text}</span>
+                    </div>
+                </td>
+                <td>
+                    <div style="font-family: monospace; font-size: 12px;">
+                        <div>RX: ${module.runtime.counters.rx}/min</div>
+                        <div>TX: ${module.runtime.counters.tx}/min</div>
+                    </div>
+                </td>
+            </tr>
+        `;
+    });
+    
+    tableHTML += '</tbody>';
+    table.innerHTML = tableHTML;
+}
+
+// Render Inactive Modules
+function renderInactiveModules(status) {
+    const table = document.getElementById('inactiveModulesTable');
+    const countElement = document.getElementById('inactiveModulesCount');
+    
+    const inactive = status.inactive_modules || [];
+    countElement.textContent = inactive.length;
+    
+    if (inactive.length === 0) {
+        table.innerHTML = `
+            <tbody>
+                <tr>
+                    <td colspan="4" class="empty-state">
+                        <div class="icon">🔌</div>
+                        <div class="message">Keine inaktiven Module</div>
+                    </td>
+                </tr>
+            </tbody>`;
+        return;
+    }
+    
+    let tableHTML = '<tbody>';
+    
+    inactive.forEach(module => {
+        tableHTML += `
+            <tr>
+                <td>
+                    <div style="font-weight: 600;">${module.label}</div>
+                    <div style="font-family: monospace; font-size: 10px; color: #888;">${module.id}</div>
+                </td>
+                <td>
+                    <span style="display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 10px; background: var(--${module.module_type}); color: white;">
+                        ${module.module_type}
+                    </span>
+                </td>
+                <td>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span class="status-dot inactive"></span>
+                        <span>Inaktiv</span>
+                    </div>
+                </td>
+                <td>
+                    <span style="font-size: 11px; color: #888;">${module.reason}</span>
+                </td>
+            </tr>
+        `;
+    });
+    
+    tableHTML += '</tbody>';
+    table.innerHTML = tableHTML;
+}
+
+// Render Controls
+function renderControls(status) {
+    const container = document.getElementById('controlsGrid');
+    
+    const allControls = [];
+    if (status.modules) {
+        status.modules.forEach(module => {
+            if (module.controls) {
+                module.controls.forEach(control => {
+                    if (!allControls.some(c => c.action === control.action)) {
+                        allControls.push(control);
+                    }
+                });
+            }
+        });
+    }
+    
+    if (allControls.length === 0) {
+        container.innerHTML = '<button class="btn" disabled>Keine Steuerung</button>';
+        return;
+    }
+    
+    container.innerHTML = allControls.map(control => `
+        <button class="btn ${control.enabled ? 'primary' : ''}"
+                onclick="sendControl('${control.action}')"
+                ${!control.enabled ? 'disabled' : ''}
+                title="${control.reason || ''}">
+            ${control.label}
+        </button>
+    `).join('');
+}
+
+// Render Recorder Info
+function renderRecorderInfo(status) {
+    const container = document.getElementById('recorderInfo');
+    const fileInfo = document.getElementById('recorderFileInfo');
+    const recorder = status.recorder;
+    
+    if (!recorder || !recorder.enabled) {
+        container.innerHTML = '<div class="empty-state">Recorder nicht aktiv</div>';
+        if (fileInfo) fileInfo.textContent = 'Recorder inaktiv';
+        return;
+    }
+    
+    let filesHTML = '';
+    if (recorder.current_files && recorder.current_files.length > 0) {
+        filesHTML = recorder.current_files.map(file => `
+            <div class="file-item">
+                <div class="file-icon">📁</div>
+                <div class="file-info">
+                    <div class="file-name">${file.split('/').pop()}</div>
+                    <div class="file-path">${file}</div>
+                </div>
+            </div>
+        `).join('');
+        
+        if (fileInfo) {
+            const currentFile = recorder.current_files[recorder.current_files.length - 1] || '';
+            const fileName = currentFile.split('/').pop() || '';
+            fileInfo.textContent = `Aktuelle Datei: ${fileName}`;
+        }
+    } else {
+        filesHTML = '<div style="color: #888; font-style: italic;">Keine aktiven Dateien</div>';
+        if (fileInfo) fileInfo.textContent = 'Keine aktive Datei';
+    }
+    
+    container.innerHTML = `
+        <div style="margin-bottom: 12px;">
+            <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+                <span style="color: #888;">Format:</span>
+                <span style="font-weight: 600;">${recorder.format || '–'}</span>
+            </div>
+            <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+                <span style="color: #888;">Pfad:</span>
+                <span style="font-family: monospace; font-size: 10px;">${recorder.path}</span>
+            </div>
+            <div style="display: flex; justify-content: space-between;">
+                <span style="color: #888;">Retention:</span>
+                <span>${recorder.retention_days || 0} Tage</span>
+            </div>
+        </div>
+        ${filesHTML}
+    `;
+}
+
+// Render Codecs
+function renderCodecs(codecs) {
+    const container = document.getElementById('codecsList');
+    
+    if (!codecs || codecs.length === 0) {
+        container.innerHTML = '<div class="empty-state">Keine Codecs verfügbar</div>';
+        return;
+    }
+    
+    container.innerHTML = codecs.map(codec => {
+        const status = codec.runtime_state;
+        const statusClass = status.enabled ? (status.running ? 'active' : 'standby') : 'inactive';
+        const bitrate = codec.config.bitrate ? `${codec.config.bitrate}bps` : 'Variable';
+        
+        return `
+            <div class="codec-item">
+                <div class="codec-status">
+                    <span class="status-dot ${statusClass}"></span>
+                </div>
+                <div class="codec-info">
+                    <div class="codec-name">${codec.id}</div>
+                    <div class="codec-details">${codec.codec_type} @ ${codec.config.sample_rate}Hz</div>
+                </div>
+                <div style="font-size: 11px; color: #888;">
+                    ${codec.metrics.frames} Frames
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+// Update UI with status data
+function updateUI(status) {
+    currentStatus = status;
+    
+    // Update timestamp
+    const updateTime = document.getElementById('updateTime');
+    updateTime.textContent = formatTime(status.timestamp_ms);
+    
+    // Render all components
+    renderAudioPipeline(status);
+    renderRingbufferInfo(status);
+    renderModulesTable(status);
+    renderInactiveModules(status);
+    renderControls(status);
+    renderRecorderInfo(status);
+    
+    updateConnectionState(true);
+}
+
+// Fetch all data (initial load only)
+async function fetchAllData() {
+    try {
+        const statusResponse = await fetch('/api/status');
+        const status = await statusResponse.json();
+        
+        const codecsResponse = await fetch('/api/codecs');
+        const codecs = await codecsResponse.json();
+        
+        updateUI(status);
+        renderCodecs(codecs);
+        
+        showMessage('Daten aktualisiert', 'success');
+        
+    } catch (error) {
+        console.error('Data fetch error:', error);
+        updateConnectionState(false);
+        showMessage('Verbindung fehlgeschlagen', 'error');
+    }
+}
+
+// Control actions
+async function sendControl(action) {
+    try {
+        const response = await fetch('/api/control', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action })
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+            showMessage(data.message || 'Aktion erfolgreich', 'success');
+        } else {
+            showMessage(data.message || 'Fehler', 'error');
+        }
+        
+        // Refresh data after control action
+        setTimeout(fetchAllData, 500);
+        
+    } catch (error) {
+        showMessage(`Netzwerkfehler: ${error.message}`, 'error');
+    }
+}
+
+// Initialize
+document.addEventListener('DOMContentLoaded', () => {
+    // Initialize canvas
+    initCanvas();
+    
+    // Initial fetch of status data
+    fetchAllData();
+    
+    // Fetch initial history data
+    fetchInitialHistory();
+    
+    // Connect WebSocket for live peaks
+    connectWebSocket();
+    
+    // No polling intervals - everything is real-time via WebSocket
+});
+</script>
+</body>
+</html>

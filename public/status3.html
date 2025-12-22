@@ -1,0 +1,1439 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Airlift Node Status</title>
+    <style>
+        :root {
+            --bg: #0b0e14;
+            --panel: #161b22;
+            --panel-light: #1c2129;
+            --text: #e6edf3;
+            --muted: #7d8590;
+            --good: #2da44e;
+            --warn: #d29922;
+            --bad: #f85149;
+            --accent: #58a6ff;
+            --input: #1f6feb;
+            --buffer: #8957e5;
+            --codec: #db6d28;
+            --output: #238636;
+            --processing: #9e6a03;
+            --service: #3fb950;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        header {
+            padding: 16px 20px;
+            background: var(--panel);
+            border-bottom: 1px solid #30363d;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .header-left h1 {
+            margin: 0 0 4px 0;
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .header-subtitle {
+            font-size: 12px;
+            color: var(--muted);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .conn-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .conn-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--muted);
+        }
+
+        .conn-dot.connected { background: var(--good); animation: pulse 2s infinite; }
+        .conn-dot.error { background: var(--bad); }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .header-right {
+            text-align: right;
+        }
+
+        .update-time {
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        .message-bar {
+            background: var(--panel);
+            border-bottom: 1px solid #30363d;
+            padding: 8px 20px;
+            font-size: 12px;
+            display: none;
+        }
+
+        .message-bar.show {
+            display: block;
+        }
+
+        .message-bar.success { color: var(--good); }
+        .message-bar.error { color: var(--bad); }
+        .message-bar.warning { color: var(--warn); }
+
+        main {
+            padding: 20px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        @media (max-width: 1200px) {
+            main {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .panel {
+            background: var(--panel);
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .panel-header {
+            padding: 16px;
+            border-bottom: 1px solid #30363d;
+            background: var(--panel-light);
+        }
+
+        .panel-title {
+            margin: 0;
+            font-size: 14px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .panel-title .badge {
+            background: var(--panel);
+            color: var(--muted);
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 500;
+        }
+
+        .panel-content {
+            padding: 16px;
+        }
+
+        /* Ringbuffer Section */
+        .ring-summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+
+        .ring-stat {
+            background: var(--panel-light);
+            padding: 12px;
+            border-radius: 6px;
+            border-left: 3px solid var(--accent);
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 4px;
+        }
+
+        .stat-value {
+            font-weight: 600;
+            font-size: 16px;
+            font-family: 'JetBrains Mono', 'Cascadia Code', monospace;
+        }
+
+        .stat-sub {
+            font-size: 11px;
+            color: var(--muted);
+            margin-top: 2px;
+        }
+
+        .ring-visualization {
+            margin: 20px 0;
+        }
+
+        .ring-bar-container {
+            position: relative;
+            height: 32px;
+            background: #0d1117;
+            border-radius: 6px;
+            border: 2px solid #30363d;
+            overflow: hidden;
+            margin-bottom: 8px;
+        }
+
+        .ring-fill {
+            height: 100%;
+            background: linear-gradient(90deg, 
+                #238636 0%, 
+                #d29922 50%, 
+                #da3633 100%);
+            transition: width 0.3s ease;
+        }
+
+        .ring-markers {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+        }
+
+        .ring-marker {
+            position: absolute;
+            top: -4px;
+            bottom: -4px;
+            width: 3px;
+            transform: translateX(-50%);
+            border-radius: 2px;
+        }
+
+        .ring-marker.head {
+            background: #ffffff;
+            box-shadow: 0 0 8px #ffffff;
+            z-index: 2;
+        }
+
+        .ring-marker.tail {
+            background: var(--warn);
+            box-shadow: 0 0 8px var(--warn);
+            z-index: 2;
+        }
+
+        .ring-marker.consumer {
+            background: var(--service);
+            width: 2px;
+            top: 4px;
+            bottom: 4px;
+            z-index: 1;
+        }
+
+        .ring-marker-label {
+            position: absolute;
+            top: -20px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 10px;
+            color: var(--muted);
+            white-space: nowrap;
+        }
+
+        .ring-consumers {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 16px;
+        }
+
+        .consumer-tag {
+            background: var(--panel-light);
+            color: var(--muted);
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            border: 1px solid #30363d;
+        }
+
+        .consumer-tag.active {
+            background: rgba(35, 134, 54, 0.15);
+            color: var(--good);
+            border-color: rgba(35, 134, 54, 0.3);
+        }
+
+        /* Data Flow Graph */
+        .flow-graph {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            padding: 20px;
+            background: var(--panel-light);
+            border-radius: 8px;
+            border: 1px solid #30363d;
+            min-height: 300px;
+            position: relative;
+        }
+
+        .flow-stage {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .stage-label {
+            font-size: 11px;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            padding-left: 12px;
+            position: relative;
+        }
+
+        .stage-label::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 50%;
+            width: 6px;
+            height: 6px;
+            background: var(--accent);
+            border-radius: 50%;
+            transform: translateY(-50%);
+        }
+
+        .stage-modules {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            padding-left: 12px;
+        }
+
+        .module-card {
+            background: var(--panel);
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 12px;
+            min-width: 180px;
+            position: relative;
+            transition: all 0.2s ease;
+        }
+
+        .module-card:hover {
+            border-color: var(--accent);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        }
+
+        .module-card::before {
+            content: '';
+            position: absolute;
+            left: -6px;
+            top: 50%;
+            width: 12px;
+            height: 2px;
+            background: #30363d;
+        }
+
+        .module-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+
+        .module-type {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .type-input { background: rgba(31, 111, 235, 0.15); color: var(--input); }
+        .type-buffer { background: rgba(137, 87, 229, 0.15); color: var(--buffer); }
+        .type-codec { background: rgba(219, 109, 40, 0.15); color: var(--codec); }
+        .type-output { background: rgba(35, 134, 54, 0.15); color: var(--output); }
+        .type-service { background: rgba(63, 185, 80, 0.15); color: var(--service); }
+
+        .module-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+        }
+
+        .status-dot.active { background: var(--good); }
+        .status-dot.ready { background: var(--warn); }
+        .status-dot.inactive { background: var(--bad); }
+        .status-dot.standby { background: var(--muted); }
+
+        .module-name {
+            font-weight: 600;
+            font-size: 14px;
+            margin-bottom: 4px;
+        }
+
+        .module-id {
+            font-family: 'JetBrains Mono', 'Cascadia Code', monospace;
+            font-size: 10px;
+            color: var(--muted);
+            margin-bottom: 8px;
+        }
+
+        .module-stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            font-size: 11px;
+        }
+
+        .module-stat {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .stat-label-small {
+            color: var(--muted);
+            font-size: 9px;
+            text-transform: uppercase;
+        }
+
+        .stat-value-small {
+            font-weight: 600;
+            font-family: 'JetBrains Mono', 'Cascadia Code', monospace;
+        }
+
+        .module-connections {
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid #30363d;
+            font-size: 10px;
+            color: var(--muted);
+        }
+
+        /* Modules Table */
+        .modules-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 12px;
+        }
+
+        .modules-table th {
+            background: var(--panel-light);
+            color: var(--muted);
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 11px;
+            letter-spacing: 0.5px;
+            padding: 10px 12px;
+            text-align: left;
+            border-bottom: 2px solid #30363d;
+        }
+
+        .modules-table td {
+            padding: 10px 12px;
+            border-bottom: 1px solid #30363d;
+            vertical-align: middle;
+        }
+
+        .modules-table tr:hover {
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        .connection-flow {
+            font-family: 'JetBrains Mono', 'Cascadia Code', monospace;
+            font-size: 11px;
+            color: var(--muted);
+            padding: 4px 8px;
+            background: var(--panel-light);
+            border-radius: 4px;
+            border: 1px solid #30363d;
+        }
+
+        .rate-display {
+            font-family: 'JetBrains Mono', 'Cascadia Code', monospace;
+            font-size: 12px;
+        }
+
+        .controls {
+            display: flex;
+            gap: 6px;
+        }
+
+        .btn {
+            border: none;
+            background: var(--panel-light);
+            color: var(--text);
+            padding: 6px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            border: 1px solid #30363d;
+            transition: all 0.2s ease;
+        }
+
+        .btn:hover:not(:disabled) {
+            background: var(--accent);
+            color: white;
+            border-color: var(--accent);
+        }
+
+        .btn.primary {
+            background: var(--accent);
+            color: white;
+            border-color: var(--accent);
+        }
+
+        .btn.small {
+            padding: 4px 8px;
+            font-size: 11px;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Services Grid */
+        .services-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 12px;
+        }
+
+        .service-card {
+            background: var(--panel-light);
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 12px;
+        }
+
+        .service-name {
+            font-weight: 600;
+            font-size: 13px;
+            margin-bottom: 4px;
+        }
+
+        .service-url {
+            font-family: 'JetBrains Mono', 'Cascadia Code', monospace;
+            font-size: 10px;
+            color: var(--muted);
+            margin-bottom: 8px;
+            word-break: break-all;
+        }
+
+        .service-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 8px;
+            background: var(--panel);
+            border-radius: 4px;
+            font-size: 11px;
+        }
+
+        /* Empty States */
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: var(--muted);
+        }
+
+        .empty-state .icon {
+            font-size: 32px;
+            margin-bottom: 12px;
+            opacity: 0.5;
+        }
+
+        /* System Info */
+        .system-info {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 12px;
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid #30363d;
+        }
+
+        .info-item {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .info-label {
+            font-size: 10px;
+            color: var(--muted);
+            text-transform: uppercase;
+            margin-bottom: 2px;
+        }
+
+        .info-value {
+            font-weight: 600;
+            font-family: 'JetBrains Mono', 'Cascadia Code', monospace;
+        }
+    </style>
+</head>
+<body>
+<header>
+    <div class="header-left">
+        <h1>Airlift Node</h1>
+        <div class="header-subtitle">
+            <span class="conn-status">
+                <span class="conn-dot"></span>
+                <span id="connText">Verbinde...</span>
+            </span>
+            <span>Status-Dashboard</span>
+        </div>
+    </div>
+    <div class="header-right">
+        <div class="update-time" id="updateTime">–</div>
+        <div style="font-size: 11px; color: var(--muted); margin-top: 4px;">
+            <button class="btn small" onclick="fetchStatus()">↻ Aktualisieren</button>
+        </div>
+    </div>
+</header>
+
+<div id="messageBar" class="message-bar"></div>
+
+<main>
+    <!-- Left Column -->
+    <div style="display: flex; flex-direction: column; gap: 20px;">
+        <!-- Ringbuffer -->
+        <section class="panel">
+            <div class="panel-header">
+                <h2 class="panel-title">Ringbuffer</h2>
+            </div>
+            <div class="panel-content">
+                <div class="ring-summary">
+                    <div class="ring-stat">
+                        <div class="stat-label">Füllstand</div>
+                        <div class="stat-value" id="ringFillPercent">0%</div>
+                        <div class="stat-sub" id="ringFillDetails">0/0 Slots</div>
+                    </div>
+                    <div class="ring-stat">
+                        <div class="stat-label">Head Seq</div>
+                        <div class="stat-value" id="ringHeadSeq">0</div>
+                        <div class="stat-sub">Letzte Schreibposition</div>
+                    </div>
+                    <div class="ring-stat">
+                        <div class="stat-label">Next Seq</div>
+                        <div class="stat-value" id="ringNextSeq">0</div>
+                        <div class="stat-sub">Nächste zu lesende</div>
+                    </div>
+                    <div class="ring-stat">
+                        <div class="stat-label">Consumer</div>
+                        <div class="stat-value" id="ringConsumerCount">0</div>
+                        <div class="stat-sub">Aktive Leser</div>
+                    </div>
+                </div>
+
+                <div class="ring-visualization">
+                    <div class="ring-bar-container">
+                        <div id="ringFillBar" class="ring-fill" style="width: 0%;"></div>
+                        <div id="ringMarkers" class="ring-markers"></div>
+                    </div>
+                    <div class="ring-consumers" id="ringConsumers">
+                        <!-- Consumer tags will be added here -->
+                    </div>
+                </div>
+
+                <div class="system-info">
+                    <div class="info-item">
+                        <div class="info-label">Kapazität</div>
+                        <div class="info-value" id="ringCapacity">0</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Head Index</div>
+                        <div class="info-value" id="ringHeadIndex">0</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Tail Index</div>
+                        <div class="info-value" id="ringTailIndex">0</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">Fill Ratio</div>
+                        <div class="info-value" id="ringFillRatio">0.00</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Data Flow Graph -->
+        <section class="panel">
+            <div class="panel-header">
+                <h2 class="panel-title">Datenfluss</h2>
+            </div>
+            <div class="panel-content">
+                <div class="flow-graph" id="flowGraph">
+                    <div class="empty-state">
+                        <div class="icon">⏳</div>
+                        <div>Lade Datenfluss...</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Services -->
+        <section class="panel">
+            <div class="panel-header">
+                <h2 class="panel-title">Services</h2>
+            </div>
+            <div class="panel-content">
+                <div class="services-grid" id="servicesGrid">
+                    <!-- Services will be added here -->
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <!-- Right Column -->
+    <div style="display: flex; flex-direction: column; gap: 20px;">
+        <!-- Active Modules -->
+        <section class="panel">
+            <div class="panel-header">
+                <h2 class="panel-title">
+                    Aktive Module
+                    <span class="badge" id="activeModulesCount">0</span>
+                </h2>
+            </div>
+            <div class="panel-content">
+                <table class="modules-table" id="modulesTable">
+                    <thead>
+                        <tr>
+                            <th>Modul</th>
+                            <th>Typ</th>
+                            <th>Status</th>
+                            <th>Verbindung</th>
+                            <th>Datenrate</th>
+                            <th>Aktionen</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td colspan="6" class="empty-state">Lade Module...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Inactive Modules -->
+        <section class="panel">
+            <div class="panel-header">
+                <h2 class="panel-title">
+                    Verfügbare Module
+                    <span class="badge" id="inactiveModulesCount">0</span>
+                </h2>
+            </div>
+            <div class="panel-content">
+                <table class="modules-table" id="inactiveModulesTable">
+                    <thead>
+                        <tr>
+                            <th>Modul</th>
+                            <th>Typ</th>
+                            <th>Status</th>
+                            <th>Grund</th>
+                            <th>Aktion</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td colspan="5" class="empty-state">Keine inaktiven Module</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Recorder Info -->
+        <section class="panel">
+            <div class="panel-header">
+                <h2 class="panel-title">Recorder</h2>
+            </div>
+            <div class="panel-content">
+                <div class="services-grid" id="recorderInfo">
+                    <!-- Recorder info will be added here -->
+                </div>
+            </div>
+        </section>
+    </div>
+</main>
+
+<script>
+// Global state
+let lastStatus = null;
+const rateHistory = new Map();
+const connectionState = {
+    connected: false,
+    lastUpdate: 0
+};
+
+// Utility functions
+function showMessage(text, type = 'info') {
+    const bar = document.getElementById('messageBar');
+    bar.textContent = text;
+    bar.className = `message-bar show ${type}`;
+    
+    setTimeout(() => {
+        bar.className = 'message-bar';
+    }, 3000);
+}
+
+function updateConnectionState(connected) {
+    connectionState.connected = connected;
+    connectionState.lastUpdate = Date.now();
+    
+    const dot = document.querySelector('.conn-dot');
+    const text = document.getElementById('connText');
+    
+    if (connected) {
+        dot.className = 'conn-dot connected';
+        text.textContent = 'Verbunden';
+    } else {
+        dot.className = 'conn-dot error';
+        text.textContent = 'Getrennt';
+    }
+}
+
+function formatTimeAgo(ms) {
+    if (!ms || ms === 0) return 'nie';
+    const diff = Date.now() - ms;
+    const seconds = Math.floor(diff / 1000);
+    
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h`;
+    const days = Math.floor(hours / 24);
+    return `${days}d`;
+}
+
+function calculateRate(moduleId, currentCounters, timestamp) {
+    if (!rateHistory.has(moduleId)) {
+        rateHistory.set(moduleId, {
+            timestamp,
+            counters: currentCounters
+        });
+        return { rx: '–', tx: '–', rxRaw: 0, txRaw: 0 };
+    }
+    
+    const prev = rateHistory.get(moduleId);
+    const timeDiff = Math.max(1, timestamp - prev.timestamp);
+    
+    const rxRate = Math.round((currentCounters.rx - prev.counters.rx) * 60000 / timeDiff);
+    const txRate = Math.round((currentCounters.tx - prev.counters.tx) * 60000 / timeDiff);
+    
+    rateHistory.set(moduleId, {
+        timestamp,
+        counters: currentCounters
+    });
+    
+    return {
+        rx: rxRate.toLocaleString(),
+        tx: txRate.toLocaleString(),
+        rxRaw: rxRate,
+        txRaw: txRate
+    };
+}
+
+function getModuleTypeClass(type) {
+    const typeMap = {
+        'input': 'input',
+        'buffer': 'buffer', 
+        'codec': 'codec',
+        'output': 'output',
+        'processing': 'service',
+        'service': 'service'
+    };
+    return typeMap[type] || 'service';
+}
+
+function getModuleStatus(runtime) {
+    if (!runtime.enabled) return { class: 'inactive', label: 'Aus' };
+    if (!runtime.running) return { class: 'standby', label: 'Bereit' };
+    if (runtime.connected === false) return { class: 'ready', label: 'Getrennt' };
+    return { class: 'active', label: 'Aktiv' };
+}
+
+// Render functions
+function renderRingBuffer(status) {
+    const ring = status.ring;
+    const capacity = ring.capacity || 1;
+    const fillPercent = Math.round(ring.fill_ratio * 100);
+    
+    // Update basic stats
+    document.getElementById('ringFillPercent').textContent = `${fillPercent}%`;
+    document.getElementById('ringFillDetails').textContent = 
+        `${ring.fill.toLocaleString()} / ${capacity.toLocaleString()} Slots`;
+    document.getElementById('ringHeadSeq').textContent = ring.head_seq.toLocaleString();
+    document.getElementById('ringNextSeq').textContent = ring.next_seq.toLocaleString();
+    document.getElementById('ringCapacity').textContent = capacity.toLocaleString();
+    document.getElementById('ringHeadIndex').textContent = ring.head_index.toLocaleString();
+    document.getElementById('ringTailIndex').textContent = ring.tail_index.toLocaleString();
+    document.getElementById('ringFillRatio').textContent = ring.fill_ratio.toFixed(2);
+    
+    // Update fill bar
+    const fillBar = document.getElementById('ringFillBar');
+    fillBar.style.width = `${fillPercent}%`;
+    
+    // Update consumer count and list
+    const activeModules = status.modules || [];
+    const activeConsumers = activeModules.filter(m => 
+        m.module_type === 'output' || m.module_type === 'codec' || m.module_type === 'service'
+    );
+    
+    const consumerCount = activeConsumers.length;
+    document.getElementById('ringConsumerCount').textContent = consumerCount;
+    
+    // Render consumer tags
+    const consumersContainer = document.getElementById('ringConsumers');
+    consumersContainer.innerHTML = '';
+    
+    activeConsumers.forEach(module => {
+        const tag = document.createElement('div');
+        tag.className = 'consumer-tag active';
+        tag.textContent = `${module.label}`;
+        tag.title = `${module.id}\nRX: ${module.runtime.counters.rx}\nTX: ${module.runtime.counters.tx}`;
+        consumersContainer.appendChild(tag);
+    });
+    
+    // Render markers
+    const markersContainer = document.getElementById('ringMarkers');
+    markersContainer.innerHTML = '';
+    
+    // Head marker
+    const headPos = (ring.head_index / capacity) * 100;
+    const headMarker = document.createElement('div');
+    headMarker.className = 'ring-marker head';
+    headMarker.style.left = `${headPos}%`;
+    markersContainer.appendChild(headMarker);
+    
+    // Tail marker
+    const tailPos = (ring.tail_index / capacity) * 100;
+    const tailMarker = document.createElement('div');
+    tailMarker.className = 'ring-marker tail';
+    tailMarker.style.left = `${tailPos}%`;
+    markersContainer.appendChild(tailMarker);
+    
+    // Consumer markers (simplified - equally spaced)
+    activeConsumers.forEach((module, index) => {
+        if (consumerCount > 0) {
+            const consumerPos = (ring.tail_index + (index * capacity / consumerCount)) % capacity;
+            const posPercent = (consumerPos / capacity) * 100;
+            
+            const consumerMarker = document.createElement('div');
+            consumerMarker.className = 'ring-marker consumer';
+            consumerMarker.style.left = `${posPercent}%`;
+            consumerMarker.title = module.label;
+            markersContainer.appendChild(consumerMarker);
+        }
+    });
+}
+
+function renderDataFlowGraph(status) {
+    const graphContainer = document.getElementById('flowGraph');
+    
+    if (!status.graph || !status.graph.nodes || status.graph.nodes.length === 0) {
+        graphContainer.innerHTML = `
+            <div class="empty-state">
+                <div class="icon">📭</div>
+                <div>Keine aktiven Module verbunden</div>
+            </div>`;
+        return;
+    }
+    
+    // Group nodes by type/role
+    const nodes = status.graph.nodes;
+    const edges = status.graph.edges || [];
+    
+    const inputNodes = nodes.filter(n => n.kind === 'input');
+    const bufferNodes = nodes.filter(n => n.kind === 'buffer');
+    const processingNodes = nodes.filter(n => n.kind === 'processing' || n.kind === 'codec');
+    const outputNodes = nodes.filter(n => n.kind === 'output');
+    const serviceNodes = nodes.filter(n => n.kind === 'service');
+    
+    let graphHTML = '';
+    
+    // Input stage
+    if (inputNodes.length > 0) {
+        graphHTML += `
+            <div class="flow-stage">
+                <div class="stage-label">Inputs</div>
+                <div class="stage-modules">
+                    ${inputNodes.map(node => renderFlowNode(node, status)).join('')}
+                </div>
+            </div>
+            <div style="text-align: center; margin: 10px 0; color: var(--accent);">↓</div>`;
+    }
+    
+    // Buffer stage
+    if (bufferNodes.length > 0) {
+        graphHTML += `
+            <div class="flow-stage">
+                <div class="stage-label">Ringbuffer</div>
+                <div class="stage-modules">
+                    ${bufferNodes.map(node => renderFlowNode(node, status)).join('')}
+                </div>
+            </div>`;
+        
+        // Show connections to consumers
+        const bufferId = bufferNodes[0]?.id;
+        if (bufferId) {
+            const consumerEdges = edges.filter(e => e.from === bufferId);
+            if (consumerEdges.length > 0) {
+                graphHTML += `
+                    <div style="text-align: center; margin: 10px 0;">
+                        <div style="color: var(--accent); font-size: 11px;">
+                            → ${consumerEdges.length} Consumer
+                        </div>
+                    </div>`;
+            }
+        }
+    }
+    
+    // Processing/Codec stage
+    if (processingNodes.length > 0) {
+        graphHTML += `
+            <div class="flow-stage">
+                <div class="stage-label">Processing</div>
+                <div class="stage-modules">
+                    ${processingNodes.map(node => renderFlowNode(node, status)).join('')}
+                </div>
+            </div>
+            <div style="text-align: center; margin: 10px 0; color: var(--accent);">↓</div>`;
+    }
+    
+    // Output stage
+    if (outputNodes.length > 0 || serviceNodes.length > 0) {
+        graphHTML += `
+            <div class="flow-stage">
+                <div class="stage-label">Outputs & Services</div>
+                <div class="stage-modules">
+                    ${[...outputNodes, ...serviceNodes].map(node => renderFlowNode(node, status)).join('')}
+                </div>
+            </div>`;
+    }
+    
+    graphContainer.innerHTML = graphHTML;
+}
+
+function renderFlowNode(node, status) {
+    // Find module details
+    const allModules = [...(status.modules || []), ...(status.inactive_modules || [])];
+    const module = allModules.find(m => m.id === node.id) || node;
+    const runtime = module.runtime || { enabled: true, running: true, connected: true };
+    const statusInfo = getModuleStatus(runtime);
+    
+    const typeClass = getModuleTypeClass(node.kind);
+    
+    return `
+        <div class="module-card">
+            <div class="module-header">
+                <span class="module-type type-${typeClass}">${node.kind}</span>
+                <span class="module-status">
+                    <span class="status-dot ${statusInfo.class}"></span>
+                </span>
+            </div>
+            <div class="module-name">${node.label}</div>
+            <div class="module-id">${node.id}</div>
+            ${runtime.counters ? `
+            <div class="module-stats">
+                <div class="module-stat">
+                    <div class="stat-label-small">RX</div>
+                    <div class="stat-value-small">${runtime.counters.rx.toLocaleString()}</div>
+                </div>
+                <div class="module-stat">
+                    <div class="stat-label-small">TX</div>
+                    <div class="stat-value-small">${runtime.counters.tx.toLocaleString()}</div>
+                </div>
+                <div class="module-stat">
+                    <div class="stat-label-small">Errors</div>
+                    <div class="stat-value-small">${runtime.counters.errors || 0}</div>
+                </div>
+                <div class="module-stat">
+                    <div class="stat-label-small">Aktiv</div>
+                    <div class="stat-value-small">${formatTimeAgo(runtime.last_activity_ms)}</div>
+                </div>
+            </div>
+            ` : ''}
+        </div>
+    `;
+}
+
+function renderModulesTable(status) {
+    const table = document.getElementById('modulesTable');
+    const countBadge = document.getElementById('activeModulesCount');
+    
+    const modules = status.modules || [];
+    countBadge.textContent = modules.length;
+    
+    if (modules.length === 0) {
+        table.innerHTML = `
+            <tbody>
+                <tr>
+                    <td colspan="6" class="empty-state">
+                        Keine aktiven Module
+                    </td>
+                </tr>
+            </tbody>`;
+        return;
+    }
+    
+    // Sort modules by type
+    const typeOrder = { input: 1, buffer: 2, codec: 3, processing: 4, output: 5, service: 6 };
+    const sorted = [...modules].sort((a, b) => {
+        const orderA = typeOrder[a.module_type] || 99;
+        const orderB = typeOrder[b.module_type] || 99;
+        if (orderA !== orderB) return orderA - orderB;
+        return a.label.localeCompare(b.label);
+    });
+    
+    let tableHTML = '<tbody>';
+    
+    sorted.forEach(module => {
+        const rate = calculateRate(module.id, module.runtime.counters, status.timestamp_ms);
+        const statusInfo = getModuleStatus(module.runtime);
+        const typeClass = getModuleTypeClass(module.module_type);
+        
+        // Find connections
+        const connections = [];
+        if (status.graph && status.graph.edges) {
+            const incoming = status.graph.edges.filter(e => e.to === module.id);
+            const outgoing = status.graph.edges.filter(e => e.from === module.id);
+            
+            incoming.forEach(e => {
+                connections.push(`← ${e.from.split(':').pop()}`);
+            });
+            outgoing.forEach(e => {
+                connections.push(`→ ${e.to.split(':').pop()}`);
+            });
+        }
+        
+        tableHTML += `
+            <tr>
+                <td>
+                    <div style="font-weight: 600;">${module.label}</div>
+                    <div style="font-size: 11px; color: var(--muted); font-family: monospace;">
+                        ${module.id}
+                    </div>
+                </td>
+                <td>
+                    <span class="module-type type-${typeClass}">
+                        ${module.module_type}
+                    </span>
+                </td>
+                <td>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span class="status-dot ${statusInfo.class}"></span>
+                        <span>${statusInfo.label}</span>
+                    </div>
+                </td>
+                <td>
+                    <div class="connection-flow">
+                        ${connections.join(' ')}
+                    </div>
+                </td>
+                <td>
+                    <div class="rate-display">
+                        <div>RX: ${rate.rx}/min</div>
+                        <div>TX: ${rate.tx}/min</div>
+                    </div>
+                </td>
+                <td>
+                    <div class="controls">
+                        ${module.controls && module.controls.length > 0 ? 
+                            module.controls.map(control => `
+                                <button class="btn small ${control.enabled ? 'primary' : ''}"
+                                        onclick="sendControl('${control.action}')"
+                                        ${!control.enabled ? 'disabled' : ''}
+                                        title="${control.reason || ''}">
+                                    ${control.label}
+                                </button>
+                            `).join('') :
+                            '<button class="btn small" disabled>–</button>'
+                        }
+                    </div>
+                </td>
+            </tr>
+        `;
+    });
+    
+    tableHTML += '</tbody>';
+    table.innerHTML = tableHTML;
+}
+
+function renderInactiveModules(status) {
+    const table = document.getElementById('inactiveModulesTable');
+    const countBadge = document.getElementById('inactiveModulesCount');
+    
+    const inactive = status.inactive_modules || [];
+    countBadge.textContent = inactive.length;
+    
+    if (inactive.length === 0) {
+        table.innerHTML = `
+            <tbody>
+                <tr>
+                    <td colspan="5" class="empty-state">
+                        Keine inaktiven Module
+                    </td>
+                </tr>
+            </tbody>`;
+        return;
+    }
+    
+    let tableHTML = '<tbody>';
+    
+    inactive.forEach(module => {
+        const typeClass = getModuleTypeClass(module.module_type);
+        
+        tableHTML += `
+            <tr>
+                <td>
+                    <div style="font-weight: 600;">${module.label}</div>
+                    <div style="font-size: 11px; color: var(--muted); font-family: monospace;">
+                        ${module.id}
+                    </div>
+                </td>
+                <td>
+                    <span class="module-type type-${typeClass}">
+                        ${module.module_type}
+                    </span>
+                </td>
+                <td>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span class="status-dot inactive"></span>
+                        <span>Inaktiv</span>
+                    </div>
+                </td>
+                <td>
+                    <div style="font-size: 11px; color: var(--muted);">
+                        ${module.reason}
+                    </div>
+                </td>
+                <td>
+                    <div class="controls">
+                        ${module.can_activate && module.activate_action ? 
+                            `<button class="btn small primary" onclick="sendControl('${module.activate_action}')">
+                                Aktivieren
+                            </button>` :
+                            `<button class="btn small" disabled>Aktivieren</button>`
+                        }
+                    </div>
+                </td>
+            </tr>
+        `;
+    });
+    
+    tableHTML += '</tbody>';
+    table.innerHTML = tableHTML;
+}
+
+function renderServices(status) {
+    const servicesGrid = document.getElementById('servicesGrid');
+    
+    // Static services (from the logs)
+    const staticServices = [
+        { name: 'API Server', url: 'http://localhost:3008', status: 'active' },
+        { name: 'Audio HTTP', url: 'http://localhost:3011', status: 'active' },
+        { name: 'Monitoring', url: 'http://localhost:8087', status: 'active' },
+        { name: 'SRT Listener', url: 'srt://0.0.0.0:9000', status: 'active' }
+    ];
+    
+    let servicesHTML = '';
+    
+    staticServices.forEach(service => {
+        servicesHTML += `
+            <div class="service-card">
+                <div class="service-name">${service.name}</div>
+                <div class="service-url">${service.url}</div>
+                <div class="service-status">
+                    <span class="status-dot active"></span>
+                    <span>Aktiv</span>
+                </div>
+            </div>
+        `;
+    });
+    
+    servicesGrid.innerHTML = servicesHTML;
+}
+
+function renderRecorderInfo(status) {
+    const recorderInfo = document.getElementById('recorderInfo');
+    const recorder = status.recorder || {};
+    
+    let infoHTML = '';
+    
+    if (recorder.enabled) {
+        infoHTML += `
+            <div class="service-card">
+                <div class="service-name">WAV Recorder</div>
+                <div class="service-url">${recorder.path || '–'}</div>
+                <div class="service-status">
+                    <span class="status-dot active"></span>
+                    <span>Aktiv</span>
+                </div>
+                ${recorder.current_files && recorder.current_files.length > 0 ? `
+                <div style="margin-top: 8px; font-size: 11px; color: var(--muted);">
+                    Aktuelle Datei:<br>
+                    ${recorder.current_files[0]}
+                </div>
+                ` : ''}
+            </div>
+        `;
+    }
+    
+    // Add other potential outputs
+    const outputs = (status.modules || []).filter(m => m.module_type === 'output');
+    outputs.forEach(output => {
+        if (output.id !== 'recorder') {
+            const statusInfo = getModuleStatus(output.runtime);
+            infoHTML += `
+                <div class="service-card">
+                    <div class="service-name">${output.label}</div>
+                    <div class="service-url">${output.id}</div>
+                    <div class="service-status">
+                        <span class="status-dot ${statusInfo.class}"></span>
+                        <span>${statusInfo.label}</span>
+                    </div>
+                </div>
+            `;
+        }
+    });
+    
+    recorderInfo.innerHTML = infoHTML || `
+        <div class="empty-state" style="grid-column: 1/-1;">
+            Keine Recorder oder Outputs konfiguriert
+        </div>`;
+}
+
+// Main update function
+function updateUI(status) {
+    lastStatus = status;
+    
+    // Update timestamp
+    const updateTime = document.getElementById('updateTime');
+    updateTime.textContent = new Date(status.timestamp_ms).toLocaleTimeString('de-DE', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+    });
+    
+    // Render all components
+    renderRingBuffer(status);
+    renderDataFlowGraph(status);
+    renderModulesTable(status);
+    renderInactiveModules(status);
+    renderServices(status);
+    renderRecorderInfo(status);
+    
+    updateConnectionState(true);
+}
+
+// API communication
+async function sendControl(action) {
+    try {
+        const response = await fetch('/api/control', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action })
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+            showMessage(data.message || 'Aktion erfolgreich', 'success');
+        } else {
+            showMessage(data.message || 'Fehler bei der Aktion', 'error');
+        }
+    } catch (error) {
+        showMessage(`Netzwerkfehler: ${error.message}`, 'error');
+    }
+}
+
+async function fetchStatus() {
+    try {
+        const response = await fetch('/api/status');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        
+        const status = await response.json();
+        updateUI(status);
+        updateConnectionState(true);
+    } catch (error) {
+        console.error('Fehler beim Abrufen des Status:', error);
+        updateConnectionState(false);
+        showMessage('Verbindung zum Server fehlgeschlagen', 'error');
+    }
+}
+
+// SSE connection
+function connectSSE() {
+    const source = new EventSource('/api/events');
+    
+    source.onopen = () => {
+        updateConnectionState(true);
+    };
+    
+    source.onerror = () => {
+        updateConnectionState(false);
+        source.close();
+        
+        // Fallback to polling
+        setInterval(fetchStatus, 2000);
+    };
+    
+    source.addEventListener('status', (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            updateUI(data);
+            updateConnectionState(true);
+        } catch (error) {
+            console.error('Fehler beim Parsen der SSE-Daten:', error);
+        }
+    });
+}
+
+// Initialize
+document.addEventListener('DOMContentLoaded', () => {
+    // Initial fetch
+    fetchStatus();
+    
+    // Try SSE, fallback to polling
+    if (typeof EventSource !== 'undefined') {
+        connectSSE();
+    } else {
+        // Poll every 2 seconds if SSE not supported
+        setInterval(fetchStatus, 2000);
+    }
+    
+    // Auto-refresh every 30 seconds as backup
+    setInterval(fetchStatus, 30000);
+});
+</script>
+</body>
+</html>

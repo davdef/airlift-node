@@ -1,0 +1,871 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Airlift Node Status</title>
+    <style>
+        :root {
+            --bg: #0b0e11;
+            --panel: #14171c;
+            --panel-light: #1c2128;
+            --text: #d8e4f0;
+            --muted: #8a97a8;
+            --good: #2ecc71;
+            --warn: #f1c40f;
+            --bad: #e74c3c;
+            --accent: #5aa0ff;
+            --input: #3498db;
+            --buffer: #9b59b6;
+            --codec: #e67e22;
+            --output: #2ecc71;
+            --processing: #f39c12;
+        }
+
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--text);
+            font-family: system-ui, sans-serif;
+            font-size: 14px;
+            line-height: 1.4;
+        }
+
+        header {
+            padding: 12px 16px;
+            background: var(--panel);
+            border-bottom: 1px solid #222;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 18px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        header .meta {
+            font-size: 12px;
+            color: var(--muted);
+            text-align: right;
+        }
+
+        .meta-row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        main {
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .panel {
+            background: var(--panel);
+            border: 1px solid #20262d;
+            border-radius: 8px;
+            padding: 12px;
+        }
+
+        .panel h2 {
+            margin: 0 0 10px 0;
+            font-size: 14px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            color: var(--muted);
+        }
+
+        .card-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+
+        .card {
+            background: var(--panel-light);
+            padding: 10px;
+            border-radius: 6px;
+            border-left: 3px solid var(--accent);
+        }
+
+        .card.small {
+            padding: 8px;
+        }
+
+        .card-label {
+            font-size: 11px;
+            color: var(--muted);
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+
+        .card-value {
+            font-weight: 600;
+            font-size: 16px;
+        }
+
+        .card-sub {
+            font-size: 12px;
+            color: var(--muted);
+            margin-top: 2px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        th, td {
+            padding: 8px;
+            text-align: left;
+            border-bottom: 1px solid #222;
+            vertical-align: top;
+        }
+
+        th {
+            color: var(--muted);
+            font-weight: 500;
+            font-size: 12px;
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+
+        td {
+            padding: 6px 8px;
+        }
+
+        .status-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: var(--panel-light);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+
+        .status-dot.good { background: var(--good); }
+        .status-dot.warn { background: var(--warn); }
+        .status-dot.bad { background: var(--bad); }
+
+        .module-type {
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+
+        .type-input { background: color-mix(in srgb, var(--input) 15%, transparent); color: var(--input); }
+        .type-buffer { background: color-mix(in srgb, var(--buffer) 15%, transparent); color: var(--buffer); }
+        .type-codec { background: color-mix(in srgb, var(--codec) 15%, transparent); color: var(--codec); }
+        .type-output { background: color-mix(in srgb, var(--output) 15%, transparent); color: var(--output); }
+        .type-processing { background: color-mix(in srgb, var(--processing) 15%, transparent); color: var(--processing); }
+
+        .flow-indicator {
+            font-size: 12px;
+            color: var(--muted);
+            font-family: monospace;
+            padding: 4px 8px;
+            background: var(--panel-light);
+            border-radius: 4px;
+            border: 1px solid #222;
+        }
+
+        .flow-arrow {
+            color: var(--accent);
+            margin: 0 4px;
+        }
+
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+        }
+
+        button {
+            border: none;
+            background: var(--panel-light);
+            color: var(--text);
+            padding: 4px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            border: 1px solid #222;
+        }
+
+        button.primary {
+            background: var(--accent);
+            color: #0b0e11;
+            border-color: var(--accent);
+        }
+
+        button.small {
+            padding: 2px 6px;
+            font-size: 11px;
+        }
+
+        button:hover:not([disabled]) {
+            filter: brightness(1.2);
+        }
+
+        button[disabled] {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .ring-container {
+            margin: 10px 0;
+        }
+
+        .ring-visualization {
+            position: relative;
+            height: 24px;
+            background: #0f1318;
+            border-radius: 4px;
+            overflow: hidden;
+            border: 1px solid #222;
+            margin-bottom: 8px;
+        }
+
+        .ring-fill {
+            height: 100%;
+            background: linear-gradient(90deg, 
+                #2ecc71 0%, 
+                #f1c40f 50%, 
+                #e74c3c 100%);
+            transition: width 0.3s ease;
+            position: relative;
+        }
+
+        .ring-marker {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            z-index: 2;
+        }
+
+        .ring-marker.head {
+            background: #fff;
+            box-shadow: 0 0 4px #fff;
+        }
+
+        .ring-marker.tail {
+            background: var(--warn);
+            box-shadow: 0 0 4px var(--warn);
+        }
+
+        .ring-info {
+            display: flex;
+            justify-content: space-between;
+            font-size: 11px;
+            color: var(--muted);
+            margin-bottom: 8px;
+        }
+
+        .ring-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 8px;
+        }
+
+        .stat-item {
+            background: var(--panel-light);
+            padding: 8px;
+            border-radius: 4px;
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: var(--muted);
+            text-transform: uppercase;
+            margin-bottom: 2px;
+        }
+
+        .stat-value {
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .module-id {
+            font-family: monospace;
+            font-size: 11px;
+            color: var(--muted);
+            margin-top: 2px;
+        }
+
+        .error-count {
+            color: var(--bad);
+            font-weight: bold;
+        }
+
+        .no-data {
+            color: var(--muted);
+            font-style: italic;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .last-activity {
+            font-family: monospace;
+            font-size: 12px;
+        }
+
+        .connection-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 11px;
+        }
+
+        .conn-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--muted);
+        }
+
+        .conn-dot.connected { background: var(--good); }
+        .conn-dot.disconnected { background: var(--bad); }
+        .conn-dot.ready { background: var(--warn); }
+    </style>
+</head>
+<body>
+<header>
+    <h1>Airlift Node Status</h1>
+    <div class="meta">
+        <div class="meta-row">
+            <span id="connState" class="connection-status">
+                <span class="conn-dot"></span>
+                <span>verbinde…</span>
+            </span>
+        </div>
+        <div class="meta-row">
+            <span>Update: </span>
+            <span id="lastUpdate">–</span>
+        </div>
+        <div id="controlMsg" class="meta-row"></div>
+    </div>
+</header>
+
+<main>
+    <!-- Ringbuffer Section -->
+    <section class="panel">
+        <h2>Ringbuffer</h2>
+        <div class="ring-container">
+            <div class="ring-info">
+                <span>Füllstand: <strong id="ringFillText">0%</strong></span>
+                <span>Sequenzen: <span id="ringSeqText">0/0</span></span>
+            </div>
+            <div class="ring-visualization">
+                <div id="ringFillBar" class="ring-fill" style="width: 0%;"></div>
+                <div id="ringHeadMarker" class="ring-marker head" style="left: 0%;"></div>
+                <div id="ringTailMarker" class="ring-marker tail" style="left: 0%;"></div>
+            </div>
+            <div class="ring-stats">
+                <div class="stat-item">
+                    <div class="stat-label">Kapazität</div>
+                    <div class="stat-value" id="ringCap">–</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Head</div>
+                    <div class="stat-value" id="ringHead">–</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Next</div>
+                    <div class="stat-value" id="ringNext">–</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-label">Fill</div>
+                    <div class="stat-value" id="ringFill">–</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Active Modules Table -->
+    <section class="panel">
+        <h2>Aktive Module</h2>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Typ</th>
+                        <th>Status</th>
+                        <th>Verbindungen</th>
+                        <th>Datenrate</th>
+                        <th>Fehler</th>
+                        <th>Aktivität</th>
+                        <th>Aktionen</th>
+                    </tr>
+                </thead>
+                <tbody id="moduleRows">
+                    <tr>
+                        <td colspan="8" class="no-data">Lade Module…</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- Recorder Section -->
+    <section class="panel">
+        <h2>Recorder</h2>
+        <div class="card-grid">
+            <div class="card">
+                <div class="card-label">Status</div>
+                <div class="card-value" id="recStatus">–</div>
+            </div>
+            <div class="card">
+                <div class="card-label">Pfad</div>
+                <div class="card-value" id="recPath">–</div>
+            </div>
+            <div class="card">
+                <div class="card-label">Format</div>
+                <div class="card-value" id="recFormat">–</div>
+            </div>
+            <div class="card">
+                <div class="card-label">Retention</div>
+                <div class="card-value" id="recRetention">–</div>
+            </div>
+        </div>
+        <div class="controls" id="recControls" style="margin-top: 10px;"></div>
+    </section>
+
+    <!-- Inactive Modules -->
+    <section class="panel">
+        <h2>Verfügbare Module</h2>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Typ</th>
+                        <th>Status</th>
+                        <th>Grund</th>
+                        <th>Aktion</th>
+                    </tr>
+                </thead>
+                <tbody id="inactiveRows">
+                    <tr>
+                        <td colspan="5" class="no-data">Keine inaktiven Module</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+</main>
+
+<script>
+const lastCounters = new Map();
+const lastTimestamps = new Map();
+
+function timeAgo(ms) {
+    if (!ms || ms === 0) return "nie";
+    const diff = Math.max(0, Date.now() - ms);
+    const secs = Math.floor(diff / 1000);
+    if (secs < 60) return `${secs}s`;
+    const mins = Math.floor(secs / 60);
+    if (mins < 60) return `${mins}m`;
+    const hrs = Math.floor(mins / 60);
+    return `${hrs}h`;
+}
+
+function statusClass(mod) {
+    if (!mod.enabled) return "bad";
+    if (!mod.running) return "warn";
+    if (mod.connected === false) return "warn";
+    return "good";
+}
+
+function statusLabel(mod) {
+    if (!mod.enabled) return "aus";
+    if (!mod.running) return "inaktiv";
+    if (mod.connected === false) return "bereit";
+    return "aktiv";
+}
+
+function getModuleTypeClass(type) {
+    const typeMap = {
+        input: 'input',
+        buffer: 'buffer',
+        codec: 'codec',
+        output: 'output',
+        processing: 'processing'
+    };
+    return typeMap[type] || 'processing';
+}
+
+function calcRate(key, counters, timestampMs) {
+    const prev = lastCounters.get(key);
+    const prevTs = lastTimestamps.get(key);
+    lastCounters.set(key, counters);
+    lastTimestamps.set(key, timestampMs);
+
+    if (!prev || !prevTs) {
+        return { rx: "–", tx: "–" };
+    }
+
+    const deltaMs = Math.max(1, timestampMs - prevTs);
+    const scale = 60000 / deltaMs;
+    const rx = Math.round((counters.rx - prev.rx) * scale);
+    const tx = Math.round((counters.tx - prev.tx) * scale);
+
+    return {
+        rx: Number.isFinite(rx) ? rx.toString() : "–",
+        tx: Number.isFinite(tx) ? tx.toString() : "–"
+    };
+}
+
+function formatBytes(bytes) {
+    if (bytes === 0 || bytes === "–") return "0 B";
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+
+function renderControls(controls, container) {
+    container.innerHTML = "";
+    if (!controls || controls.length === 0) {
+        const btn = document.createElement("button");
+        btn.disabled = true;
+        btn.textContent = "–";
+        container.appendChild(btn);
+        return;
+    }
+    
+    controls.forEach(control => {
+        const btn = document.createElement("button");
+        btn.className = control.label.includes("Start") ? "primary small" : "small";
+        btn.textContent = control.label;
+        btn.disabled = !control.enabled;
+        if (control.reason) {
+            btn.title = control.reason;
+        }
+        btn.addEventListener("click", () => sendControl(control.action));
+        container.appendChild(btn);
+    });
+}
+
+function renderRing(ring) {
+    const capacity = ring.capacity || 1;
+    const fillPercent = Math.round(ring.fill_ratio * 100);
+    
+    document.getElementById("ringCap").textContent = capacity.toLocaleString();
+    document.getElementById("ringHead").textContent = ring.head_seq.toLocaleString();
+    document.getElementById("ringNext").textContent = ring.next_seq.toLocaleString();
+    document.getElementById("ringFill").textContent = ring.fill.toLocaleString();
+    document.getElementById("ringFillText").textContent = `${fillPercent}%`;
+    document.getElementById("ringSeqText").textContent = `${ring.head_seq} / ${ring.next_seq}`;
+
+    const fillBar = document.getElementById("ringFillBar");
+    fillBar.style.width = `${fillPercent}%`;
+
+    const headMarker = document.getElementById("ringHeadMarker");
+    const tailMarker = document.getElementById("ringTailMarker");
+    const headPos = (ring.head_index / capacity) * 100;
+    const tailPos = (ring.tail_index / capacity) * 100;
+    
+    headMarker.style.left = `${headPos}%`;
+    tailMarker.style.left = `${tailPos}%`;
+}
+
+function renderFlowGraph(module, allModules, edges) {
+    const container = document.createElement("div");
+    container.className = "flow-indicator";
+    
+    // Find incoming connections
+    const incoming = edges.filter(e => e.to === module.id).map(e => e.from);
+    // Find outgoing connections
+    const outgoing = edges.filter(e => e.from === module.id).map(e => e.to);
+    
+    const connections = [];
+    
+    if (incoming.length > 0) {
+        incoming.forEach(inId => {
+            const inMod = allModules.find(m => m.id === inId);
+            if (inMod) {
+                connections.push(`${inMod.label.substring(0, 8)}→`);
+            }
+        });
+    }
+    
+    if (module.type === 'buffer') {
+        connections.push("BUFFER");
+    }
+    
+    if (outgoing.length > 0) {
+        outgoing.forEach(outId => {
+            const outMod = allModules.find(m => m.id === outId);
+            if (outMod) {
+                connections.push(`→${outMod.label.substring(0, 8)}`);
+            }
+        });
+    }
+    
+    if (connections.length === 0) {
+        container.textContent = "–";
+    } else {
+        container.textContent = connections.join(' ');
+    }
+    
+    return container;
+}
+
+function renderModules(modules, graph, timestampMs) {
+    const tbody = document.getElementById("moduleRows");
+    
+    if (!modules || modules.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="8" class="no-data">Keine aktiven Module</td>
+            </tr>`;
+        return;
+    }
+
+    tbody.innerHTML = "";
+    
+    // Sort modules: inputs -> buffer -> codecs -> outputs
+    const typeOrder = { input: 1, buffer: 2, codec: 3, processing: 3, output: 4 };
+    const sorted = [...modules].sort((a, b) => {
+        const typeA = typeOrder[a.module_type] || 5;
+        const typeB = typeOrder[b.module_type] || 5;
+        if (typeA !== typeB) return typeA - typeB;
+        return a.label.localeCompare(b.label);
+    });
+
+    sorted.forEach(mod => {
+        const rate = calcRate(mod.id, mod.runtime.counters, timestampMs);
+        const dotClass = statusClass(mod.runtime);
+        const typeClass = getModuleTypeClass(mod.module_type);
+        
+        const row = document.createElement("tr");
+        row.innerHTML = `
+            <td>
+                <div><strong>${mod.label}</strong></div>
+                <div class="module-id">${mod.id}</div>
+            </td>
+            <td><span class="module-type type-${typeClass}">${mod.module_type}</span></td>
+            <td>
+                <span class="status-indicator">
+                    <span class="status-dot ${dotClass}"></span>
+                    ${statusLabel(mod.runtime)}
+                </span>
+            </td>
+            <td id="flow-${mod.id}"></td>
+            <td>
+                <div>RX: ${rate.rx}</div>
+                <div>TX: ${rate.tx}</div>
+            </td>
+            <td class="${mod.runtime.counters.errors > 0 ? 'error-count' : ''}">
+                ${mod.runtime.counters.errors}
+            </td>
+            <td class="last-activity">
+                ${timeAgo(mod.runtime.last_activity_ms)}
+            </td>
+            <td><div class="controls" data-controls="${mod.id}"></div></td>
+        `;
+        
+        tbody.appendChild(row);
+        
+        // Render flow graph for this module
+        const flowCell = document.getElementById(`flow-${mod.id}`);
+        if (flowCell && graph && graph.edges) {
+            const flowGraph = renderFlowGraph(mod, sorted, graph.edges);
+            flowCell.appendChild(flowGraph);
+        }
+        
+        // Render controls
+        renderControls(mod.controls, row.querySelector(`[data-controls="${mod.id}"]`));
+    });
+}
+
+function renderInactive(inactive) {
+    const tbody = document.getElementById("inactiveRows");
+    
+    if (!inactive || inactive.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="5" class="no-data">Keine inaktiven Module</td>
+            </tr>`;
+        return;
+    }
+
+    tbody.innerHTML = "";
+    
+    inactive.forEach(mod => {
+        const row = document.createElement("tr");
+        const actionCell = document.createElement("td");
+        
+        if (mod.can_activate && mod.activate_action) {
+            const btn = document.createElement("button");
+            btn.className = "primary small";
+            btn.textContent = "Aktivieren";
+            btn.addEventListener("click", () => sendControl(mod.activate_action));
+            actionCell.appendChild(btn);
+        } else {
+            const btn = document.createElement("button");
+            btn.className = "small";
+            btn.textContent = "–";
+            btn.disabled = true;
+            actionCell.appendChild(btn);
+        }
+        
+        const typeClass = getModuleTypeClass(mod.module_type);
+        
+        row.innerHTML = `
+            <td>
+                <div><strong>${mod.label}</strong></div>
+                <div class="module-id">${mod.id}</div>
+            </td>
+            <td><span class="module-type type-${typeClass}">${mod.module_type}</span></td>
+            <td><span class="status-indicator"><span class="status-dot bad"></span>inaktiv</span></td>
+            <td>${mod.reason}</td>
+        `;
+        row.appendChild(actionCell);
+        tbody.appendChild(row);
+    });
+}
+
+function renderRecorder(recorder) {
+    const status = recorder.enabled ? "aktiv" : "inaktiv";
+    document.getElementById("recStatus").textContent = status;
+    document.getElementById("recPath").textContent = recorder.path || "–";
+    document.getElementById("recFormat").textContent = recorder.format || "–";
+    document.getElementById("recRetention").textContent = 
+        recorder.retention_days ? `${recorder.retention_days} Tage` : "–";
+    
+    renderControls(recorder.controls, document.getElementById("recControls"));
+}
+
+function updateUI(status) {
+    document.getElementById("lastUpdate").textContent = 
+        new Date(status.timestamp_ms).toLocaleTimeString('de-DE', { 
+            hour: '2-digit', 
+            minute: '2-digit',
+            second: '2-digit'
+        });
+    
+    renderRing(status.ring);
+    renderModules(status.modules, status.graph, status.timestamp_ms);
+    renderInactive(status.inactive_modules);
+    renderRecorder(status.recorder);
+}
+
+async function sendControl(action) {
+    const msg = document.getElementById("controlMsg");
+    msg.textContent = "Sende Aktion…";
+    msg.style.color = "";
+    
+    try {
+        const res = await fetch("/api/control", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action })
+        });
+        
+        const data = await res.json();
+        if (res.ok) {
+            msg.textContent = data.message || "✓ Aktion erfolgreich";
+            msg.style.color = "var(--good)";
+        } else {
+            msg.textContent = `✗ ${data.message || "Fehler"}`;
+            msg.style.color = "var(--bad)";
+        }
+    } catch (err) {
+        msg.textContent = `✗ Netzwerkfehler: ${err.message}`;
+        msg.style.color = "var(--bad)";
+    }
+    
+    // Clear message after 3 seconds
+    setTimeout(() => {
+        msg.textContent = "";
+    }, 3000);
+}
+
+function updateConnectionState(connected) {
+    const connState = document.getElementById("connState");
+    const connDot = connState.querySelector('.conn-dot');
+    const connText = connState.querySelector('span:last-child');
+    
+    if (connected) {
+        connDot.className = "conn-dot connected";
+        connText.textContent = "verbunden";
+    } else {
+        connDot.className = "conn-dot disconnected";
+        connText.textContent = "getrennt";
+    }
+}
+
+function connectSse() {
+    const source = new EventSource("/api/events");
+    
+    source.onopen = () => {
+        updateConnectionState(true);
+    };
+    
+    source.onerror = () => {
+        updateConnectionState(false);
+        source.close();
+        startPolling();
+    };
+    
+    source.addEventListener("status", (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            updateUI(data);
+            updateConnectionState(true);
+        } catch (err) {
+            console.error("Fehler beim Parsen der Statusdaten:", err);
+        }
+    });
+}
+
+function startPolling() {
+    updateConnectionState(false);
+    
+    // Initial load
+    fetchStatus();
+    
+    // Poll every 2 seconds
+    setInterval(fetchStatus, 2000);
+}
+
+async function fetchStatus() {
+    try {
+        const res = await fetch("/api/status");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        updateUI(data);
+        updateConnectionState(true);
+    } catch (err) {
+        console.error("Fehler beim Abrufen des Status:", err);
+        updateConnectionState(false);
+    }
+}
+
+// Initialize
+connectSse();
+</script>
+</body>
+</html>

@@ -1,0 +1,1556 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Airlift Audio Node</title>
+    <style>
+        :root {
+            --bg: #0d1117;
+            --panel: #161b22;
+            --panel-light: #1c2129;
+            --text: #e6edf3;
+            --muted: #7d8590;
+            --good: #3fb950;
+            --warn: #d29922;
+            --bad: #f85149;
+            --accent: #58a6ff;
+            --input: #1f6feb;
+            --buffer: #8957e5;
+            --codec: #db6d28;
+            --output: #238636;
+            --service: #a371f7;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        header {
+            padding: 16px 24px;
+            background: var(--panel);
+            border-bottom: 1px solid #30363d;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .header-left h1 {
+            margin: 0 0 4px 0;
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .header-subtitle {
+            font-size: 12px;
+            color: var(--muted);
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .conn-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .conn-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--muted);
+        }
+
+        .conn-dot.connected { background: var(--good); animation: pulse 2s infinite; }
+        .conn-dot.error { background: var(--bad); }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .header-right {
+            text-align: right;
+        }
+
+        .update-time {
+            font-size: 12px;
+            color: var(--muted);
+        }
+
+        .audio-badge {
+            background: rgba(88, 166, 255, 0.1);
+            color: var(--accent);
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            border: 1px solid rgba(88, 166, 255, 0.3);
+        }
+
+        main {
+            padding: 24px;
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 24px;
+        }
+
+        .panel {
+            background: var(--panel);
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .panel-header {
+            padding: 16px 20px;
+            border-bottom: 1px solid #30363d;
+            background: var(--panel-light);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .panel-title {
+            margin: 0;
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .refresh-btn {
+            background: none;
+            border: none;
+            color: var(--accent);
+            cursor: pointer;
+            font-size: 14px;
+            padding: 6px;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .refresh-btn:hover {
+            background: rgba(88, 166, 255, 0.1);
+        }
+
+        /* Audio Pipeline Tree */
+        .audio-pipeline {
+            padding: 24px;
+            min-height: 400px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .pipeline-container {
+            width: 100%;
+            max-width: 1200px;
+            position: relative;
+        }
+
+        /* Tree Levels */
+        .tree-level {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin-bottom: 32px;
+            position: relative;
+            width: 100%;
+        }
+
+        .tree-level::after {
+            content: '';
+            position: absolute;
+            left: 50%;
+            bottom: -16px;
+            transform: translateX(-50%);
+            width: 2px;
+            height: 16px;
+            background: linear-gradient(to bottom, #30363d, transparent);
+        }
+
+        .tree-level:last-child::after {
+            display: none;
+        }
+
+        .level-label {
+            font-size: 12px;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 16px;
+            align-self: flex-start;
+            padding-left: 20px;
+            position: relative;
+        }
+
+        .level-label::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 12px;
+            height: 2px;
+            background: var(--accent);
+        }
+
+        .level-content {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 20px;
+            width: 100%;
+        }
+
+        /* Node Cards */
+        .node-card {
+            background: var(--panel-light);
+            border: 2px solid;
+            border-radius: 8px;
+            padding: 16px;
+            min-width: 200px;
+            position: relative;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        }
+
+        .node-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+        }
+
+        .node-card.input {
+            border-color: var(--input);
+            background: linear-gradient(145deg, rgba(31, 111, 235, 0.05), rgba(31, 111, 235, 0.1));
+        }
+
+        .node-card.buffer {
+            border-color: var(--buffer);
+            background: linear-gradient(145deg, rgba(137, 87, 229, 0.05), rgba(137, 87, 229, 0.1));
+        }
+
+        .node-card.output {
+            border-color: var(--output);
+            background: linear-gradient(145deg, rgba(35, 134, 54, 0.05), rgba(35, 134, 54, 0.1));
+        }
+
+        .node-card.codec {
+            border-color: var(--codec);
+            background: linear-gradient(145deg, rgba(219, 109, 40, 0.05), rgba(219, 109, 40, 0.1));
+        }
+
+        .node-card.service {
+            border-color: var(--service);
+            background: linear-gradient(145deg, rgba(163, 113, 247, 0.05), rgba(163, 113, 247, 0.1));
+        }
+
+        .node-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+
+        .node-type {
+            font-size: 10px;
+            padding: 3px 8px;
+            border-radius: 10px;
+            text-transform: uppercase;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+
+        .type-input { background: var(--input); color: white; }
+        .type-buffer { background: var(--buffer); color: white; }
+        .type-codec { background: var(--codec); color: white; }
+        .type-output { background: var(--output); color: white; }
+        .type-service { background: var(--service); color: white; }
+
+        .node-status {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 11px;
+        }
+
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+        }
+
+        .status-dot.active { background: var(--good); }
+        .status-dot.ready { background: var(--warn); }
+        .status-dot.inactive { background: var(--bad); }
+        .status-dot.standby { background: var(--muted); }
+
+        .node-title {
+            font-weight: 600;
+            font-size: 16px;
+            margin-bottom: 4px;
+            color: var(--text);
+        }
+
+        .node-id {
+            font-family: 'JetBrains Mono', 'Cascadia Code', monospace;
+            font-size: 11px;
+            color: var(--muted);
+            margin-bottom: 12px;
+            word-break: break-all;
+        }
+
+        .node-meta {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .meta-item {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .meta-label {
+            font-size: 10px;
+            color: var(--muted);
+            text-transform: uppercase;
+            margin-bottom: 2px;
+        }
+
+        .meta-value {
+            font-weight: 600;
+            font-family: 'JetBrains Mono', 'Cascadia Code', monospace;
+            font-size: 12px;
+        }
+
+        .node-connection {
+            font-size: 11px;
+            color: var(--muted);
+            padding-top: 12px;
+            border-top: 1px solid rgba(48, 54, 61, 0.5);
+        }
+
+        .connection-label {
+            font-size: 10px;
+            color: var(--muted);
+            margin-bottom: 4px;
+            text-transform: uppercase;
+        }
+
+        .connection-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+        }
+
+        .connection-item {
+            background: rgba(48, 54, 61, 0.5);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 10px;
+        }
+
+        /* Connection Lines */
+        .connection-lines {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .connection-line {
+            position: absolute;
+            background: linear-gradient(to bottom, rgba(88, 166, 255, 0.3), transparent);
+            width: 2px;
+            transform-origin: top center;
+        }
+
+        /* Ringbuffer Details */
+        .ringbuffer-details {
+            margin-top: 16px;
+            padding: 16px;
+            background: rgba(48, 54, 61, 0.3);
+            border-radius: 6px;
+            border: 1px solid #30363d;
+        }
+
+        .ringbuffer-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+
+        .ringbuffer-title {
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .ringbuffer-visual {
+            height: 20px;
+            background: #0d1117;
+            border-radius: 4px;
+            border: 1px solid #30363d;
+            overflow: hidden;
+            position: relative;
+            margin-bottom: 8px;
+        }
+
+        .ringbuffer-fill {
+            height: 100%;
+            background: linear-gradient(90deg, 
+                rgba(35, 134, 54, 0.6), 
+                rgba(210, 153, 34, 0.6), 
+                rgba(248, 81, 73, 0.6));
+            transition: width 0.3s ease;
+        }
+
+        .ringbuffer-marker {
+            position: absolute;
+            top: -2px;
+            bottom: -2px;
+            width: 2px;
+            transform: translateX(-50%);
+            border-radius: 1px;
+        }
+
+        .ringbuffer-marker.head {
+            background: #ffffff;
+            box-shadow: 0 0 4px #ffffff;
+            z-index: 2;
+        }
+
+        .ringbuffer-marker.tail {
+            background: var(--warn);
+            box-shadow: 0 0 4px var(--warn);
+            z-index: 2;
+        }
+
+        .ringbuffer-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 8px;
+            font-size: 11px;
+        }
+
+        .ringbuffer-stat {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .ringbuffer-stat .label {
+            color: var(--muted);
+            margin-bottom: 2px;
+        }
+
+        .ringbuffer-stat .value {
+            font-family: 'JetBrains Mono', 'Cascadia Code', monospace;
+            font-weight: 600;
+        }
+
+        /* Modules Table */
+        .modules-table-container {
+            overflow-x: auto;
+        }
+
+        .modules-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        .modules-table th {
+            background: var(--panel-light);
+            color: var(--muted);
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 11px;
+            letter-spacing: 0.5px;
+            padding: 12px 16px;
+            text-align: left;
+            border-bottom: 2px solid #30363d;
+            white-space: nowrap;
+        }
+
+        .modules-table td {
+            padding: 12px 16px;
+            border-bottom: 1px solid #30363d;
+            vertical-align: middle;
+        }
+
+        .modules-table tr:hover {
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .module-name-cell {
+            min-width: 180px;
+        }
+
+        .module-name {
+            font-weight: 600;
+            margin-bottom: 2px;
+        }
+
+        .module-id {
+            font-family: 'JetBrains Mono', 'Cascadia Code', monospace;
+            font-size: 11px;
+            color: var(--muted);
+        }
+
+        .module-type-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .module-status-cell {
+            min-width: 120px;
+        }
+
+        .module-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 8px;
+            border-radius: 4px;
+            background: var(--panel-light);
+            font-size: 12px;
+        }
+
+        .module-rate {
+            font-family: 'JetBrains Mono', 'Cascadia Code', monospace;
+            font-size: 12px;
+            min-width: 100px;
+        }
+
+        .module-actions {
+            display: flex;
+            gap: 6px;
+        }
+
+        .btn {
+            border: none;
+            background: var(--panel-light);
+            color: var(--text);
+            padding: 6px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            border: 1px solid #30363d;
+            transition: all 0.2s ease;
+            white-space: nowrap;
+        }
+
+        .btn:hover:not(:disabled) {
+            background: var(--accent);
+            color: white;
+            border-color: var(--accent);
+        }
+
+        .btn.primary {
+            background: var(--accent);
+            color: white;
+            border-color: var(--accent);
+        }
+
+        .btn.small {
+            padding: 4px 8px;
+            font-size: 11px;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Empty States */
+        .empty-state {
+            text-align: center;
+            padding: 48px 24px;
+            color: var(--muted);
+        }
+
+        .empty-state .icon {
+            font-size: 36px;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+
+        .empty-state .message {
+            font-size: 14px;
+        }
+
+        /* Message Bar */
+        .message-bar {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            background: var(--panel);
+            border: 1px solid;
+            border-radius: 6px;
+            padding: 12px 16px;
+            box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+            z-index: 1000;
+            max-width: 400px;
+            display: none;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        .message-bar.show {
+            display: block;
+        }
+
+        .message-bar.success {
+            border-color: var(--good);
+            background: rgba(63, 185, 80, 0.1);
+        }
+
+        .message-bar.error {
+            border-color: var(--bad);
+            background: rgba(248, 81, 73, 0.1);
+        }
+
+        .message-bar.warning {
+            border-color: var(--warn);
+            background: rgba(210, 153, 34, 0.1);
+        }
+
+        /* Audio Services */
+        .audio-services {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            gap: 16px;
+        }
+
+        .service-card {
+            background: var(--panel-light);
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 16px;
+            transition: all 0.2s ease;
+        }
+
+        .service-card:hover {
+            border-color: var(--accent);
+            transform: translateY(-2px);
+        }
+
+        .service-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+
+        .service-name {
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .service-url {
+            font-family: 'JetBrains Mono', 'Cascadia Code', monospace;
+            font-size: 11px;
+            color: var(--muted);
+            margin-bottom: 8px;
+            word-break: break-all;
+        }
+
+        .service-info {
+            font-size: 12px;
+            color: var(--muted);
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid rgba(48, 54, 61, 0.5);
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            main {
+                padding: 16px;
+                gap: 16px;
+            }
+            
+            .level-content {
+                flex-direction: column;
+                align-items: center;
+            }
+            
+            .node-card {
+                width: 100%;
+                max-width: 300px;
+            }
+            
+            .modules-table-container {
+                font-size: 12px;
+            }
+            
+            .modules-table th,
+            .modules-table td {
+                padding: 8px 12px;
+            }
+        }
+    </style>
+</head>
+<body>
+<header>
+    <div class="header-left">
+        <h1>Airlift Audio Node</h1>
+        <div class="header-subtitle">
+            <span class="conn-status">
+                <span class="conn-dot"></span>
+                <span id="connText">Verbinde...</span>
+            </span>
+            <span>Live Audio Pipeline Monitoring</span>
+        </div>
+    </div>
+    <div class="header-right">
+        <div class="update-time" id="updateTime">–</div>
+        <div style="margin-top: 8px;">
+            <span class="audio-badge">Audio Processing</span>
+        </div>
+    </div>
+</header>
+
+<main>
+    <!-- Audio Pipeline Tree -->
+    <section class="panel">
+        <div class="panel-header">
+            <h2 class="panel-title">Audio Pipeline</h2>
+            <button class="refresh-btn" onclick="fetchStatus()" title="Aktualisieren">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                </svg>
+            </button>
+        </div>
+        <div class="audio-pipeline" id="audioPipeline">
+            <div class="empty-state">
+                <div class="icon">🎵</div>
+                <div class="message">Lade Audio-Pipeline...</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Active Modules -->
+    <section class="panel">
+        <div class="panel-header">
+            <h2 class="panel-title">Aktive Module</h2>
+            <div style="font-size: 12px; color: var(--muted);">
+                <span id="activeModulesCount">0</span> Module
+            </div>
+        </div>
+        <div class="modules-table-container">
+            <table class="modules-table" id="modulesTable">
+                <thead>
+                    <tr>
+                        <th class="module-name-cell">Modul</th>
+                        <th>Typ</th>
+                        <th class="module-status-cell">Status</th>
+                        <th>Datenrate</th>
+                        <th>Fehler</th>
+                        <th>Aktivität</th>
+                        <th>Aktionen</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td colspan="7" class="empty-state">
+                            <div class="icon">📦</div>
+                            <div class="message">Lade Module...</div>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- Audio Services -->
+    <section class="panel">
+        <div class="panel-header">
+            <h2 class="panel-title">Audio Services</h2>
+        </div>
+        <div class="panel-content">
+            <div class="audio-services" id="audioServices">
+                <div class="empty-state">
+                    <div class="icon">🔊</div>
+                    <div class="message">Lade Audio-Services...</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Available Modules -->
+    <section class="panel">
+        <div class="panel-header">
+            <h2 class="panel-title">Verfügbare Module</h2>
+            <div style="font-size: 12px; color: var(--muted);">
+                <span id="inactiveModulesCount">0</span> verfügbar
+            </div>
+        </div>
+        <div class="modules-table-container">
+            <table class="modules-table" id="inactiveModulesTable">
+                <thead>
+                    <tr>
+                        <th class="module-name-cell">Modul</th>
+                        <th>Typ</th>
+                        <th>Status</th>
+                        <th>Grund</th>
+                        <th>Aktion</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td colspan="5" class="empty-state">
+                            <div class="icon">🔌</div>
+                            <div class="message">Keine inaktiven Module</div>
+                        </td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+</main>
+
+<div id="messageBar" class="message-bar"></div>
+
+<script>
+// State management
+let lastStatus = null;
+const rateHistory = new Map();
+const connections = new Map();
+
+// Helper functions
+function showMessage(text, type = 'info') {
+    const bar = document.getElementById('messageBar');
+    bar.textContent = text;
+    bar.className = `message-bar show ${type}`;
+    
+    setTimeout(() => {
+        bar.className = 'message-bar';
+    }, 3000);
+}
+
+function updateConnectionState(connected) {
+    const dot = document.querySelector('.conn-dot');
+    const text = document.getElementById('connText');
+    
+    if (connected) {
+        dot.className = 'conn-dot connected';
+        text.textContent = 'Verbunden';
+    } else {
+        dot.className = 'conn-dot error';
+        text.textContent = 'Getrennt';
+    }
+}
+
+function formatTimeAgo(ms) {
+    if (!ms || ms === 0) return 'nie';
+    const diff = Date.now() - ms;
+    const seconds = Math.floor(diff / 1000);
+    
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h`;
+    const days = Math.floor(hours / 24);
+    return `${days}d`;
+}
+
+function calculateRate(moduleId, currentCounters, timestamp) {
+    if (!rateHistory.has(moduleId)) {
+        rateHistory.set(moduleId, {
+            timestamp,
+            counters: currentCounters
+        });
+        return { rx: '–', tx: '–', rxRaw: 0, txRaw: 0 };
+    }
+    
+    const prev = rateHistory.get(moduleId);
+    const timeDiff = Math.max(1, timestamp - prev.timestamp);
+    
+    const rxRate = Math.round((currentCounters.rx - prev.counters.rx) * 60000 / timeDiff);
+    const txRate = Math.round((currentCounters.tx - prev.counters.tx) * 60000 / timeDiff);
+    
+    rateHistory.set(moduleId, {
+        timestamp,
+        counters: currentCounters
+    });
+    
+    return {
+        rx: rxRate.toLocaleString(),
+        tx: txRate.toLocaleString(),
+        rxRaw: rxRate,
+        txRaw: txRate
+    };
+}
+
+function getModuleStatus(runtime) {
+    if (!runtime.enabled) return { class: 'inactive', label: 'Aus', text: 'Deaktiviert' };
+    if (!runtime.running) return { class: 'standby', label: 'Bereit', text: 'Bereit' };
+    if (runtime.connected === false) return { class: 'ready', label: 'Bereit', text: 'Getrennt' };
+    return { class: 'active', label: 'Aktiv', text: 'Aktiv' };
+}
+
+function getModuleTypeClass(type) {
+    const typeMap = {
+        'input': 'input',
+        'buffer': 'buffer', 
+        'codec': 'codec',
+        'output': 'output',
+        'processing': 'codec',
+        'service': 'service'
+    };
+    return typeMap[type] || 'service';
+}
+
+// Build the audio pipeline tree
+function buildAudioPipeline(status) {
+    const pipelineContainer = document.getElementById('audioPipeline');
+    
+    if (!status.modules || status.modules.length === 0) {
+        pipelineContainer.innerHTML = `
+            <div class="empty-state">
+                <div class="icon">🎵</div>
+                <div class="message">Keine aktiven Audio-Module</div>
+            </div>`;
+        return;
+    }
+    
+    // Group modules by type
+    const inputs = status.modules.filter(m => m.module_type === 'input');
+    const buffers = status.modules.filter(m => m.module_type === 'buffer');
+    const codecs = status.modules.filter(m => m.module_type === 'codec');
+    const outputs = status.modules.filter(m => m.module_type === 'output');
+    
+    // Get graph connections
+    const edges = status.graph?.edges || [];
+    
+    let pipelineHTML = '<div class="pipeline-container">';
+    
+    // Input Level
+    if (inputs.length > 0) {
+        pipelineHTML += `
+            <div class="tree-level">
+                <div class="level-label">Inputs</div>
+                <div class="level-content">
+                    ${inputs.map(input => renderTreeNode(input, 'input', status)).join('')}
+                </div>
+            </div>`;
+    }
+    
+    // Buffer Level (one per input)
+    if (buffers.length > 0) {
+        pipelineHTML += `
+            <div class="tree-level">
+                <div class="level-label">Ringbuffer</div>
+                <div class="level-content">
+                    ${buffers.map(buffer => renderTreeNode(buffer, 'buffer', status)).join('')}
+                </div>
+            </div>`;
+    }
+    
+    // Consumer Level (Outputs with optional Codecs)
+    const consumerGroups = buildConsumerGroups(outputs, codecs, edges, status);
+    
+    if (consumerGroups.length > 0) {
+        pipelineHTML += `
+            <div class="tree-level">
+                <div class="level-label">Consumer</div>
+                <div class="level-content">
+                    ${consumerGroups.map(renderConsumerGroup).join('')}
+                </div>
+            </div>`;
+    }
+    
+    pipelineHTML += '</div>';
+    
+    // Add connection lines
+    pipelineHTML += `<div class="connection-lines" id="connectionLines"></div>`;
+    
+    pipelineContainer.innerHTML = pipelineHTML;
+    
+    // Draw connection lines after DOM is rendered
+    setTimeout(() => drawConnectionLines(status), 100);
+}
+
+function renderTreeNode(module, type, status) {
+    const statusInfo = getModuleStatus(module.runtime);
+    const typeClass = getModuleTypeClass(module.module_type);
+    
+    // Find connections
+    const edges = status.graph?.edges || [];
+    const connections = edges.filter(e => e.from === module.id || e.to === module.id);
+    
+    let connectionsHTML = '';
+    if (connections.length > 0) {
+        connectionsHTML = `
+            <div class="node-connection">
+                <div class="connection-label">Verbindungen</div>
+                <div class="connection-list">
+                    ${connections.map(conn => {
+                        const otherId = conn.from === module.id ? conn.to : conn.from;
+                        const direction = conn.from === module.id ? '→' : '←';
+                        return `<span class="connection-item">${direction} ${otherId}</span>`;
+                    }).join('')}
+                </div>
+            </div>`;
+    }
+    
+    let ringbufferHTML = '';
+    if (type === 'buffer') {
+        ringbufferHTML = renderRingbufferDetails(module, status);
+    }
+    
+    return `
+        <div class="node-card ${type}" data-module-id="${module.id}" data-module-type="${type}">
+            <div class="node-header">
+                <span class="node-type type-${typeClass}">${module.module_type}</span>
+                <span class="node-status">
+                    <span class="status-dot ${statusInfo.class}"></span>
+                    <span>${statusInfo.label}</span>
+                </span>
+            </div>
+            <div class="node-title">${module.label}</div>
+            <div class="node-id">${module.id}</div>
+            
+            <div class="node-meta">
+                <div class="meta-item">
+                    <div class="meta-label">RX</div>
+                    <div class="meta-value">${module.runtime.counters.rx.toLocaleString()}</div>
+                </div>
+                <div class="meta-item">
+                    <div class="meta-label">TX</div>
+                    <div class="meta-value">${module.runtime.counters.tx.toLocaleString()}</div>
+                </div>
+                <div class="meta-item">
+                    <div class="meta-label">Errors</div>
+                    <div class="meta-value">${module.runtime.counters.errors}</div>
+                </div>
+                <div class="meta-item">
+                    <div class="meta-label">Aktiv</div>
+                    <div class="meta-value">${formatTimeAgo(module.runtime.last_activity_ms)}</div>
+                </div>
+            </div>
+            
+            ${connectionsHTML}
+            ${ringbufferHTML}
+        </div>
+    `;
+}
+
+function renderRingbufferDetails(bufferModule, status) {
+    const ring = status.ring;
+    if (!ring) return '';
+    
+    const capacity = ring.capacity || 1;
+    const fillPercent = Math.round(ring.fill_ratio * 100);
+    const consumerCount = status.modules.filter(m => 
+        m.module_type === 'output' || m.module_type === 'codec'
+    ).length;
+    
+    let markersHTML = '';
+    if (capacity > 0) {
+        const headPos = (ring.head_index / capacity) * 100;
+        const tailPos = (ring.tail_index / capacity) * 100;
+        
+        markersHTML = `
+            <div style="position: relative; height: 0;">
+                <div class="ringbuffer-marker head" style="left: ${headPos}%;"></div>
+                <div class="ringbuffer-marker tail" style="left: ${tailPos}%;"></div>
+            </div>
+        `;
+    }
+    
+    return `
+        <div class="ringbuffer-details">
+            <div class="ringbuffer-header">
+                <div class="ringbuffer-title">Buffer Details</div>
+                <div style="font-size: 11px; color: ${consumerCount > 0 ? 'var(--good)' : 'var(--muted)'}">
+                    ${consumerCount} Consumer
+                </div>
+            </div>
+            <div class="ringbuffer-visual">
+                <div class="ringbuffer-fill" style="width: ${fillPercent}%;"></div>
+                ${markersHTML}
+            </div>
+            <div class="ringbuffer-stats">
+                <div class="ringbuffer-stat">
+                    <div class="label">Füllstand</div>
+                    <div class="value">${fillPercent}%</div>
+                </div>
+                <div class="ringbuffer-stat">
+                    <div class="label">Head</div>
+                    <div class="value">${ring.head_seq}</div>
+                </div>
+                <div class="ringbuffer-stat">
+                    <div class="label">Tail</div>
+                    <div class="value">${ring.tail_index}</div>
+                </div>
+                <div class="ringbuffer-stat">
+                    <div class="label">Capacity</div>
+                    <div class="value">${capacity}</div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function buildConsumerGroups(outputs, codecs, edges, status) {
+    const groups = [];
+    
+    outputs.forEach(output => {
+        // Find connected codec for this output
+        const connectedCodec = edges.find(e => e.to === output.id)?.from;
+        const codec = codecs.find(c => c.id === connectedCodec);
+        
+        groups.push({
+            output,
+            codec,
+            type: codec ? 'codec-output' : 'direct-output'
+        });
+    });
+    
+    return groups;
+}
+
+function renderConsumerGroup(group) {
+    const outputStatus = getModuleStatus(group.output.runtime);
+    
+    let groupHTML = '';
+    
+    if (group.codec) {
+        const codecStatus = getModuleStatus(group.codec.runtime);
+        
+        groupHTML = `
+            <div style="display: flex; flex-direction: column; align-items: center; gap: 12px;">
+                <!-- Codec -->
+                <div class="node-card codec">
+                    <div class="node-header">
+                        <span class="node-type type-codec">Codec</span>
+                        <span class="node-status">
+                            <span class="status-dot ${codecStatus.class}"></span>
+                            <span>${codecStatus.label}</span>
+                        </span>
+                    </div>
+                    <div class="node-title">${group.codec.label}</div>
+                    <div class="node-id">${group.codec.id}</div>
+                </div>
+                
+                <!-- Arrow -->
+                <div style="color: var(--accent); font-size: 18px;">↓</div>
+                
+                <!-- Output -->
+                <div class="node-card output">
+                    <div class="node-header">
+                        <span class="node-type type-output">Output</span>
+                        <span class="node-status">
+                            <span class="status-dot ${outputStatus.class}"></span>
+                            <span>${outputStatus.label}</span>
+                        </span>
+                    </div>
+                    <div class="node-title">${group.output.label}</div>
+                    <div class="node-id">${group.output.id}</div>
+                </div>
+            </div>
+        `;
+    } else {
+        groupHTML = `
+            <div class="node-card output">
+                <div class="node-header">
+                    <span class="node-type type-output">Output</span>
+                    <span class="node-status">
+                        <span class="status-dot ${outputStatus.class}"></span>
+                        <span>${outputStatus.label}</span>
+                    </span>
+                </div>
+                <div class="node-title">${group.output.label}</div>
+                <div class="node-id">${group.output.id}</div>
+            </div>
+        `;
+    }
+    
+    return groupHTML;
+}
+
+function drawConnectionLines(status) {
+    const edges = status.graph?.edges || [];
+    const linesContainer = document.getElementById('connectionLines');
+    if (!linesContainer) return;
+    
+    linesContainer.innerHTML = '';
+    
+    edges.forEach(edge => {
+        const fromEl = document.querySelector(`[data-module-id="${edge.from}"]`);
+        const toEl = document.querySelector(`[data-module-id="${edge.to}"]`);
+        
+        if (!fromEl || !toEl) return;
+        
+        const fromRect = fromEl.getBoundingClientRect();
+        const toRect = toEl.getBoundingClientRect();
+        const containerRect = linesContainer.parentElement.getBoundingClientRect();
+        
+        const fromX = fromRect.left + fromRect.width / 2 - containerRect.left;
+        const fromY = fromRect.top + fromRect.height - containerRect.top;
+        const toX = toRect.left + toRect.width / 2 - containerRect.left;
+        const toY = toRect.top - containerRect.top;
+        
+        const length = Math.sqrt(Math.pow(toX - fromX, 2) + Math.pow(toY - fromY, 2));
+        const angle = Math.atan2(toY - fromY, toX - fromX) * 180 / Math.PI;
+        
+        const line = document.createElement('div');
+        line.className = 'connection-line';
+        line.style.width = `${length}px`;
+        line.style.height = '2px';
+        line.style.left = `${fromX}px`;
+        line.style.top = `${fromY}px`;
+        line.style.transform = `rotate(${angle}deg)`;
+        
+        linesContainer.appendChild(line);
+    });
+}
+
+// Render modules table
+function renderModulesTable(status) {
+    const table = document.getElementById('modulesTable');
+    const countElement = document.getElementById('activeModulesCount');
+    
+    const modules = status.modules || [];
+    countElement.textContent = modules.length;
+    
+    if (modules.length === 0) {
+        table.innerHTML = `
+            <tbody>
+                <tr>
+                    <td colspan="7" class="empty-state">
+                        <div class="icon">📦</div>
+                        <div class="message">Keine aktiven Module</div>
+                    </td>
+                </tr>
+            </tbody>`;
+        return;
+    }
+    
+    // Sort modules by type order
+    const typeOrder = { input: 1, buffer: 2, codec: 3, output: 4, service: 5 };
+    const sorted = [...modules].sort((a, b) => {
+        const orderA = typeOrder[a.module_type] || 99;
+        const orderB = typeOrder[b.module_type] || 99;
+        if (orderA !== orderB) return orderA - orderB;
+        return a.label.localeCompare(b.label);
+    });
+    
+    let tableHTML = '<tbody>';
+    
+    sorted.forEach(module => {
+        const rate = calculateRate(module.id, module.runtime.counters, status.timestamp_ms);
+        const statusInfo = getModuleStatus(module.runtime);
+        const typeClass = getModuleTypeClass(module.module_type);
+        
+        tableHTML += `
+            <tr>
+                <td class="module-name-cell">
+                    <div class="module-name">${module.label}</div>
+                    <div class="module-id">${module.id}</div>
+                </td>
+                <td>
+                    <span class="module-type-badge" style="background: ${getTypeColor(module.module_type)}; color: white;">
+                        ${module.module_type}
+                    </span>
+                </td>
+                <td class="module-status-cell">
+                    <span class="module-status">
+                        <span class="status-dot ${statusInfo.class}"></span>
+                        <span>${statusInfo.text}</span>
+                    </span>
+                </td>
+                <td>
+                    <div class="module-rate">
+                        <div>RX: ${rate.rx}/min</div>
+                        <div>TX: ${rate.tx}/min</div>
+                    </div>
+                </td>
+                <td>
+                    <span style="color: ${module.runtime.counters.errors > 0 ? 'var(--bad)' : 'inherit'}">
+                        ${module.runtime.counters.errors}
+                    </span>
+                </td>
+                <td>
+                    <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px;">
+                        ${formatTimeAgo(module.runtime.last_activity_ms)}
+                    </span>
+                </td>
+                <td>
+                    <div class="module-actions">
+                        ${module.controls && module.controls.length > 0 ? 
+                            module.controls.map(control => `
+                                <button class="btn small ${control.enabled ? 'primary' : ''}"
+                                        onclick="sendControl('${control.action}')"
+                                        ${!control.enabled ? 'disabled' : ''}
+                                        title="${control.reason || ''}">
+                                    ${control.label}
+                                </button>
+                            `).join('') :
+                            '<button class="btn small" disabled>–</button>'
+                        }
+                    </div>
+                </td>
+            </tr>
+        `;
+    });
+    
+    tableHTML += '</tbody>';
+    table.innerHTML = tableHTML;
+}
+
+function getTypeColor(type) {
+    const colors = {
+        input: 'var(--input)',
+        buffer: 'var(--buffer)',
+        codec: 'var(--codec)',
+        output: 'var(--output)',
+        service: 'var(--service)'
+    };
+    return colors[type] || 'var(--muted)';
+}
+
+// Render inactive modules
+function renderInactiveModules(status) {
+    const table = document.getElementById('inactiveModulesTable');
+    const countElement = document.getElementById('inactiveModulesCount');
+    
+    const inactive = status.inactive_modules || [];
+    countElement.textContent = inactive.length;
+    
+    if (inactive.length === 0) {
+        table.innerHTML = `
+            <tbody>
+                <tr>
+                    <td colspan="5" class="empty-state">
+                        <div class="icon">🔌</div>
+                        <div class="message">Keine inaktiven Module</div>
+                    </td>
+                </tr>
+            </tbody>`;
+        return;
+    }
+    
+    let tableHTML = '<tbody>';
+    
+    inactive.forEach(module => {
+        tableHTML += `
+            <tr>
+                <td class="module-name-cell">
+                    <div class="module-name">${module.label}</div>
+                    <div class="module-id">${module.id}</div>
+                </td>
+                <td>
+                    <span class="module-type-badge" style="background: ${getTypeColor(module.module_type)}; color: white;">
+                        ${module.module_type}
+                    </span>
+                </td>
+                <td>
+                    <span class="module-status">
+                        <span class="status-dot inactive"></span>
+                        <span>Inaktiv</span>
+                    </span>
+                </td>
+                <td>
+                    <span style="color: var(--muted); font-size: 12px;">
+                        ${module.reason}
+                    </span>
+                </td>
+                <td>
+                    <div class="module-actions">
+                        ${module.can_activate && module.activate_action ? 
+                            `<button class="btn small primary" onclick="sendControl('${module.activate_action}')">
+                                Aktivieren
+                            </button>` :
+                            `<button class="btn small" disabled>Aktivieren</button>`
+                        }
+                    </div>
+                </td>
+            </tr>
+        `;
+    });
+    
+    tableHTML += '</tbody>';
+    table.innerHTML = tableHTML;
+}
+
+// Render audio services
+function renderAudioServices(status) {
+    const servicesContainer = document.getElementById('audioServices');
+    
+    const services = [
+        { 
+            name: 'SRT Audio Input', 
+            url: 'srt://0.0.0.0:9000',
+            info: 'Audio-Stream via SRT Protokoll'
+        },
+        { 
+            name: 'Audio HTTP Stream', 
+            url: 'http://localhost:3011',
+            info: 'HTTP-basierter Audio-Stream'
+        },
+        { 
+            name: 'Monitoring API', 
+            url: 'http://localhost:8087',
+            info: 'Metriken und Systemüberwachung'
+        },
+        { 
+            name: 'Control API', 
+            url: 'http://localhost:3008',
+            info: 'Steuerung und Konfiguration'
+        }
+    ];
+    
+    let servicesHTML = '';
+    
+    services.forEach(service => {
+        servicesHTML += `
+            <div class="service-card">
+                <div class="service-header">
+                    <div class="service-name">${service.name}</div>
+                    <span class="status-dot active"></span>
+                </div>
+                <div class="service-url">${service.url}</div>
+                <div class="service-info">${service.info}</div>
+            </div>
+        `;
+    });
+    
+    servicesContainer.innerHTML = servicesHTML;
+}
+
+// Main update function
+function updateUI(status) {
+    lastStatus = status;
+    
+    // Update timestamp
+    const updateTime = document.getElementById('updateTime');
+    updateTime.textContent = new Date(status.timestamp_ms).toLocaleTimeString('de-DE', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+    });
+    
+    // Render all components
+    buildAudioPipeline(status);
+    renderModulesTable(status);
+    renderInactiveModules(status);
+    renderAudioServices(status);
+    
+    updateConnectionState(true);
+}
+
+// API communication
+async function sendControl(action) {
+    try {
+        const response = await fetch('/api/control', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action })
+        });
+        
+        const data = await response.json();
+        
+        if (response.ok) {
+            showMessage(data.message || 'Aktion erfolgreich', 'success');
+        } else {
+            showMessage(data.message || 'Fehler bei der Aktion', 'error');
+        }
+        
+        // Refresh status
+        setTimeout(fetchStatus, 500);
+    } catch (error) {
+        showMessage(`Netzwerkfehler: ${error.message}`, 'error');
+    }
+}
+
+async function fetchStatus() {
+    try {
+        const response = await fetch('/api/status');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        
+        const status = await response.json();
+        updateUI(status);
+        updateConnectionState(true);
+    } catch (error) {
+        console.error('Fehler beim Abrufen des Status:', error);
+        updateConnectionState(false);
+        showMessage('Verbindung zum Server fehlgeschlagen', 'error');
+    }
+}
+
+// Initialize
+document.addEventListener('DOMContentLoaded', () => {
+    // Initial fetch
+    fetchStatus();
+    
+    // Try SSE, fallback to polling
+    if (typeof EventSource !== 'undefined') {
+        const source = new EventSource('/api/events');
+        
+        source.onopen = () => {
+            updateConnectionState(true);
+        };
+        
+        source.onerror = () => {
+            updateConnectionState(false);
+            source.close();
+            
+            // Fallback to polling
+            setInterval(fetchStatus, 2000);
+        };
+        
+        source.addEventListener('status', (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                updateUI(data);
+                updateConnectionState(true);
+            } catch (error) {
+                console.error('Fehler beim Parsen der SSE-Daten:', error);
+            }
+        });
+    } else {
+        // Poll every 2 seconds if SSE not supported
+        setInterval(fetchStatus, 2000);
+    }
+    
+    // Auto-refresh every 30 seconds as backup
+    setInterval(fetchStatus, 30000);
+});
+</script>
+</body>
+</html>
