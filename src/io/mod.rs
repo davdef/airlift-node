@@ -3,6 +3,7 @@ pub mod alsa_in;
 pub mod broadcast_http;
 pub mod icecast_meta_out;
 pub mod icecast_out;
+pub mod icecast_in;
 pub mod influx_out;
 #[cfg(feature = "mp3")]
 pub mod mp3_out;

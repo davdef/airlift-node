@@ -37,6 +37,16 @@ pub struct ControlInfo {
 }
 
 #[derive(Serialize, Clone)]
+pub struct ModuleDetails {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub buffer: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
 pub struct ModuleInfo {
     pub id: String,
     pub label: String,
@@ -48,6 +58,8 @@ pub struct ModuleInfo {
     pub codec_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codec_info: Option<CodecInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<ModuleDetails>,
 }
 
 #[derive(Serialize, Clone)]
@@ -103,7 +115,7 @@ pub struct StatusResponse {
 pub async fn get_status(State(state): State<ApiState>) -> Json<StatusResponse> {
     Json(build_status(
         &state.control_state,
-        &state.ring.stats(),
+        &select_ring_stats(&state),
         &state.config,
         &state.registry,
         &state.codec_registry,
@@ -115,6 +127,7 @@ pub async fn events(
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
     let control_state = state.control_state.clone();
     let ring = state.ring.clone();
+    let encoded_ring = state.encoded_ring.clone();
     let config = state.config.clone();
     let registry = state.registry.clone();
     let codec_registry = state.codec_registry.clone();
@@ -122,7 +135,11 @@ pub async fn events(
     let stream = IntervalStream::new(interval(Duration::from_secs(1))).map(move |_| {
         let status = build_status(
             &control_state,
-            &ring.stats(),
+            &if config.uses_icecast_input() {
+                encoded_ring.stats()
+            } else {
+                ring.stats()
+            },
             &config,
             &registry,
             &codec_registry,
@@ -132,6 +149,14 @@ pub async fn events(
     });
 
     Sse::new(stream)
+}
+
+fn select_ring_stats(state: &ApiState) -> RingStats {
+    if state.config.uses_icecast_input() {
+        state.encoded_ring.stats()
+    } else {
+        state.ring.stats()
+    }
 }
 
 fn build_status(
@@ -155,6 +180,7 @@ fn build_status(
     let srt_in = control_state.srt_in.module.snapshot();
     let srt_out = control_state.srt_out.module.snapshot();
     let alsa_in = control_state.alsa_in.snapshot();
+    let icecast_in = control_state.icecast_in.snapshot();
     let icecast_out = control_state.icecast_out.snapshot();
     let recorder = control_state.recorder.snapshot();
     let ring_module = control_state.ring.snapshot();
@@ -199,6 +225,17 @@ fn build_status(
     );
 
     let recorder_controls = build_controls("recorder", &recorder, "Vorbereitet", None);
+    let icecast_input = config.inputs.iter().find(|(_, input)| {
+        matches!(input.input_type.as_str(), "icecast" | "http_stream")
+    });
+    let icecast_input_id = icecast_input
+        .map(|(id, _)| id.as_str())
+        .unwrap_or("icecast_in");
+    let icecast_details = icecast_input.map(|(_, input)| ModuleDetails {
+        input_type: Some(input.input_type.clone()),
+        url: input.url.clone(),
+        buffer: Some(input.buffer.clone()),
+    });
 
     add_module_if_active(
         &mut modules,
@@ -207,6 +244,7 @@ fn build_status(
         "buffer",
         ring_module.clone(),
         build_controls("ring", &ring_module, "Nicht unterstützt", None),
+        None,
         None,
         None,
     );
@@ -219,6 +257,18 @@ fn build_status(
         srt_in_controls.clone(),
         None,
         None,
+        None,
+    );
+    add_module_if_active(
+        &mut modules,
+        icecast_input_id,
+        "Icecast-IN",
+        "input",
+        icecast_in.clone(),
+        build_controls("icecast_in", &icecast_in, "Nicht unterstützt", None),
+        None,
+        None,
+        icecast_details.clone(),
     );
     add_module_if_active(
         &mut modules,
@@ -227,6 +277,7 @@ fn build_status(
         "input",
         alsa_in.clone(),
         build_controls("alsa_in", &alsa_in, "Nicht unterstützt", None),
+        None,
         None,
         None,
     );
@@ -243,6 +294,7 @@ fn build_status(
         srt_out_controls.clone(),
         srt_out_codec_id,
         srt_out_codec_info,
+        None,
     );
     let icecast_codec_id = config
         .icecast_out
@@ -260,6 +312,7 @@ fn build_status(
         build_controls("icecast_out", &icecast_out, "Nicht unterstützt", None),
         icecast_codec_id,
         icecast_codec_info,
+        None,
     );
     add_module_if_active(
         &mut modules,
@@ -268,6 +321,7 @@ fn build_status(
         "output",
         recorder.clone(),
         recorder_controls.clone(),
+        None,
         None,
         None,
     );
@@ -287,6 +341,7 @@ fn build_status(
                 ),
                 codec_id: None,
                 codec_info: None,
+                details: None,
             });
         }
     }
@@ -298,6 +353,14 @@ fn build_status(
         "input",
         &srt_in,
         config.srt_in.as_ref().map(|cfg| cfg.enabled),
+    );
+    add_inactive_module(
+        &mut inactive_modules,
+        icecast_input_id,
+        "Icecast-IN",
+        "input",
+        &icecast_in,
+        icecast_input.map(|(_, input)| input.enabled),
     );
     add_inactive_module(
         &mut inactive_modules,
@@ -334,6 +397,7 @@ fn build_status(
 
     let graph = build_graph(
         &srt_in,
+        &icecast_in,
         &alsa_in,
         &srt_out,
         &icecast_out,
@@ -373,6 +437,7 @@ fn add_module_if_active(
     controls: Vec<ControlInfo>,
     codec_id: Option<String>,
     codec_info: Option<CodecInfo>,
+    details: Option<ModuleDetails>,
 ) {
     if snapshot.enabled && snapshot.running {
         modules.push(ModuleInfo {
@@ -383,6 +448,7 @@ fn add_module_if_active(
             controls,
             codec_id,
             codec_info,
+            details,
         });
     }
 }
@@ -424,6 +490,7 @@ fn add_inactive_module(
 
 fn build_graph(
     srt_in: &ModuleSnapshot,
+    icecast_in: &ModuleSnapshot,
     alsa_in: &ModuleSnapshot,
     srt_out: &ModuleSnapshot,
     icecast_out: &ModuleSnapshot,
@@ -435,6 +502,12 @@ fn build_graph(
 ) -> GraphStatus {
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
+    let icecast_input_id = config
+        .inputs
+        .iter()
+        .find(|(_, input)| matches!(input.input_type.as_str(), "icecast" | "http_stream"))
+        .map(|(id, _)| id.as_str())
+        .unwrap_or("icecast_in");
 
     let ring_active = ring.enabled && ring.running;
     if ring_active {
@@ -473,6 +546,20 @@ fn build_graph(
         if ring_active {
             edges.push(GraphEdge {
                 from: "srt_in".to_string(),
+                to: "ring".to_string(),
+            });
+        }
+    }
+
+    if icecast_in.enabled && icecast_in.running {
+        nodes.push(GraphNode {
+            id: icecast_input_id.to_string(),
+            label: "Icecast-IN".to_string(),
+            kind: "input".to_string(),
+        });
+        if ring_active {
+            edges.push(GraphEdge {
+                from: icecast_input_id.to_string(),
                 to: "ring".to_string(),
             });
         }

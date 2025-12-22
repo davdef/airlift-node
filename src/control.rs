@@ -143,6 +143,7 @@ pub struct ControlState {
     pub srt_in: Arc<SrtInState>,
     pub srt_out: Arc<SrtOutState>,
     pub alsa_in: Arc<ModuleState>,
+    pub icecast_in: Arc<ModuleState>,
     pub icecast_out: Arc<ModuleState>,
     pub recorder: Arc<ModuleState>,
     pub ring: Arc<ModuleState>,
@@ -154,6 +155,7 @@ impl ControlState {
             srt_in: Arc::new(SrtInState::new()),
             srt_out: Arc::new(SrtOutState::new()),
             alsa_in: Arc::new(ModuleState::default()),
+            icecast_in: Arc::new(ModuleState::default()),
             icecast_out: Arc::new(ModuleState::default()),
             recorder: Arc::new(ModuleState::default()),
             ring: Arc::new(ModuleState::default()),
@@ -164,6 +166,7 @@ impl ControlState {
         self.srt_in.module.reset_counters();
         self.srt_out.module.reset_counters();
         self.alsa_in.reset_counters();
+        self.icecast_in.reset_counters();
         self.icecast_out.reset_counters();
         self.recorder.reset_counters();
         self.ring.reset_counters();

@@ -5,7 +5,7 @@ use std::net::{TcpListener, TcpStream};
 use std::io::{Write, Read};
 use std::time::{Duration, Instant};
 use std::thread;
-use crate::ring::AudioRing;
+use crate::ring::{AudioRing, EncodedRing, RingStats};
 
 #[derive(Debug)]
 pub struct Metrics {
@@ -60,9 +60,25 @@ impl Metrics {
     }
 }
 
+pub trait RingStatsSource: Send + Sync {
+    fn stats(&self) -> RingStats;
+}
+
+impl RingStatsSource for AudioRing {
+    fn stats(&self) -> RingStats {
+        self.stats()
+    }
+}
+
+impl RingStatsSource for EncodedRing {
+    fn stats(&self) -> RingStats {
+        self.stats()
+    }
+}
+
 pub fn run_metrics_server(
     metrics: Arc<Metrics>, 
-    ring: AudioRing,
+    ring: Arc<dyn RingStatsSource>,
     port: u16,
     running: Arc<std::sync::atomic::AtomicBool>
 ) -> anyhow::Result<()> {
@@ -101,7 +117,7 @@ pub fn run_metrics_server(
 fn handle_client(
     mut stream: TcpStream, 
     metrics: Arc<Metrics>,
-    ring: AudioRing,
+    ring: Arc<dyn RingStatsSource>,
     running: Arc<std::sync::atomic::AtomicBool>
 ) -> anyhow::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;

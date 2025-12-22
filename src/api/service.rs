@@ -9,7 +9,7 @@ use crate::api::registry::Registry;
 use crate::api::routes;
 use crate::config::Config;
 use crate::control::ControlState;
-use crate::ring::AudioRing;
+use crate::ring::{AudioRing, EncodedRing};
 use crate::web::influx_service::InfluxHistoryService;
 use crate::web::peaks::PeakStorage;
 
@@ -18,6 +18,7 @@ pub struct ApiState {
     pub peak_store: Arc<PeakStorage>,
     pub history_service: Option<Arc<InfluxHistoryService>>,
     pub ring: AudioRing,
+    pub encoded_ring: EncodedRing,
     pub control_state: Arc<ControlState>,
     pub config: Arc<Config>,
     pub registry: Arc<Registry>,
