@@ -413,11 +413,20 @@ impl Config {
             return Ok(None);
         }
 
-        if self.ringbuffers.is_empty() {
-            anyhow::bail!("graph config requires at least one ringbuffer");
-        }
-        if self.ringbuffers.len() != 1 {
-            anyhow::bail!("graph config currently supports exactly one ringbuffer");
+        let ringbuffer_required = ringbuffer_required(&self.outputs, &self.services);
+        if ringbuffer_required {
+            if self.ringbuffers.is_empty() {
+                anyhow::bail!(
+                    "graph config requires a ringbuffer when monitoring or parallel consumers are enabled"
+                );
+            }
+            if self.ringbuffers.len() != 1 {
+                anyhow::bail!("graph config currently supports exactly one ringbuffer");
+            }
+        } else if !self.ringbuffers.is_empty() {
+            anyhow::bail!(
+                "ringbuffers are only allowed when monitoring or parallel consumers are enabled"
+            );
         }
 
         let (ringbuffer_id, ringbuffer) = self
@@ -425,7 +434,10 @@ impl Config {
             .iter()
             .next()
             .map(|(id, cfg)| (id.clone(), cfg.clone()))
-            .expect("ringbuffer validated");
+            .unwrap_or_else(|| ("".to_string(), RingBufferConfig {
+                slots: self.ring.slots,
+                prealloc_samples: self.ring.prealloc_samples,
+            }));
 
         let codecs = self.codec_instances();
         let mut codec_info = BTreeMap::new();
@@ -436,12 +448,19 @@ impl Config {
             codec_info.insert(codec.id.clone(), codec_info_from_config(codec));
         }
 
-        validate_inputs(&self.inputs, &ringbuffer_id)?;
-        validate_outputs(&self.outputs, &ringbuffer_id, &self.inputs, &codec_info)?;
-        validate_services(&self.services, &ringbuffer_id, &self.inputs)?;
+        let ringbuffer_id = if ringbuffer_required {
+            Some(ringbuffer_id.as_str())
+        } else {
+            None
+        };
+        validate_inputs(&self.inputs, ringbuffer_id)?;
+        validate_outputs(&self.outputs, ringbuffer_id, &self.inputs, &codec_info)?;
+        validate_services(&self.services, ringbuffer_id, &self.inputs)?;
 
         Ok(Some(ValidatedGraphConfig {
-            ringbuffer_id,
+            ringbuffer_id: ringbuffer_id
+                .unwrap_or_else(|| "")
+                .to_string(),
             ringbuffer,
             inputs: self.inputs.clone(),
             outputs: self.outputs.clone(),
@@ -454,8 +473,16 @@ impl Config {
 
 fn validate_inputs(
     inputs: &BTreeMap<String, InputConfig>,
-    ringbuffer_id: &str,
+    ringbuffer_id: Option<&str>,
 ) -> anyhow::Result<()> {
+    let Some(ringbuffer_id) = ringbuffer_id else {
+        if inputs.is_empty() {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "inputs require a ringbuffer; enable monitoring or parallel consumers to use ringbuffers"
+        );
+    };
     let mut seen_types = BTreeMap::new();
     for (id, input) in inputs {
         if input.buffer != ringbuffer_id {
@@ -507,10 +534,18 @@ fn validate_inputs(
 
 fn validate_outputs(
     outputs: &BTreeMap<String, OutputConfig>,
-    ringbuffer_id: &str,
+    ringbuffer_id: Option<&str>,
     inputs: &BTreeMap<String, InputConfig>,
     codec_info: &BTreeMap<String, CodecInfo>,
 ) -> anyhow::Result<()> {
+    let Some(ringbuffer_id) = ringbuffer_id else {
+        if outputs.is_empty() {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "outputs require a ringbuffer; enable monitoring or parallel consumers to use ringbuffers"
+        );
+    };
     for (id, output) in outputs {
         if output.buffer != ringbuffer_id {
             anyhow::bail!(
@@ -608,9 +643,17 @@ fn validate_outputs(
 
 fn validate_services(
     services: &BTreeMap<String, ServiceConfig>,
-    ringbuffer_id: &str,
+    ringbuffer_id: Option<&str>,
     inputs: &BTreeMap<String, InputConfig>,
 ) -> anyhow::Result<()> {
+    let Some(ringbuffer_id) = ringbuffer_id else {
+        if services.is_empty() {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "services require a ringbuffer; enable monitoring or parallel consumers to use ringbuffers"
+        );
+    };
     let mut seen_types = BTreeMap::new();
     for (id, service) in services {
         if let Some(buffer) = service.buffer.as_deref() {
@@ -735,6 +778,37 @@ fn container_from_config(config: &CodecInstanceConfig) -> ContainerKind {
     }
 
     default_container_for_type(&config.codec_type)
+}
+
+fn ringbuffer_required(
+    outputs: &BTreeMap<String, OutputConfig>,
+    services: &BTreeMap<String, ServiceConfig>,
+) -> bool {
+    let monitor_enabled = services.values().any(|service| {
+        service.enabled
+            && matches!(
+                service.service_type.as_str(),
+                "monitoring" | "audio_http"
+            )
+    });
+
+    let consumers = outputs.values().filter(|output| output.enabled).count()
+        + services
+            .values()
+            .filter(|service| {
+                service.enabled
+                    && matches!(
+                        service.service_type.as_str(),
+                        "audio_http"
+                            | "monitoring"
+                            | "peak_analyzer"
+                            | "influx_out"
+                            | "broadcast_http"
+                    )
+            })
+            .count();
+
+    monitor_enabled || consumers > 1
 }
 
 fn default_container_for_type(codec_type: &CodecType) -> ContainerKind {

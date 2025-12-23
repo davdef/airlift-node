@@ -43,9 +43,29 @@ fn main() -> anyhow::Result<()> {
     let cfg: Arc<Config> = Arc::new(config::load(&cfg_path)?);
     info!("[airlift] loaded {}", cfg_path);
 
-    let graph = cfg
-        .validate_graph()?
-        .ok_or_else(|| anyhow::anyhow!("graph configuration required"))?;
+    let graph = cfg.validate_graph()?;
+    let graph = match graph {
+        Some(graph) => graph,
+        None => {
+            if cfg.api.enabled || cfg.monitoring.enabled || cfg.audio_http.enabled {
+                anyhow::bail!("graph configuration required for enabled services");
+            }
+            info!("[airlift] no graph configuration; idle mode");
+            let running = Arc::new(AtomicBool::new(true));
+            {
+                let r = running.clone();
+                ctrlc::set_handler(move || {
+                    info!("\n[airlift] shutdown requested");
+                    r.store(false, Ordering::SeqCst);
+                })?;
+            }
+            while running.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            info!("[airlift] shutdown complete");
+            return Ok(());
+        }
+    };
     let needs_agent = cfg.api.enabled
         || cfg.monitoring.enabled
         || cfg.audio_http.enabled

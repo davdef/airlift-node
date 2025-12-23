@@ -1,13 +1,6 @@
-[ring]
-slots = 6000
-prealloc_samples = 48000
+[graph]
+ringbuffer_id = "main"
 
-[monitoring]
-enabled = false
-http_port = 9090
-
-[api]
-port = 3008
-
-[audio_http]
-enabled = false
+[[graph.inputs]]
+id = "source"
+input_type = "srt"
