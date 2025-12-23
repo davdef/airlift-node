@@ -1,0 +1,6 @@
+[graph]
+ringbuffer_id = "main"
+
+[[graph.inputs]]
+id = "source"
+input_type = "srt"
