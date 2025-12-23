@@ -67,6 +67,11 @@
                 <div class="setup-section-subtitle">Offene Konfigurationspunkte mit minimalen Beispielen.</div>
                 <div class="setup-issues-list" id="setupIssues"></div>
             </div>
+            <div class="setup-section" id="setupPreviewSection">
+                <div class="setup-section-header">Pipeline-Preview</div>
+                <div class="setup-section-subtitle">Konfiguration wird generiert…</div>
+                <pre class="setup-preview-code" id="setupPreview">{}</pre>
+            </div>
             <div class="setup-actions">
                 <a class="btn primary" href="../config.sample.toml" target="_blank" rel="noopener">Beispiel-Konfig öffnen</a>
                 <button class="btn" id="generateMinimalConfig" type="button">Generate minimal config</button>
@@ -84,9 +89,27 @@
         </div>
         <div class="panel-content">
             <div class="pipeline-container" id="pipelineTree">
-                <div class="empty-state" style="padding: 20px;">
-                    <div class="icon">🎵</div>
-                    <div class="message">Lade Audio-Pipeline...</div>
+                <div class="pipeline-editor" id="pipelineEditor">
+                    <div class="pipeline-palette">
+                        <div class="pipeline-palette-title">Palette</div>
+                        <div class="pipeline-palette-list" id="pipelinePalette"></div>
+                    </div>
+                    <div class="pipeline-canvas" id="pipelineCanvas">
+                        <svg class="pipeline-edges" id="pipelineEdges"></svg>
+                        <div class="pipeline-nodes" id="pipelineNodes"></div>
+                        <div class="pipeline-canvas-hint" id="pipelineCanvasHint">
+                            Module aus der Palette ziehen, um eine Pipeline aufzubauen.
+                        </div>
+                    </div>
+                    <div class="pipeline-inspector">
+                        <div class="pipeline-inspector-title">Inspector</div>
+                        <div class="pipeline-inspector-body" id="pipelineInspector">
+                            <div class="empty-state">
+                                <div class="icon">🧩</div>
+                                <div class="message">Wähle ein Modul aus.</div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
