@@ -260,6 +260,19 @@ main {
     flex-wrap: wrap;
 }
 
+.setup-preview-code {
+    margin: 0;
+    padding: 12px;
+    background: rgba(12, 14, 17, 0.65);
+    border: 1px solid #1f242c;
+    border-radius: 6px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 11px;
+    color: #b9c3d0;
+    max-height: 240px;
+    overflow: auto;
+}
+
 /* AUDIO PIPELINE - ZWEISPALTIGES LAYOUT -------------------- */
 .pipeline-container {
     width: 100%;
@@ -335,6 +348,182 @@ main {
     flex-wrap: wrap;
     gap: 10px;
     align-items: flex-start;
+}
+
+.pipeline-editor {
+    display: grid;
+    grid-template-columns: 200px 1fr 240px;
+    gap: 16px;
+    min-height: 320px;
+}
+
+.pipeline-palette,
+.pipeline-inspector {
+    background: rgba(12, 14, 17, 0.55);
+    border: 1px solid rgba(34, 34, 34, 0.5);
+    border-radius: 10px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.pipeline-palette-title,
+.pipeline-inspector-title {
+    font-size: 11px;
+    color: #8a96a8;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.pipeline-palette-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.pipeline-palette-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: rgba(23, 26, 32, 0.9);
+    border: 1px solid rgba(45, 54, 66, 0.7);
+    cursor: grab;
+    font-size: 12px;
+    color: #d7e0ed;
+    transition: transform 0.2s ease, border-color 0.2s ease;
+}
+
+.pipeline-palette-item:active {
+    cursor: grabbing;
+}
+
+.pipeline-palette-item:hover {
+    border-color: rgba(52, 152, 219, 0.6);
+    transform: translateY(-1px);
+}
+
+.palette-badge {
+    padding: 2px 6px;
+    border-radius: 999px;
+    font-size: 9px;
+    text-transform: uppercase;
+    background: rgba(52, 152, 219, 0.2);
+    color: #89bff2;
+    letter-spacing: 0.06em;
+}
+
+.pipeline-canvas {
+    position: relative;
+    min-height: 300px;
+    border-radius: 12px;
+    background: radial-gradient(circle at top left, rgba(52, 152, 219, 0.08), transparent 60%),
+        rgba(12, 14, 17, 0.6);
+    border: 1px solid rgba(34, 34, 34, 0.6);
+    overflow: hidden;
+}
+
+.pipeline-edges {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}
+
+.pipeline-nodes {
+    position: relative;
+    width: 100%;
+    height: 100%;
+}
+
+.pipeline-canvas-hint {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 12px;
+    color: #6c7889;
+    text-align: center;
+    max-width: 240px;
+}
+
+.pipeline-node {
+    position: absolute;
+    width: 150px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: rgba(23, 26, 32, 0.95);
+    border: 1px solid rgba(52, 152, 219, 0.5);
+    box-shadow: 0 8px 18px rgba(0, 0, 0, 0.35);
+    cursor: grab;
+    user-select: none;
+}
+
+.pipeline-node.selected {
+    border-color: rgba(155, 89, 182, 0.8);
+    box-shadow: 0 0 0 2px rgba(155, 89, 182, 0.4);
+}
+
+.pipeline-node-title {
+    font-weight: 600;
+    font-size: 12px;
+    margin-bottom: 4px;
+}
+
+.pipeline-node-meta {
+    font-size: 10px;
+    color: #8c9bb1;
+}
+
+.pipeline-node-handles {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 10px;
+}
+
+.node-handle {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: rgba(52, 152, 219, 0.8);
+    border: 2px solid rgba(12, 14, 17, 0.9);
+    cursor: crosshair;
+}
+
+.node-handle.output {
+    background: rgba(155, 89, 182, 0.9);
+}
+
+.pipeline-inspector-body {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    font-size: 12px;
+}
+
+.pipeline-inspector-body .label {
+    font-size: 10px;
+    color: #8c9bb1;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.pipeline-inspector-body .value {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 11px;
+    color: #d2dae6;
+}
+
+.pipeline-edge {
+    stroke: rgba(137, 191, 242, 0.7);
+    stroke-width: 2;
+}
+
+.pipeline-edge.temp {
+    stroke-dasharray: 4 4;
 }
 
 /* MODULE CARDS -------------------------------------------- */
@@ -833,6 +1022,20 @@ button:disabled {
     .consumers-group {
         flex-direction: column;
         gap: 8px;
+    }
+
+    .pipeline-editor {
+        grid-template-columns: 1fr;
+    }
+
+    .pipeline-palette,
+    .pipeline-inspector {
+        order: 2;
+    }
+
+    .pipeline-canvas {
+        order: 1;
+        min-height: 280px;
     }
     
     .module-card {

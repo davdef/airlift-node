@@ -1,175 +1,370 @@
 // UI Rendering Functions
+const pipelineEditorState = {
+    nodes: [],
+    edges: [],
+    nextNodeId: 1,
+    selectedNodeId: null,
+    draggingNodeId: null,
+    dragOffset: { x: 0, y: 0 },
+    connectingFrom: null,
+    tempEdgeId: null,
+    eventsBound: false
+};
 
-// Audio Pipeline Rendering - zweispaltige Darstellung
+const pipelinePaletteDefinitions = [
+    { kind: 'input', label: 'Input' },
+    { kind: 'buffer', label: 'Buffer' },
+    { kind: 'processing', label: 'Codec' },
+    { kind: 'service', label: 'Service' },
+    { kind: 'output', label: 'Output' }
+];
+
 function renderAudioPipeline(status) {
-    const container = document.getElementById('pipelineTree');
-    
-    if (!status.graph || !status.graph.nodes || status.graph.nodes.length === 0) {
-        container.innerHTML = `
+    renderPipelineEditor(status);
+}
+
+function renderPipelineEditor(status) {
+    const paletteContainer = document.getElementById('pipelinePalette');
+    const nodesLayer = document.getElementById('pipelineNodes');
+    const edgesLayer = document.getElementById('pipelineEdges');
+    const hint = document.getElementById('pipelineCanvasHint');
+
+    if (!paletteContainer || !nodesLayer || !edgesLayer) {
+        return;
+    }
+
+    seedPipelineModel(status);
+    renderPalette(paletteContainer);
+    renderNodes(nodesLayer);
+    renderEdges(edgesLayer);
+    updatePipelineInspector();
+    updatePipelinePreview();
+
+    hint.style.display = pipelineEditorState.nodes.length === 0 ? 'block' : 'none';
+    attachPipelineEvents();
+}
+
+function seedPipelineModel(status) {
+    if (pipelineEditorState.nodes.length > 0) {
+        return;
+    }
+    const graphNodes = status?.graph?.nodes || [];
+    const graphEdges = status?.graph?.edges || [];
+
+    if (graphNodes.length === 0) {
+        return;
+    }
+
+    const columnX = {
+        input: 40,
+        buffer: 240,
+        processing: 440,
+        service: 440,
+        output: 640
+    };
+    const rowCounters = {};
+
+    pipelineEditorState.nodes = graphNodes.map((node) => {
+        const row = rowCounters[node.kind] ?? 0;
+        rowCounters[node.kind] = row + 1;
+        return {
+            id: node.id,
+            label: node.label || node.id,
+            kind: node.kind,
+            x: columnX[node.kind] ?? 40,
+            y: 40 + row * 120
+        };
+    });
+
+    pipelineEditorState.edges = graphEdges.map((edge, index) => ({
+        id: `edge-${index}`,
+        from: edge.from,
+        to: edge.to
+    }));
+    pipelineEditorState.nextNodeId = graphNodes.length + 1;
+}
+
+function renderPalette(container) {
+    container.innerHTML = pipelinePaletteDefinitions.map(item => `
+        <div class="pipeline-palette-item" draggable="true" data-kind="${item.kind}" data-label="${item.label}">
+            <span class="palette-badge">${item.kind}</span>
+            <span>${item.label}</span>
+        </div>
+    `).join('');
+}
+
+function renderNodes(container) {
+    container.innerHTML = pipelineEditorState.nodes.map(node => `
+        <div class="pipeline-node ${pipelineEditorState.selectedNodeId === node.id ? 'selected' : ''}"
+             data-node-id="${node.id}"
+             style="left:${node.x}px; top:${node.y}px;">
+            <div class="pipeline-node-title">${node.label}</div>
+            <div class="pipeline-node-meta">${node.kind}</div>
+            <div class="pipeline-node-handles">
+                <div class="node-handle input" data-handle="input" data-node-id="${node.id}"></div>
+                <div class="node-handle output" data-handle="output" data-node-id="${node.id}"></div>
+            </div>
+        </div>
+    `).join('');
+}
+
+function renderEdges(svg) {
+    const canvas = document.getElementById('pipelineCanvas');
+    if (!canvas) {
+        return;
+    }
+    const canvasRect = canvas.getBoundingClientRect();
+    svg.setAttribute('viewBox', `0 0 ${canvasRect.width} ${canvasRect.height}`);
+    svg.setAttribute('width', canvasRect.width);
+    svg.setAttribute('height', canvasRect.height);
+
+    const lines = pipelineEditorState.edges.map(edge => {
+        const from = getNodeAnchor(edge.from, 'output', canvasRect);
+        const to = getNodeAnchor(edge.to, 'input', canvasRect);
+        if (!from || !to) {
+            return '';
+        }
+        return `<line class="pipeline-edge" x1="${from.x}" y1="${from.y}" x2="${to.x}" y2="${to.y}" />`;
+    }).join('');
+
+    const tempLine = pipelineEditorState.tempEdgeId
+        ? `<line class="pipeline-edge temp" id="${pipelineEditorState.tempEdgeId}" />`
+        : '';
+
+    svg.innerHTML = lines + tempLine;
+}
+
+function getNodeAnchor(nodeId, handleType, canvasRect) {
+    const nodeEl = document.querySelector(`.pipeline-node[data-node-id="${nodeId}"]`);
+    if (!nodeEl) {
+        return null;
+    }
+    const rect = nodeEl.getBoundingClientRect();
+    const x = handleType === 'output' ? rect.right : rect.left;
+    const y = rect.top + rect.height / 2;
+    return {
+        x: x - canvasRect.left,
+        y: y - canvasRect.top
+    };
+}
+
+function attachPipelineEvents() {
+    const paletteItems = document.querySelectorAll('.pipeline-palette-item');
+    const canvas = document.getElementById('pipelineCanvas');
+    const nodesLayer = document.getElementById('pipelineNodes');
+
+    paletteItems.forEach(item => {
+        item.addEventListener('dragstart', (event) => {
+            event.dataTransfer.setData('text/plain', JSON.stringify({
+                kind: item.dataset.kind,
+                label: item.dataset.label
+            }));
+        });
+    });
+
+    if (!pipelineEditorState.eventsBound) {
+        if (canvas) {
+            canvas.addEventListener('dragover', (event) => {
+                event.preventDefault();
+            });
+
+            canvas.addEventListener('drop', (event) => {
+                event.preventDefault();
+                const payload = event.dataTransfer.getData('text/plain');
+                if (!payload) {
+                    return;
+                }
+                const { kind, label } = JSON.parse(payload);
+                const rect = canvas.getBoundingClientRect();
+                addPipelineNode({
+                    kind,
+                    label: `Neues ${label}`,
+                    x: event.clientX - rect.left - 60,
+                    y: event.clientY - rect.top - 20
+                });
+            });
+
+            canvas.addEventListener('mousemove', (event) => {
+                if (!pipelineEditorState.tempEdgeId || !pipelineEditorState.connectingFrom) {
+                    return;
+                }
+                const rect = canvas.getBoundingClientRect();
+                const from = getNodeAnchor(pipelineEditorState.connectingFrom, 'output', rect);
+                const tempLine = document.getElementById(pipelineEditorState.tempEdgeId);
+                if (from && tempLine) {
+                    tempLine.setAttribute('x1', from.x);
+                    tempLine.setAttribute('y1', from.y);
+                    tempLine.setAttribute('x2', event.clientX - rect.left);
+                    tempLine.setAttribute('y2', event.clientY - rect.top);
+                }
+            });
+        }
+
+        if (nodesLayer) {
+            nodesLayer.addEventListener('pointerdown', handleNodePointerDown);
+        }
+
+        document.addEventListener('pointermove', handlePointerMove);
+        document.addEventListener('pointerup', handlePointerUp);
+        pipelineEditorState.eventsBound = true;
+    }
+}
+
+function handleNodePointerDown(event) {
+    const handle = event.target.closest('.node-handle');
+    const nodeElement = event.target.closest('.pipeline-node');
+
+    if (handle) {
+        const nodeId = handle.dataset.nodeId;
+        const handleType = handle.dataset.handle;
+        event.stopPropagation();
+        if (handleType === 'output') {
+            pipelineEditorState.connectingFrom = nodeId;
+            pipelineEditorState.tempEdgeId = 'temp-edge';
+            renderEdges(document.getElementById('pipelineEdges'));
+        } else if (handleType === 'input' && pipelineEditorState.connectingFrom) {
+            addPipelineEdge(pipelineEditorState.connectingFrom, nodeId);
+        }
+        return;
+    }
+
+    if (nodeElement) {
+        const nodeId = nodeElement.dataset.nodeId;
+        pipelineEditorState.selectedNodeId = nodeId;
+        const rect = nodeElement.getBoundingClientRect();
+        pipelineEditorState.draggingNodeId = nodeId;
+        pipelineEditorState.dragOffset = {
+            x: event.clientX - rect.left,
+            y: event.clientY - rect.top
+        };
+        renderNodes(document.getElementById('pipelineNodes'));
+        updatePipelineInspector();
+    }
+}
+
+function handlePointerMove(event) {
+    if (!pipelineEditorState.draggingNodeId) {
+        return;
+    }
+    const canvas = document.getElementById('pipelineCanvas');
+    if (!canvas) {
+        return;
+    }
+    const rect = canvas.getBoundingClientRect();
+    const node = pipelineEditorState.nodes.find(item => item.id === pipelineEditorState.draggingNodeId);
+    if (!node) {
+        return;
+    }
+    node.x = event.clientX - rect.left - pipelineEditorState.dragOffset.x;
+    node.y = event.clientY - rect.top - pipelineEditorState.dragOffset.y;
+    const nodeElement = document.querySelector(`.pipeline-node[data-node-id="${node.id}"]`);
+    if (nodeElement) {
+        nodeElement.style.left = `${node.x}px`;
+        nodeElement.style.top = `${node.y}px`;
+    }
+    renderEdges(document.getElementById('pipelineEdges'));
+}
+
+function handlePointerUp() {
+    if (pipelineEditorState.draggingNodeId) {
+        pipelineEditorState.draggingNodeId = null;
+        updatePipelinePreview();
+    }
+    if (pipelineEditorState.connectingFrom) {
+        pipelineEditorState.connectingFrom = null;
+        pipelineEditorState.tempEdgeId = null;
+        renderEdges(document.getElementById('pipelineEdges'));
+    }
+}
+
+function addPipelineNode({ kind, label, x, y }) {
+    const id = `local-${pipelineEditorState.nextNodeId++}`;
+    pipelineEditorState.nodes.push({
+        id,
+        kind,
+        label,
+        x: Math.max(20, x),
+        y: Math.max(20, y)
+    });
+    pipelineEditorState.selectedNodeId = id;
+    renderNodes(document.getElementById('pipelineNodes'));
+    renderEdges(document.getElementById('pipelineEdges'));
+    updatePipelineInspector();
+    updatePipelinePreview();
+}
+
+function addPipelineEdge(from, to) {
+    if (from === to) {
+        return;
+    }
+    const exists = pipelineEditorState.edges.some(edge => edge.from === from && edge.to === to);
+    if (exists) {
+        return;
+    }
+    pipelineEditorState.edges.push({
+        id: `edge-${Date.now()}`,
+        from,
+        to
+    });
+    pipelineEditorState.connectingFrom = null;
+    pipelineEditorState.tempEdgeId = null;
+    renderEdges(document.getElementById('pipelineEdges'));
+    updatePipelinePreview();
+}
+
+function updatePipelineInspector() {
+    const inspector = document.getElementById('pipelineInspector');
+    if (!inspector) {
+        return;
+    }
+    const selected = pipelineEditorState.nodes.find(node => node.id === pipelineEditorState.selectedNodeId);
+    if (!selected) {
+        inspector.innerHTML = `
             <div class="empty-state">
-                <div class="icon">🔇</div>
-                <div class="message">Keine aktiven Module</div>
+                <div class="icon">🧩</div>
+                <div class="message">Wähle ein Modul aus.</div>
             </div>`;
         return;
     }
-    
-    const nodes = status.graph.nodes || [];
-    const edges = status.graph.edges || [];
-    const modulesById = new Map((status.modules || []).map(module => [module.id, module]));
-    const isMobile = window.innerWidth < 768;
-    
-    // Edge-Mappings
-    const edgesByFrom = new Map();
-    const edgesByTo = new Map();
-    
-    edges.forEach(edge => {
-        if (!edgesByFrom.has(edge.from)) {
-            edgesByFrom.set(edge.from, []);
-        }
-        edgesByFrom.get(edge.from).push(edge.to);
-        
-        if (!edgesByTo.has(edge.to)) {
-            edgesByTo.set(edge.to, []);
-        }
-        edgesByTo.get(edge.to).push(edge.from);
-    });
-    
-    // Baue Input-Buffer-Paare
-    const inputBufferPairs = [];
-    const bufferIdToInput = new Map();
-    
-    nodes.forEach(node => {
-        if (node.kind === 'buffer') {
-            const inputIds = edgesByTo.get(node.id) || [];
-            const inputNodes = inputIds
-                .map(id => nodes.find(n => n.id === id))
-                .filter(n => n && n.kind === 'input');
-            
-            if (inputNodes.length > 0) {
-                inputNodes.forEach(input => {
-                    inputBufferPairs.push({
-                        input: input,
-                        buffer: node,
-                        consumers: []
-                    });
-                    bufferIdToInput.set(node.id, input);
-                });
-            }
-        }
-    });
-    
-    // Finde Konsumenten für jedes Input-Buffer-Paar
-    inputBufferPairs.forEach(pair => {
-        const consumerIds = edgesByFrom.get(pair.buffer.id) || [];
-        pair.consumers = consumerIds
-            .map(id => nodes.find(n => n.id === id))
-            .filter(n => n && (n.kind === 'processing' || n.kind === 'output' || n.kind === 'service'));
-    });
-    
-    // Gruppiere Codecs und Outputs zusammen
-    inputBufferPairs.forEach(pair => {
-        // Sortiere Konsumenten: Services, dann Codecs+Outputs gemischt
-        pair.consumers.sort((a, b) => {
-            if (a.kind === 'service' && b.kind !== 'service') return -1;
-            if (a.kind !== 'service' && b.kind === 'service') return 1;
-            return 0;
-        });
-    });
-    
-    // Finde unverbundene Inputs
-    const inputsWithoutBuffer = nodes.filter(node => 
-        node.kind === 'input' && 
-        !inputBufferPairs.some(pair => pair.input.id === node.id)
-    );
-    
-    // HTML aufbauen
-    let pipelineHTML = `
-        <div class="pipeline-grid">
-            <div class="pipeline-column inputs">
-                <div style="margin-bottom: 8px; font-size: 11px; color: #888; text-transform: uppercase;">
-                    Input & Buffer
-                </div>`;
-    
-    // Zeige alle Input-Buffer-Paare in der linken Spalte
-    if (inputBufferPairs.length > 0) {
-        inputBufferPairs.forEach(pair => {
-            pipelineHTML += `
-                <div class="pipeline-row">
-                    <div class="input-buffer-pair">
-                        ${renderPipelineNode(pair.input, modulesById, false)}
-                        ${renderPipelineNode(pair.buffer, modulesById, true)}
-                    </div>
-                </div>`;
-        });
+    const connectedEdges = pipelineEditorState.edges.filter(edge => edge.from === selected.id || edge.to === selected.id);
+    inspector.innerHTML = `
+        <div>
+            <div class="label">Modul</div>
+            <div class="value">${selected.label}</div>
+        </div>
+        <div>
+            <div class="label">Typ</div>
+            <div class="value">${selected.kind}</div>
+        </div>
+        <div>
+            <div class="label">Node-ID</div>
+            <div class="value">${selected.id}</div>
+        </div>
+        <div>
+            <div class="label">Verbindungen</div>
+            <div class="value">${connectedEdges.length}</div>
+        </div>
+    `;
+}
+
+function updatePipelinePreview() {
+    const preview = document.getElementById('setupPreview');
+    if (!preview) {
+        return;
     }
-    
-    // Zeige unverbundene Inputs
-    if (inputsWithoutBuffer.length > 0) {
-        inputsWithoutBuffer.forEach(input => {
-            pipelineHTML += `
-                <div class="pipeline-row">
-                    <div class="input-buffer-pair">
-                        ${renderPipelineNode(input, modulesById, false)}
-                        <div style="text-align: center; padding: 16px; color: #888; font-size: 11px;">
-                            ⚠️ Kein Buffer
-                        </div>
-                    </div>
-                </div>`;
-        });
-    }
-    
-    if (inputBufferPairs.length === 0 && inputsWithoutBuffer.length === 0) {
-        pipelineHTML += `
-            <div class="pipeline-row">
-                <div style="text-align: center; padding: 20px; color: #888;">
-                    Keine Inputs
-                </div>
-            </div>`;
-    }
-    
-    pipelineHTML += `
-            </div>
-            
-            <div class="pipeline-column consumers">
-                <div style="margin-bottom: 8px; font-size: 11px; color: #888; text-transform: uppercase;">
-                    Konsumenten
-                </div>`;
-    
-    // Zeige Konsumenten in der rechten Spalte
-    if (inputBufferPairs.length > 0) {
-        inputBufferPairs.forEach((pair, index) => {
-            if (pair.consumers.length > 0) {
-                pipelineHTML += `
-                    <div class="pipeline-row">
-                        <div class="consumers-group">
-                            ${pair.consumers.map(consumer => renderPipelineNode(consumer, modulesById, true)).join('')}
-                        </div>
-                    </div>`;
-            } else {
-                pipelineHTML += `
-                    <div class="pipeline-row">
-                        <div style="text-align: center; padding: 20px; color: #888;">
-                            Keine Konsumenten
-                        </div>
-                    </div>`;
-            }
-        });
-    }
-    
-    if (inputBufferPairs.length === 0) {
-        pipelineHTML += `
-            <div class="pipeline-row">
-                <div style="text-align: center; padding: 20px; color: #888;">
-                    Keine Konsumenten
-                </div>
-            </div>`;
-    }
-    
-    pipelineHTML += `
-            </div>
-        </div>`;
-    
-    container.innerHTML = pipelineHTML;
+    const model = {
+        nodes: pipelineEditorState.nodes.map(node => ({
+            id: node.id,
+            label: node.label,
+            kind: node.kind,
+            position: { x: Math.round(node.x), y: Math.round(node.y) }
+        })),
+        edges: pipelineEditorState.edges.map(edge => ({
+            from: edge.from,
+            to: edge.to
+        }))
+    };
+    preview.textContent = JSON.stringify(model, null, 2);
 }
 
 function renderPipelineNode(node, modulesById, showStats = true) {
