@@ -5,8 +5,6 @@ pub mod icecast_meta_out;
 pub mod icecast_out;
 pub mod icecast_in;
 pub mod influx_out;
-#[cfg(feature = "mp3")]
-pub mod mp3_out;
 pub mod peak_analyzer;
 pub mod srt_in;
 pub mod srt_out;

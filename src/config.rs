@@ -75,24 +75,6 @@ pub struct IcecastOutConfig {
     pub codec_id: Option<String>,
 }
 
-// ---------- MP3 ----------
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct Mp3OutConfig {
-    pub enabled: bool,
-    pub host: String,
-    pub port: u16,
-    pub mount: String,
-    pub user: String,
-    pub password: String,
-    pub name: String,
-    pub description: String,
-    pub genre: String,
-    pub public: bool,
-    pub bitrate: u32,
-    #[serde(default)]
-    pub codec_id: Option<String>,
-}
-
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct InputConfig {
     #[serde(rename = "type")]
@@ -266,7 +248,6 @@ pub struct Config {
     pub alsa_in: Option<AlsaInConfig>,
     pub udp_out: Option<UdpOutConfig>,
     pub icecast_out: Option<IcecastOutConfig>,
-    pub mp3_out: Option<Mp3OutConfig>,
     pub srt_in: Option<SrtInConfig>,
     pub srt_out: Option<SrtOutConfig>,
     pub recorder: Option<RecorderConfigToml>,
