@@ -5,6 +5,17 @@ let websocket = null;
 const rateHistory = new Map();
 let wsMessageCount = 0;
 let autoRefreshInterval = null;
+const panelIds = [
+    'mainContent',
+    'pipelinePanel',
+    'ringbufferPanel',
+    'activeModulesPanel',
+    'inactiveModulesPanel',
+    'fileOutPanel',
+    'controlsPanel',
+    'codecsPanel',
+    'systemStatusPanel'
+];
 
 // Canvas-State (wird von waveform.js verwaltet)
 let ringbufferCanvas, ringbufferCtx, recorderCanvas, recorderCtx;
@@ -125,9 +136,12 @@ async function fetchAllData() {
             fetch('/api/status'),
             fetch('/api/codecs')
         ]);
+        if (!statusResponse.ok) {
+            throw new Error('Status API nicht erreichbar');
+        }
         
         const status = await statusResponse.json();
-        const codecs = await codecsResponse.json();
+        const codecs = codecsResponse.ok ? await codecsResponse.json() : [];
         
         // Update global state
         currentStatus = status;
@@ -143,12 +157,21 @@ async function fetchAllData() {
         
     } catch (error) {
         updateConnectionState(false);
+        showOfflineView();
     }
 }
 
 function updateUI(status, codecs = []) {
     // Update timestamp
     document.getElementById('updateTime').textContent = formatTime(Date.now());
+    
+    const viewState = determineViewState(status);
+    applyViewState(viewState, status);
+    updateConnectionState(true);
+    
+    if (viewState !== 'normal') {
+        return;
+    }
     
     // Render all components
     renderAudioPipeline(status);
@@ -159,8 +182,6 @@ function updateUI(status, codecs = []) {
     
     // Update system status
     updateSystemStatus(status);
-    
-    updateConnectionState(true);
 }
 
 function updateSystemStatus(status) {
@@ -256,9 +277,13 @@ async function refreshStatusData() {
         if (statusResponse.ok) {
             currentStatus = await statusResponse.json();
             updateUI(currentStatus);
+        } else {
+            updateConnectionState(false);
+            showOfflineView();
         }
     } catch (error) {
-        // Silent error
+        updateConnectionState(false);
+        showOfflineView();
     }
 }
 
@@ -293,3 +318,115 @@ async function refreshAllData() {
 
 // Start everything
 document.addEventListener('DOMContentLoaded', initializeAll);
+
+function determineViewState(status) {
+    if (!status) {
+        return 'offline';
+    }
+    
+    const configurationIssues = status.configuration_issues || [];
+    const hasInputs = (status.graph?.nodes || []).some(node => node.kind === 'input');
+    const hasOutputs = (status.graph?.nodes || []).some(node => node.kind === 'output');
+    const hasConfigIssues = status.configuration_required || configurationIssues.length > 0;
+    const isEmptyConfig = !hasInputs && !hasOutputs;
+    
+    if (hasConfigIssues || isEmptyConfig) {
+        return 'setup';
+    }
+    
+    return 'normal';
+}
+
+function applyViewState(viewState, status) {
+    if (viewState === 'offline') {
+        showOfflineView();
+        return;
+    }
+    
+    if (viewState === 'setup') {
+        showSetupView(status);
+        return;
+    }
+    
+    showFullView();
+}
+
+function showOfflineView() {
+    togglePanels(false);
+    const offlinePanel = document.getElementById('offlinePanel');
+    const setupPanel = document.getElementById('setupPanel');
+    offlinePanel.classList.remove('hidden');
+    setupPanel.classList.add('hidden');
+}
+
+function showSetupView(status) {
+    togglePanels(false);
+    document.getElementById('offlinePanel').classList.add('hidden');
+    const setupPanel = document.getElementById('setupPanel');
+    setupPanel.classList.remove('hidden');
+    renderSetupGuide(status);
+}
+
+function showFullView() {
+    togglePanels(true);
+    document.getElementById('offlinePanel').classList.add('hidden');
+    document.getElementById('setupPanel').classList.add('hidden');
+}
+
+function togglePanels(show) {
+    panelIds.forEach(id => {
+        const panel = document.getElementById(id);
+        if (panel) {
+            panel.classList.toggle('hidden', !show);
+        }
+    });
+}
+
+function renderSetupGuide(status) {
+    const stepsElement = document.getElementById('setupSteps');
+    const issuesElement = document.getElementById('setupIssues');
+    const nextStepElement = document.getElementById('setupNextStep');
+    const configurationIssues = status?.configuration_issues || [];
+    const hasInputs = (status?.graph?.nodes || []).some(node => node.kind === 'input');
+    const hasOutputs = (status?.graph?.nodes || []).some(node => node.kind === 'output');
+    
+    let nextStep = 'Konfiguration prüfen';
+    if (!hasInputs) {
+        nextStep = 'Input konfigurieren';
+    } else if (!hasOutputs) {
+        nextStep = 'Output konfigurieren';
+    } else if (configurationIssues.length > 0) {
+        nextStep = 'Pflichtfelder ergänzen';
+    }
+    
+    nextStepElement.textContent = nextStep;
+    
+    const steps = [];
+    if (!hasInputs) {
+        steps.push('Mindestens einen Input mit Buffer definieren (z. B. SRT oder HTTP Stream).');
+    }
+    if (!hasOutputs) {
+        steps.push('Mindestens einen Output mit codec_id konfigurieren.');
+    }
+    if (configurationIssues.length > 0) {
+        steps.push('Offene Pflichtfelder in der Konfiguration beheben.');
+    }
+    if (steps.length === 0) {
+        steps.push('Konfiguration speichern und die API neu laden.');
+    }
+    
+    stepsElement.innerHTML = steps.map(step => `<li>${step}</li>`).join('');
+    
+    if (configurationIssues.length > 0) {
+        issuesElement.classList.remove('hidden');
+        issuesElement.innerHTML = `
+            <h3>Fehlende Felder</h3>
+            <ul>
+                ${configurationIssues.map(issue => `<li><strong>${issue.key}</strong>: ${issue.message}</li>`).join('')}
+            </ul>
+        `;
+    } else {
+        issuesElement.classList.add('hidden');
+        issuesElement.innerHTML = '';
+    }
+}
