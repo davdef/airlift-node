@@ -152,7 +152,14 @@
             <section class="panel" id="activeModulesPanel">
                 <div class="panel-header">
                     <h2 class="panel-title">Aktive Module</h2>
-                    <span style="font-size: 11px; color: #888;" id="activeModulesCount">0</span>
+                    <div class="panel-header-actions">
+                        <span style="font-size: 11px; color: #888;" id="activeModulesCount">0</span>
+                        <div class="module-filter" id="moduleFilter">
+                            <button class="filter-btn" data-module-filter="active" type="button">Nur aktive</button>
+                            <button class="filter-btn" data-module-filter="configured" type="button">Nur konfigurierte</button>
+                            <button class="filter-btn" data-module-filter="all" type="button">Alle</button>
+                        </div>
+                    </div>
                 </div>
                 <div class="panel-content">
                     <table class="compact-table" id="modulesTable">
