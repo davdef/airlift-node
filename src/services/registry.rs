@@ -130,7 +130,7 @@ pub fn register_graph_services(
 
         if matches!(
             service.service_type.as_str(),
-            "peak_analyzer" | "influx_out" | "broadcast_http" | "file_out"
+            "monitor" | "peak_analyzer" | "influx_out" | "broadcast_http" | "file_out"
         ) {
             registry.register_service(ServiceDescriptor {
                 id: id.clone(),

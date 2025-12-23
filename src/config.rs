@@ -697,6 +697,7 @@ fn validate_services(
                 require_service_field(id, "buffer", service.buffer.as_ref())?;
                 require_service_field(id, "codec_id", service.codec_id.as_ref())?;
             }
+            "monitor" => {}
             "monitoring" => {}
             "peak_analyzer" => {
                 require_service_field(id, "buffer", service.buffer.as_ref())?;
@@ -792,7 +793,7 @@ fn ringbuffer_required(
         service.enabled
             && matches!(
                 service.service_type.as_str(),
-                "monitoring" | "audio_http"
+                "monitoring" | "audio_http" | "monitor"
             )
     });
 
@@ -805,6 +806,7 @@ fn ringbuffer_required(
                         service.service_type.as_str(),
                         "audio_http"
                             | "monitoring"
+                            | "monitor"
                             | "peak_analyzer"
                             | "influx_out"
                             | "broadcast_http"

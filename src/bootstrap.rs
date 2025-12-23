@@ -15,7 +15,7 @@ use crate::io::file_out::{self, FileOutConfig, FsRetention, run_file_out};
 use crate::io::influx_out::InfluxOut;
 use crate::io::peak_analyzer::{PeakAnalyzer, PeakEvent};
 use crate::monitoring;
-use crate::ring::{EncodedRingRead, EncodedRingReader};
+use crate::ring::{EncodedRingRead, EncodedRingReader, RingRead};
 use crate::web::influx_service::InfluxHistoryService;
 use crate::web::peaks::{PeakPoint, PeakStorage};
 
@@ -641,6 +641,19 @@ fn start_graph_services(
                     service.wav_dir.clone().unwrap_or_default(),
                     service.retention_days.unwrap_or(0),
                 )?;
+            }
+            "monitor" => {
+                let mut reader = context.agent.ring.subscribe();
+                let running = running.clone();
+                std::thread::spawn(move || {
+                    while running.load(std::sync::atomic::Ordering::Relaxed) {
+                        match reader.poll() {
+                            RingRead::Chunk(_) => {}
+                            RingRead::Gap { .. } => {}
+                            RingRead::Empty => std::thread::sleep(Duration::from_millis(10)),
+                        }
+                    }
+                });
             }
             _ => {}
         }
