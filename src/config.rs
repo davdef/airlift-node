@@ -276,7 +276,7 @@ pub struct ApiConfig {
 impl Default for ApiConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             bind: "0.0.0.0:3008".to_string(),
         }
     }

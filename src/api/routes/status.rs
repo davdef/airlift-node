@@ -777,6 +777,13 @@ fn build_controls(
 fn build_config_requirements(config: &Config) -> Vec<ConfigRequirement> {
     let mut requirements = Vec::new();
 
+    if !config.has_graph_config() {
+        requirements.push(ConfigRequirement {
+            key: "graph".to_string(),
+            message: "Graph-Konfiguration fehlt (Inputs/Outputs/Services definieren)".to_string(),
+        });
+    }
+
     if config.ringbuffer_required() && config.ringbuffers.is_empty() {
         requirements.push(ConfigRequirement {
             key: "ringbuffer_id".to_string(),

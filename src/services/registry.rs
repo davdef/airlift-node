@@ -14,6 +14,7 @@ pub fn register_services(
         registry.register_service(ServiceDescriptor {
             id: "api".to_string(),
             service_type: "api".to_string(),
+            core: true,
             endpoints: vec![ServiceEndpoint {
                 name: "http".to_string(),
                 url: format!("http://{}", api_bind),
@@ -25,6 +26,7 @@ pub fn register_services(
         registry.register_service(ServiceDescriptor {
             id: "audio_http".to_string(),
             service_type: "audio_http".to_string(),
+            core: false,
             endpoints: vec![
                 ServiceEndpoint {
                     name: "live".to_string(),
@@ -42,6 +44,7 @@ pub fn register_services(
         registry.register_service(ServiceDescriptor {
             id: "monitoring".to_string(),
             service_type: "monitoring".to_string(),
+            core: false,
             endpoints: vec![
                 ServiceEndpoint {
                     name: "metrics".to_string(),
@@ -70,6 +73,7 @@ pub fn register_graph_services(
         registry.register_service(ServiceDescriptor {
             id: "api".to_string(),
             service_type: "api".to_string(),
+            core: true,
             endpoints: vec![ServiceEndpoint {
                 name: "http".to_string(),
                 url: format!("http://{}", api_bind),
@@ -86,6 +90,7 @@ pub fn register_graph_services(
             registry.register_service(ServiceDescriptor {
                 id: id.clone(),
                 service_type: service.service_type.clone(),
+                core: false,
                 endpoints: vec![
                     ServiceEndpoint {
                         name: "live".to_string(),
@@ -109,6 +114,7 @@ pub fn register_graph_services(
             registry.register_service(ServiceDescriptor {
                 id: id.clone(),
                 service_type: service.service_type.clone(),
+                core: false,
                 endpoints: vec![
                     ServiceEndpoint {
                         name: "metrics".to_string(),
@@ -135,6 +141,7 @@ pub fn register_graph_services(
             registry.register_service(ServiceDescriptor {
                 id: id.clone(),
                 service_type: service.service_type.clone(),
+                core: false,
                 endpoints: Vec::new(),
             });
         }

@@ -56,6 +56,10 @@ Start kann eine alternative Datei als erstes Argument übergeben werden:
 airlift-node ./config.vps.toml
 ```
 
+Die **API ist der Core-Service** und kann auch ohne Graph-Konfiguration laufen.
+Alle weiteren Services (Audio-HTTP, Monitoring, Inputs/Outputs) sind optional
+und benötigen entsprechende Konfiguration.
+
 ## Begriffe: Inputs, Outputs, Services
 
 Die Graph-Pipeline beschreibt den Datenfluss über **Inputs**, **Outputs** und

@@ -44,34 +44,41 @@ fn main() -> anyhow::Result<()> {
     info!("[airlift] loaded {}", cfg_path);
 
     let graph = cfg.validate_graph()?;
-    let graph = match graph {
-        Some(graph) => graph,
-        None => {
-            if cfg.api.enabled || cfg.monitoring.enabled || cfg.audio_http.enabled {
-                anyhow::bail!("graph configuration required for enabled services");
-            }
-            info!("[airlift] no graph configuration; idle mode");
-            let running = Arc::new(AtomicBool::new(true));
-            {
-                let r = running.clone();
-                ctrlc::set_handler(move || {
-                    info!("\n[airlift] shutdown requested");
-                    r.store(false, Ordering::SeqCst);
-                })?;
-            }
-            while running.load(Ordering::Relaxed) {
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            info!("[airlift] shutdown complete");
-            return Ok(());
+    if graph.is_none() && (cfg.monitoring.enabled || cfg.audio_http.enabled) {
+        anyhow::bail!("graph configuration required for enabled services");
+    }
+
+    if graph.is_none() && !cfg.api.enabled {
+        info!("[airlift] no graph configuration; idle mode");
+        let running = Arc::new(AtomicBool::new(true));
+        {
+            let r = running.clone();
+            ctrlc::set_handler(move || {
+                info!("\n[airlift] shutdown requested");
+                r.store(false, Ordering::SeqCst);
+            })?;
         }
-    };
+        while running.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        info!("[airlift] shutdown complete");
+        return Ok(());
+    }
+
+    if graph.is_none() && cfg.api.enabled {
+        info!("[airlift] no graph configuration; API-only mode");
+    }
+
     let needs_agent = cfg.api.enabled
         || cfg.monitoring.enabled
         || cfg.audio_http.enabled
-        || graph.inputs.values().any(|input| input.enabled)
-        || graph.outputs.values().any(|output| output.enabled)
-        || graph.services.values().any(|service| service.enabled);
+        || graph
+            .as_ref()
+            .is_some_and(|graph| {
+                graph.inputs.values().any(|input| input.enabled)
+                    || graph.outputs.values().any(|output| output.enabled)
+                    || graph.services.values().any(|service| service.enabled)
+            });
 
     // ------------------------------------------------------------
     // Graceful shutdown
@@ -97,20 +104,29 @@ fn main() -> anyhow::Result<()> {
     // ------------------------------------------------------------
     // Bootstrap context (shared state)
     // ------------------------------------------------------------
-    let ring_config = crate::config::RingConfig {
-        slots: graph.ringbuffer.slots,
-        prealloc_samples: graph.ringbuffer.prealloc_samples,
-    };
+    let ring_config = graph
+        .as_ref()
+        .map(|graph| crate::config::RingConfig {
+            slots: graph.ringbuffer.slots,
+            prealloc_samples: graph.ringbuffer.prealloc_samples,
+        })
+        .unwrap_or_else(|| cfg.ring.clone());
     let agent = agent::Agent::new(ring_config.slots, ring_config.prealloc_samples);
-    let codec_registry =
-        Arc::new(crate::codecs::registry::CodecRegistry::new(graph.codecs.clone()));
+    let codec_registry = Arc::new(crate::codecs::registry::CodecRegistry::new(
+        graph
+            .as_ref()
+            .map(|graph| graph.codecs.clone())
+            .unwrap_or_else(|| cfg.codec_instances()),
+    ));
     let context = AppContext::new(&cfg, agent, codec_registry.clone());
 
     // ------------------------------------------------------------
     // API registry (modules + services)
     // ------------------------------------------------------------
     let registry = Arc::new(Registry::new());
-    register_graph_modules(&graph, &registry);
+    if let Some(graph) = graph.as_ref() {
+        register_graph_modules(graph, &registry);
+    }
 
     // ------------------------------------------------------------
     // Services
@@ -118,16 +134,28 @@ fn main() -> anyhow::Result<()> {
     let api_bind = cfg.api.bind.as_str();
     let audio_bind = cfg.audio_http.bind.as_str();
 
-    register_graph_services(
-        &registry,
-        api_bind,
-        audio_bind,
-        cfg.monitoring.http_port,
-        cfg.api.enabled,
-        cfg.audio_http.enabled,
-        cfg.monitoring.enabled,
-        &graph,
-    );
+    if let Some(graph) = graph.as_ref() {
+        register_graph_services(
+            &registry,
+            api_bind,
+            audio_bind,
+            cfg.monitoring.http_port,
+            cfg.api.enabled,
+            cfg.audio_http.enabled,
+            cfg.monitoring.enabled,
+            graph,
+        );
+    } else {
+        crate::services::registry::register_services(
+            &registry,
+            api_bind,
+            audio_bind,
+            cfg.monitoring.http_port,
+            cfg.api.enabled,
+            cfg.audio_http.enabled,
+            cfg.monitoring.enabled,
+        );
+    }
 
     if cfg.api.enabled {
         let api_state = ApiState {
@@ -147,14 +175,15 @@ fn main() -> anyhow::Result<()> {
     }
 
     let mut monitoring_started = false;
-    let graph_monitoring_enabled = graph
-        .services
-        .iter()
-        .find(|(_, svc)| svc.service_type == "monitoring")
-        .is_some_and(|(_, svc)| svc.enabled);
-
-    start_graph_workers(&cfg, &graph, &context, running.clone())?;
-    monitoring_started = cfg.monitoring.enabled && graph_monitoring_enabled;
+    if let Some(graph) = graph.as_ref() {
+        let graph_monitoring_enabled = graph
+            .services
+            .iter()
+            .find(|(_, svc)| svc.service_type == "monitoring")
+            .is_some_and(|(_, svc)| svc.enabled);
+        start_graph_workers(&cfg, graph, &context, running.clone())?;
+        monitoring_started = cfg.monitoring.enabled && graph_monitoring_enabled;
+    }
 
     // ------------------------------------------------------------
     // Main loop
