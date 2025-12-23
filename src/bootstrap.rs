@@ -54,9 +54,9 @@ impl AppContext {
         });
 
         let wav_dir = cfg
-            .recorder
+            .file_out
             .as_ref()
-            .map(|rec| PathBuf::from(&rec.wav_dir))
+            .map(|file_out| PathBuf::from(&file_out.wav_dir))
             .unwrap_or_else(|| PathBuf::from("/data/aircheck/wav"));
 
         Self {
@@ -103,7 +103,7 @@ pub fn register_modules(cfg: &Config, registry: &Registry) {
         registry,
         "file_out",
         "file_out",
-        cfg.recorder.as_ref().map(|c| c.enabled),
+        cfg.file_out.as_ref().map(|c| c.enabled),
     );
 
     // Codec-Module als eigenständige Processing-Instanzen.
