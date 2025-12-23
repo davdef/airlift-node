@@ -23,8 +23,46 @@
 </header>
 
 <main>
+    <section class="panel hidden" id="offlinePanel">
+        <div class="panel-header">
+            <h2 class="panel-title">API Offline</h2>
+        </div>
+        <div class="panel-content">
+            <div class="setup-message">
+                <div class="setup-icon">⚠️</div>
+                <div>
+                    <div class="setup-title">Die Status-API ist derzeit nicht erreichbar.</div>
+                    <div class="setup-subtitle">Bitte API starten und Konfiguration prüfen.</div>
+                </div>
+            </div>
+            <div class="setup-actions">
+                <a class="btn primary" href="../config.sample.toml" target="_blank" rel="noopener">Setup-Leitfaden öffnen</a>
+            </div>
+        </div>
+    </section>
+
+    <section class="panel hidden" id="setupPanel">
+        <div class="panel-header">
+            <h2 class="panel-title">Setup-Leitfaden</h2>
+        </div>
+        <div class="panel-content">
+            <div class="setup-message">
+                <div class="setup-icon">🧭</div>
+                <div>
+                    <div class="setup-title" id="setupNextStep">Konfiguration prüfen</div>
+                    <div class="setup-subtitle">Führe den nächsten Schritt aus, um die Audio-Pipeline zu starten.</div>
+                </div>
+            </div>
+            <ol class="setup-steps" id="setupSteps"></ol>
+            <div class="setup-issues hidden" id="setupIssues"></div>
+            <div class="setup-actions">
+                <a class="btn primary" href="../config.sample.toml" target="_blank" rel="noopener">Beispiel-Konfig öffnen</a>
+            </div>
+        </div>
+    </section>
+
     <!-- Audio Pipeline Tree - jetzt zweispaltig -->
-    <section class="panel pipeline-tree">
+    <section class="panel pipeline-tree" id="pipelinePanel">
         <div class="panel-header">
             <h2 class="panel-title">Audio Pipeline</h2>
             <button class="btn small" onclick="refreshAllData()" style="padding: 6px 10px; font-size: 11px;">
@@ -42,11 +80,11 @@
     </section>
 
     <!-- Zwei-Spalten-Layout für den Rest -->
-    <div class="main-content">
+    <div class="main-content" id="mainContent">
         <!-- Linke Spalte -->
         <div style="display: flex; flex-direction: column; gap: 16px;">
             <!-- Ringbuffer Visualization -->
-            <section class="panel">
+            <section class="panel" id="ringbufferPanel">
                 <div class="panel-header">
                     <h2 class="panel-title" id="ringbufferTitle">Ringbuffer</h2>
                     <div style="font-size: 11px; color: #888;">
@@ -66,7 +104,7 @@
             </section>
 
             <!-- Active Modules -->
-            <section class="panel">
+            <section class="panel" id="activeModulesPanel">
                 <div class="panel-header">
                     <h2 class="panel-title">Aktive Module</h2>
                     <span style="font-size: 11px; color: #888;" id="activeModulesCount">0</span>
@@ -94,7 +132,7 @@
             </section>
 
             <!-- Available Modules -->
-            <section class="panel">
+            <section class="panel" id="inactiveModulesPanel">
                 <div class="panel-header">
                     <h2 class="panel-title">Verfügbare Module</h2>
                     <span style="font-size: 11px; color: #888;" id="inactiveModulesCount">0</span>
@@ -125,7 +163,7 @@
         <!-- Rechte Spalte -->
         <div style="display: flex; flex-direction: column; gap: 16px;">
             <!-- File-Out WAV File -->
-            <section class="panel">
+            <section class="panel" id="fileOutPanel">
                 <div class="panel-header">
                     <h2 class="panel-title">File-Out (1h Datei)</h2>
                     <div style="font-size: 11px; color: #888;">
@@ -148,7 +186,7 @@
             </section>
 
             <!-- Controls -->
-            <section class="panel">
+            <section class="panel" id="controlsPanel">
                 <div class="panel-header">
                     <h2 class="panel-title">Steuerung</h2>
                 </div>
@@ -160,7 +198,7 @@
             </section>
 
             <!-- Codecs -->
-            <section class="panel">
+            <section class="panel" id="codecsPanel">
                 <div class="panel-header">
                     <h2 class="panel-title">Verfügbare Codecs</h2>
                 </div>
@@ -175,7 +213,7 @@
             </section>
 
             <!-- System Status -->
-            <section class="panel">
+            <section class="panel" id="systemStatusPanel">
                 <div class="panel-header">
                     <h2 class="panel-title">System Status</h2>
                 </div>
