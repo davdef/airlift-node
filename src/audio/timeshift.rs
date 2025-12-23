@@ -89,12 +89,11 @@ pub fn stream_timeshift(
         // Seek mit hound (in Frames/Samples, nicht Bytes!)
         if let Err(e) = reader.seek(offset_frames) {
             warn!("[timeshift] hound seek failed: {}", e);
-            
-            // Fallback: Zum Dateianfang
-            if let Err(e) = reader.seek(0) {
-                warn!("[timeshift] fallback seek also failed: {}", e);
-                continue;
-            }
+            return Err(anyhow::anyhow!(
+                "timeshift seek failed at frame {}: {}",
+                offset_frames,
+                e
+            ));
         }
         
         // Streaming-Loop für diese Stunde

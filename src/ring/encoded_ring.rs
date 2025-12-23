@@ -94,6 +94,7 @@ impl EncodedRing {
             capacity: g.cap,
             head_seq: g.head_seq,
             next_seq: self.next_seq.load(Ordering::Relaxed),
+            arc_replacements: 0,
         }
     }
 
