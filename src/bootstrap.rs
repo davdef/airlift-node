@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, atomic::AtomicBool};
 use std::time::Duration;
@@ -7,18 +6,15 @@ use log::{error, info};
 
 use crate::agent;
 use crate::api::registry::{ModuleDescriptor, ModuleRegistration, Registry};
-use crate::codecs::AudioCodec;
-use crate::codecs::registry::{CodecInstance, CodecRegistry, resolve_codec_configs};
+use crate::codecs::registry::{CodecRegistry, resolve_codec_configs};
 use crate::config::{Config, ValidatedGraphConfig};
 use crate::control::ControlState;
 use crate::io::broadcast_http::BroadcastHttp;
 use crate::io::influx_out::InfluxOut;
 use crate::io::peak_analyzer::{PeakAnalyzer, PeakEvent};
 use crate::monitoring;
-use crate::recorder::{
-    self, EncodedFrameSource, EncodedRead, FsRetention, RecorderConfig, run_recorder,
-};
-use crate::ring::{EncodedRingRead, EncodedRingReader, RingRead, RingReader};
+use crate::recorder::{self, FsRetention, RecorderConfig, run_recorder};
+use crate::ring::{EncodedRingRead, EncodedRingReader};
 use crate::web::influx_service::InfluxHistoryService;
 use crate::web::peaks::{PeakPoint, PeakStorage};
 
@@ -138,21 +134,6 @@ pub fn register_graph_modules(graph: &ValidatedGraphConfig, registry: &Registry)
     }
 }
 
-pub fn start_workers(
-    cfg: &Config,
-    context: &AppContext,
-    running: Arc<AtomicBool>,
-) -> anyhow::Result<()> {
-    start_srt_in(cfg, context, running.clone());
-    start_alsa_in(cfg, context);
-    sync_output_states(cfg, context);
-    if cfg.peak_storage_enabled {
-        start_peak_storage(context);
-    }
-    start_recorder(cfg, context)?;
-    Ok(())
-}
-
 pub fn start_graph_workers(
     cfg: &Config,
     graph: &ValidatedGraphConfig,
@@ -181,115 +162,6 @@ fn register_codec(registry: &Registry, id: &str, enabled: bool) {
     registry.register_module(ModuleRegistration::new(descriptor));
 }
 
-fn start_srt_in(cfg: &Config, context: &AppContext, running: Arc<AtomicBool>) {
-    if let Some(srt_cfg) = &cfg.srt_in {
-        context
-            .control_state
-            .srt_in
-            .module
-            .set_enabled(srt_cfg.enabled);
-        if srt_cfg.enabled {
-            info!("[airlift] SRT enabled: {}", srt_cfg.listen);
-
-            let ring = context.agent.ring.clone();
-            let cfg_clone = srt_cfg.clone();
-            let srt_state = context.control_state.srt_in.clone();
-            let ring_state = context.control_state.ring.clone();
-
-            std::thread::spawn(move || {
-                if let Err(e) =
-                    crate::io::srt_in::run_srt_in(ring, cfg_clone, running, srt_state, ring_state)
-                {
-                    error!("[srt] fatal: {}", e);
-                }
-            });
-        }
-    } else {
-        context.control_state.srt_in.module.set_enabled(false);
-    }
-}
-
-#[cfg(feature = "alsa")]
-fn start_alsa_in(cfg: &Config, context: &AppContext) {
-    if let Some(alsa_cfg) = &cfg.alsa_in {
-        context.control_state.alsa_in.set_enabled(alsa_cfg.enabled);
-        if alsa_cfg.enabled {
-            info!("[airlift] ALSA enabled: {}", alsa_cfg.device);
-
-            let ring = context.agent.ring.clone();
-            let metrics_alsa = context.metrics.clone();
-            let alsa_state = context.control_state.alsa_in.clone();
-            let ring_state = context.control_state.ring.clone();
-
-            std::thread::spawn(move || {
-                if let Err(e) =
-                    crate::io::alsa_in::run_alsa_in(ring, metrics_alsa, alsa_state, ring_state)
-                {
-                    error!("[alsa] fatal: {}", e);
-                }
-            });
-        }
-    } else {
-        context.control_state.alsa_in.set_enabled(false);
-    }
-}
-
-#[cfg(not(feature = "alsa"))]
-fn start_alsa_in(_cfg: &Config, context: &AppContext) {
-    context.control_state.alsa_in.set_enabled(false);
-}
-
-fn sync_output_states(cfg: &Config, context: &AppContext) {
-    if let Some(srt_out_cfg) = &cfg.srt_out {
-        context
-            .control_state
-            .srt_out
-            .module
-            .set_enabled(srt_out_cfg.enabled);
-    } else {
-        context.control_state.srt_out.module.set_enabled(false);
-    }
-
-    if let Some(icecast_cfg) = &cfg.icecast_out {
-        context
-            .control_state
-            .icecast_out
-            .set_enabled(icecast_cfg.enabled);
-    } else {
-        context.control_state.icecast_out.set_enabled(false);
-    }
-}
-
-fn start_peak_storage(context: &AppContext) {
-    // Legacy: only started when the Graph-Pipeline is not active.
-    let reader = context.agent.ring.subscribe();
-    let store = context.peak_store.clone();
-
-    let influx = InfluxOut::new(
-        "http://localhost:8086/write".into(),
-        "rfm_aircheck".into(),
-        100,
-    );
-
-    let handler = Box::new(move |evt: &PeakEvent| {
-        influx.handle(evt);
-        let peak = PeakPoint {
-            timestamp: evt.utc_ns / 1_000_000,
-            peak_l: evt.peak_l,
-            peak_r: evt.peak_r,
-            rms: None,
-            lufs: None,
-            silence: evt.silence,
-        };
-        store.add_peak(peak);
-    });
-
-    let mut analyzer = PeakAnalyzer::new(reader, handler, 0);
-    std::thread::spawn(move || analyzer.run());
-
-    info!("[airlift] peak_storage enabled");
-}
-
 #[derive(Default)]
 struct PeakEventFanout {
     handlers: Mutex<Vec<Box<dyn Fn(&PeakEvent) + Send + Sync>>>,
@@ -309,136 +181,11 @@ impl PeakEventFanout {
     }
 }
 
-enum RingEncodedRead {
-    Frame {
-        frame: crate::codecs::EncodedFrame,
-        utc_ns: u64,
-    },
-    Gap {
-        missed: u64,
-    },
-    Empty,
-}
-
-struct EncodedRingSource {
-    reader: RingReader,
-    codec: Arc<Mutex<Box<dyn AudioCodec>>>,
-    codec_instance: Arc<CodecInstance>,
-    pending: VecDeque<crate::codecs::EncodedFrame>,
-    pending_utc_ns: Option<u64>,
-}
-
-impl EncodedRingSource {
-    fn new(
-        reader: RingReader,
-        codec: Arc<Mutex<Box<dyn AudioCodec>>>,
-        codec_instance: Arc<CodecInstance>,
-    ) -> Self {
-        Self {
-            reader,
-            codec,
-            codec_instance,
-            pending: VecDeque::new(),
-            pending_utc_ns: None,
-        }
-    }
-
-    fn poll_next(&mut self) -> anyhow::Result<RingEncodedRead> {
-        if let Some(frame) = self.pending.pop_front() {
-            let utc_ns = self.pending_utc_ns.unwrap_or_default();
-            return Ok(RingEncodedRead::Frame { frame, utc_ns });
-        }
-
-        match self.reader.poll() {
-            RingRead::Chunk(slot) => {
-                let frames = {
-                    let mut codec = self.codec.lock().expect("output codec lock");
-                    codec.encode(&slot.pcm)
-                };
-                let frames = match frames {
-                    Ok(frames) => frames,
-                    Err(e) => {
-                        self.codec_instance.mark_error(&e.to_string());
-                        return Err(e);
-                    }
-                };
-
-                let bytes: u64 = frames.iter().map(|f| f.payload.len() as u64).sum();
-                let frame_count = frames.len() as u64;
-                self.codec_instance.mark_encoded(1, frame_count, bytes);
-
-                if frames.is_empty() {
-                    return Ok(RingEncodedRead::Empty);
-                }
-                self.pending_utc_ns = Some(slot.utc_ns);
-                self.pending = frames.into_iter().collect();
-                let frame = self.pending.pop_front().expect("output pending frame");
-                Ok(RingEncodedRead::Frame {
-                    frame,
-                    utc_ns: slot.utc_ns,
-                })
-            }
-            RingRead::Gap { missed } => Ok(RingEncodedRead::Gap { missed }),
-            RingRead::Empty => Ok(RingEncodedRead::Empty),
-        }
-    }
-}
-
-impl crate::io::srt_out::EncodedFrameSource for EncodedRingSource {
-    fn poll(&mut self) -> anyhow::Result<crate::io::srt_out::EncodedRead> {
-        match self.poll_next()? {
-            RingEncodedRead::Frame { frame, .. } => {
-                Ok(crate::io::srt_out::EncodedRead::Frame(frame))
-            }
-            RingEncodedRead::Gap { missed } => Ok(crate::io::srt_out::EncodedRead::Gap { missed }),
-            RingEncodedRead::Empty => Ok(crate::io::srt_out::EncodedRead::Empty),
-        }
-    }
-}
-
-impl crate::io::udp_out::EncodedFrameSource for EncodedRingSource {
-    fn poll(&mut self) -> anyhow::Result<crate::io::udp_out::EncodedRead> {
-        match self.poll_next()? {
-            RingEncodedRead::Frame { frame, .. } => {
-                Ok(crate::io::udp_out::EncodedRead::Frame(frame))
-            }
-            RingEncodedRead::Gap { missed } => Ok(crate::io::udp_out::EncodedRead::Gap { missed }),
-            RingEncodedRead::Empty => Ok(crate::io::udp_out::EncodedRead::Empty),
-        }
-    }
-}
-
-impl crate::io::icecast_out::EncodedFrameSource for EncodedRingSource {
-    fn poll(&mut self) -> anyhow::Result<crate::io::icecast_out::EncodedRead> {
-        match self.poll_next()? {
-            RingEncodedRead::Frame { frame, .. } => {
-                Ok(crate::io::icecast_out::EncodedRead::Frame(frame))
-            }
-            RingEncodedRead::Gap { missed } => {
-                Ok(crate::io::icecast_out::EncodedRead::Gap { missed })
-            }
-            RingEncodedRead::Empty => Ok(crate::io::icecast_out::EncodedRead::Empty),
-        }
-    }
-}
-
-impl recorder::EncodedFrameSource for EncodedRingSource {
-    fn poll(&mut self) -> anyhow::Result<recorder::EncodedRead> {
-        match self.poll_next()? {
-            RingEncodedRead::Frame { frame, utc_ns } => {
-                Ok(recorder::EncodedRead::Frame { frame, utc_ns })
-            }
-            RingEncodedRead::Gap { missed } => Ok(recorder::EncodedRead::Gap { missed }),
-            RingEncodedRead::Empty => Ok(recorder::EncodedRead::Empty),
-        }
-    }
-}
-
-struct PassthroughEncodedRingSource {
+struct GraphEncodedSource {
     reader: EncodedRingReader,
 }
 
-impl PassthroughEncodedRingSource {
+impl GraphEncodedSource {
     fn new(reader: EncodedRingReader) -> Self {
         Self { reader }
     }
@@ -448,269 +195,68 @@ impl PassthroughEncodedRingSource {
     }
 }
 
-enum GraphEncodedSource {
-    Encoded(EncodedRingSource),
-    Passthrough(PassthroughEncodedRingSource),
-}
-
-impl GraphEncodedSource {
-    fn from_encoded(reader: EncodedRingReader) -> Self {
-        Self::Passthrough(PassthroughEncodedRingSource::new(reader))
-    }
-}
-
 impl crate::io::srt_out::EncodedFrameSource for GraphEncodedSource {
     fn poll(&mut self) -> anyhow::Result<crate::io::srt_out::EncodedRead> {
-        match self {
-            GraphEncodedSource::Encoded(source) => match source.poll_next()? {
-                RingEncodedRead::Frame { frame, .. } => {
-                    Ok(crate::io::srt_out::EncodedRead::Frame(frame))
-                }
-                RingEncodedRead::Gap { missed } => {
-                    Ok(crate::io::srt_out::EncodedRead::Gap { missed })
-                }
-                RingEncodedRead::Empty => Ok(crate::io::srt_out::EncodedRead::Empty),
-            },
-            GraphEncodedSource::Passthrough(source) => match source.poll_next() {
-                EncodedRingRead::Frame { frame, .. } => {
-                    Ok(crate::io::srt_out::EncodedRead::Frame(frame))
-                }
-                EncodedRingRead::Gap { missed } => {
-                    Ok(crate::io::srt_out::EncodedRead::Gap { missed })
-                }
-                EncodedRingRead::Empty => Ok(crate::io::srt_out::EncodedRead::Empty),
-            },
+        match self.poll_next() {
+            EncodedRingRead::Frame { frame, .. } => {
+                Ok(crate::io::srt_out::EncodedRead::Frame(frame))
+            }
+            EncodedRingRead::Gap { missed } => Ok(crate::io::srt_out::EncodedRead::Gap { missed }),
+            EncodedRingRead::Empty => Ok(crate::io::srt_out::EncodedRead::Empty),
         }
     }
 }
 
 impl crate::io::udp_out::EncodedFrameSource for GraphEncodedSource {
     fn poll(&mut self) -> anyhow::Result<crate::io::udp_out::EncodedRead> {
-        match self {
-            GraphEncodedSource::Encoded(source) => match source.poll_next()? {
-                RingEncodedRead::Frame { frame, .. } => {
-                    Ok(crate::io::udp_out::EncodedRead::Frame(frame))
-                }
-                RingEncodedRead::Gap { missed } => {
-                    Ok(crate::io::udp_out::EncodedRead::Gap { missed })
-                }
-                RingEncodedRead::Empty => Ok(crate::io::udp_out::EncodedRead::Empty),
-            },
-            GraphEncodedSource::Passthrough(source) => match source.poll_next() {
-                EncodedRingRead::Frame { frame, .. } => {
-                    Ok(crate::io::udp_out::EncodedRead::Frame(frame))
-                }
-                EncodedRingRead::Gap { missed } => {
-                    Ok(crate::io::udp_out::EncodedRead::Gap { missed })
-                }
-                EncodedRingRead::Empty => Ok(crate::io::udp_out::EncodedRead::Empty),
-            },
+        match self.poll_next() {
+            EncodedRingRead::Frame { frame, .. } => {
+                Ok(crate::io::udp_out::EncodedRead::Frame(frame))
+            }
+            EncodedRingRead::Gap { missed } => Ok(crate::io::udp_out::EncodedRead::Gap { missed }),
+            EncodedRingRead::Empty => Ok(crate::io::udp_out::EncodedRead::Empty),
         }
     }
 }
 
 impl crate::io::icecast_out::EncodedFrameSource for GraphEncodedSource {
     fn poll(&mut self) -> anyhow::Result<crate::io::icecast_out::EncodedRead> {
-        match self {
-            GraphEncodedSource::Encoded(source) => match source.poll_next()? {
-                RingEncodedRead::Frame { frame, .. } => {
-                    Ok(crate::io::icecast_out::EncodedRead::Frame(frame))
-                }
-                RingEncodedRead::Gap { missed } => {
-                    Ok(crate::io::icecast_out::EncodedRead::Gap { missed })
-                }
-                RingEncodedRead::Empty => Ok(crate::io::icecast_out::EncodedRead::Empty),
-            },
-            GraphEncodedSource::Passthrough(source) => match source.poll_next() {
-                EncodedRingRead::Frame { frame, .. } => {
-                    Ok(crate::io::icecast_out::EncodedRead::Frame(frame))
-                }
-                EncodedRingRead::Gap { missed } => {
-                    Ok(crate::io::icecast_out::EncodedRead::Gap { missed })
-                }
-                EncodedRingRead::Empty => Ok(crate::io::icecast_out::EncodedRead::Empty),
-            },
+        match self.poll_next() {
+            EncodedRingRead::Frame { frame, .. } => {
+                Ok(crate::io::icecast_out::EncodedRead::Frame(frame))
+            }
+            EncodedRingRead::Gap { missed } => {
+                Ok(crate::io::icecast_out::EncodedRead::Gap { missed })
+            }
+            EncodedRingRead::Empty => Ok(crate::io::icecast_out::EncodedRead::Empty),
         }
     }
 }
 
 impl recorder::EncodedFrameSource for GraphEncodedSource {
     fn poll(&mut self) -> anyhow::Result<recorder::EncodedRead> {
-        match self {
-            GraphEncodedSource::Encoded(source) => match source.poll_next()? {
-                RingEncodedRead::Frame { frame, utc_ns } => {
-                    Ok(recorder::EncodedRead::Frame { frame, utc_ns })
-                }
-                RingEncodedRead::Gap { missed } => Ok(recorder::EncodedRead::Gap { missed }),
-                RingEncodedRead::Empty => Ok(recorder::EncodedRead::Empty),
-            },
-            GraphEncodedSource::Passthrough(source) => match source.poll_next() {
-                EncodedRingRead::Frame { frame, utc_ns } => {
-                    Ok(recorder::EncodedRead::Frame { frame, utc_ns })
-                }
-                EncodedRingRead::Gap { missed } => Ok(recorder::EncodedRead::Gap { missed }),
-                EncodedRingRead::Empty => Ok(recorder::EncodedRead::Empty),
-            },
+        match self.poll_next() {
+            EncodedRingRead::Frame { frame, utc_ns } => {
+                Ok(recorder::EncodedRead::Frame { frame, utc_ns })
+            }
+            EncodedRingRead::Gap { missed } => Ok(recorder::EncodedRead::Gap { missed }),
+            EncodedRingRead::Empty => Ok(recorder::EncodedRead::Empty),
         }
     }
 }
 
 impl crate::audio::http::EncodedFrameSource for GraphEncodedSource {
     fn poll(&mut self) -> anyhow::Result<crate::audio::http::EncodedRead> {
-        match self {
-            GraphEncodedSource::Encoded(source) => match source.poll_next()? {
-                RingEncodedRead::Frame { frame, .. } => {
-                    Ok(crate::audio::http::EncodedRead::Frame(frame))
-                }
-                RingEncodedRead::Gap { missed } => {
-                    Ok(crate::audio::http::EncodedRead::Gap { missed })
-                }
-                RingEncodedRead::Empty => Ok(crate::audio::http::EncodedRead::Empty),
-            },
-            GraphEncodedSource::Passthrough(source) => match source.poll_next() {
-                EncodedRingRead::Frame { frame, .. } => {
-                    Ok(crate::audio::http::EncodedRead::Frame(frame))
-                }
-                EncodedRingRead::Gap { missed } => {
-                    Ok(crate::audio::http::EncodedRead::Gap { missed })
-                }
-                EncodedRingRead::Empty => Ok(crate::audio::http::EncodedRead::Empty),
-            },
-        }
-    }
-}
-
-struct RecorderEncoderSource {
-    reader: RingReader,
-    codec: Arc<Mutex<Box<dyn AudioCodec>>>,
-    codec_instance: Arc<crate::codecs::registry::CodecInstance>,
-    pending: VecDeque<crate::codecs::EncodedFrame>,
-    pending_utc_ns: Option<u64>,
-}
-
-impl RecorderEncoderSource {
-    fn new(
-        reader: RingReader,
-        codec: Arc<Mutex<Box<dyn AudioCodec>>>,
-        codec_instance: Arc<crate::codecs::registry::CodecInstance>,
-    ) -> Self {
-        Self {
-            reader,
-            codec,
-            codec_instance,
-            pending: VecDeque::new(),
-            pending_utc_ns: None,
-        }
-    }
-}
-
-impl EncodedFrameSource for RecorderEncoderSource {
-    fn poll(&mut self) -> anyhow::Result<EncodedRead> {
-        if let Some(frame) = self.pending.pop_front() {
-            let utc_ns = self.pending_utc_ns.unwrap_or_default();
-            return Ok(EncodedRead::Frame { frame, utc_ns });
-        }
-
-        match self.reader.poll() {
-            RingRead::Chunk(slot) => {
-                let frames = {
-                    let mut codec = self.codec.lock().expect("recorder codec lock");
-                    codec.encode(&slot.pcm)
-                };
-
-                let frames = match frames {
-                    Ok(frames) => frames,
-                    Err(e) => {
-                        self.codec_instance.mark_error(&e.to_string());
-                        return Err(e);
-                    }
-                };
-
-                let bytes: u64 = frames.iter().map(|f| f.payload.len() as u64).sum();
-                let frame_count = frames.len() as u64;
-                self.codec_instance.mark_encoded(1, frame_count, bytes);
-
-                if frames.is_empty() {
-                    return Ok(EncodedRead::Empty);
-                }
-
-                self.pending_utc_ns = Some(slot.utc_ns);
-                self.pending = frames.into_iter().collect();
-                let frame = self.pending.pop_front().expect("recorder pending frame");
-                Ok(EncodedRead::Frame {
-                    frame,
-                    utc_ns: slot.utc_ns,
-                })
+        match self.poll_next() {
+            EncodedRingRead::Frame { frame, .. } => {
+                Ok(crate::audio::http::EncodedRead::Frame(frame))
             }
-            RingRead::Gap { missed } => Ok(EncodedRead::Gap { missed }),
-            RingRead::Empty => Ok(EncodedRead::Empty),
+            EncodedRingRead::Gap { missed } => {
+                Ok(crate::audio::http::EncodedRead::Gap { missed })
+            }
+            EncodedRingRead::Empty => Ok(crate::audio::http::EncodedRead::Empty),
         }
     }
-}
-
-fn start_recorder(cfg: &Config, context: &AppContext) -> anyhow::Result<()> {
-    let Some(c) = &cfg.recorder else {
-        context.control_state.recorder.set_enabled(false);
-        return Ok(());
-    };
-    if !c.enabled {
-        context.control_state.recorder.set_enabled(false);
-        return Ok(());
-    }
-    context.control_state.recorder.set_enabled(true);
-
-    let codec_id = c
-        .codec_id
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("recorder requires codec_id"))?;
-    let codec_info = context.codec_registry.get_info(&codec_id)?;
-    if matches!(codec_info.container, crate::codecs::ContainerKind::Rtp) {
-        anyhow::bail!(
-            "recorder does not support RTP container (codec_id '{}')",
-            codec_id
-        );
-    }
-
-    let (codec_handle, codec_instance) = context.codec_registry.build_codec_handle(&codec_id)?;
-    codec_instance.mark_ready();
-    let reader = context.agent.ring.subscribe();
-    let encoded_reader = RecorderEncoderSource::new(reader, codec_handle, codec_instance);
-
-    let retentions: Vec<Box<dyn recorder::RetentionPolicy>> = vec![Box::new(FsRetention::new(
-        PathBuf::from(&c.wav_dir),
-        c.retention_days,
-    ))];
-
-    let rec_cfg = RecorderConfig {
-        idle_sleep: Duration::from_millis(5),
-        retention_interval: Duration::from_secs(3600),
-    };
-
-    let recorder_state = context.control_state.recorder.clone();
-    let ring_state = context.control_state.ring.clone();
-    let base_dir = PathBuf::from(&c.wav_dir);
-    std::thread::spawn(move || {
-        if let Err(e) = run_recorder(
-            encoded_reader,
-            rec_cfg,
-            base_dir,
-            codec_id,
-            codec_info,
-            retentions,
-            recorder_state,
-            ring_state,
-        ) {
-            error!("[recorder] fatal: {}", e);
-        }
-    });
-
-    info!(
-        "[airlift] recorder enabled (codec_id={}, retention {}d)",
-        c.codec_id.as_deref().unwrap_or("missing"),
-        c.retention_days
-    );
-
-    Ok(())
 }
 
 fn start_graph_inputs(
@@ -719,7 +265,6 @@ fn start_graph_inputs(
     running: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     let ring = context.agent.ring.clone();
-    let encoded_ring = context.agent.encoded_ring.clone();
     let ring_state = context.control_state.ring.clone();
 
     for (_id, input) in graph.inputs.iter() {
@@ -815,7 +360,7 @@ fn start_graph_outputs(
     running: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     let ring_state = context.control_state.ring.clone();
-    let ring = context.agent.ring.clone();
+    let encoded_ring = context.agent.encoded_ring.clone();
 
     for (_id, output) in graph.outputs.iter() {
         if !output.enabled {
@@ -826,15 +371,7 @@ fn start_graph_outputs(
             .codec_id
             .clone()
             .ok_or_else(|| anyhow::anyhow!("output requires codec_id"))?;
-        let (codec_handle, codec_instance) =
-            context.codec_registry.build_codec_handle(&codec_id)?;
-        codec_instance.mark_ready();
-        let reader = ring.subscribe();
-        let encoded_reader = GraphEncodedSource::Encoded(EncodedRingSource::new(
-            reader,
-            codec_handle,
-            codec_instance,
-        ));
+        let encoded_reader = GraphEncodedSource::new(encoded_ring.subscribe());
 
         match output.output_type.as_str() {
             "srt_out" => {
@@ -979,29 +516,19 @@ fn start_graph_services(
             if service.enabled {
                 let audio_bind = cfg.audio_http.bind.clone();
                 let audio_bind_for_thread = audio_bind.clone();
-                let ring = context.agent.ring.clone();
+                let encoded_ring = context.agent.encoded_ring.clone();
                 let wav_dir = context.wav_dir.clone();
                 let codec_id = service
                     .codec_id
                     .clone()
                     .ok_or_else(|| anyhow::anyhow!("service requires codec_id"))?;
                 let codec_registry = context.codec_registry.clone();
-                let (codec_handle, codec_instance) = context
-                    .codec_registry
-                    .build_codec_handle(&codec_id)?;
-                codec_instance.mark_ready();
                 std::thread::spawn(move || {
-                    let handle = codec_handle.clone();
-                    let instance = codec_instance.clone();
                     if let Err(e) = crate::audio::http::start_audio_http_server(
                         &audio_bind_for_thread,
                         wav_dir,
                         move || {
-                            GraphEncodedSource::Encoded(EncodedRingSource::new(
-                                ring.subscribe(),
-                                handle.clone(),
-                                instance.clone(),
-                            ))
+                            GraphEncodedSource::new(encoded_ring.subscribe())
                         },
                         Some(codec_id),
                         codec_registry,
