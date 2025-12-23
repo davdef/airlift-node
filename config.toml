@@ -1,0 +1,3 @@
+[ring]
+slots = 6000
+prealloc_samples = 48000
