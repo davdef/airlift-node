@@ -43,6 +43,7 @@ function renderPipelineEditor(status) {
     const nodesLayer = document.getElementById('pipelineNodes');
     const edgesLayer = document.getElementById('pipelineEdges');
     const hint = document.getElementById('pipelineCanvasHint');
+    const emptyOverlay = document.getElementById('pipelineEmptyOverlay');
 
     if (!paletteContainer || !nodesLayer || !edgesLayer) {
         return;
@@ -55,7 +56,14 @@ function renderPipelineEditor(status) {
     updatePipelineInspector();
     updatePipelinePreview();
 
-    hint.style.display = pipelineEditorState.nodes.length === 0 ? 'block' : 'none';
+    const isEmpty = pipelineEditorState.nodes.length === 0;
+    if (hint) {
+        hint.textContent = isEmpty ? 'Drag input here' : '';
+        hint.style.display = emptyOverlay ? 'none' : (isEmpty ? 'block' : 'none');
+    }
+    if (emptyOverlay) {
+        emptyOverlay.classList.toggle('hidden', !isEmpty);
+    }
     attachPipelineEvents();
 }
 
@@ -449,6 +457,7 @@ function renderPipelineConfigPreview() {
     const { config, issues } = buildPipelineGraphConfig(model);
     preview.textContent = formatConfigOutput(config);
     renderPipelineValidation(validation, issues);
+    window.updatePipelineValidationState?.(issues);
     return { config, issues };
 }
 

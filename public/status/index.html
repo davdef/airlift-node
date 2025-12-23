@@ -61,7 +61,6 @@
                     <div class="setup-subtitle">Führe den nächsten Schritt aus, um die Audio-Pipeline zu starten.</div>
                 </div>
             </div>
-            <ol class="setup-steps" id="setupSteps"></ol>
             <div class="setup-section hidden" id="setupIssuesSection">
                 <div class="setup-section-header">Setup-Checks</div>
                 <div class="setup-section-subtitle">Offene Konfigurationspunkte mit minimalen Beispielen.</div>
@@ -101,6 +100,10 @@
                         <div class="pipeline-canvas-hint" id="pipelineCanvasHint">
                             Module aus der Palette ziehen, um eine Pipeline aufzubauen.
                         </div>
+                        <div class="pipeline-empty-overlay hidden" id="pipelineEmptyOverlay">
+                            <div class="pipeline-empty-title">Drag input here</div>
+                            <div class="pipeline-empty-subtitle">Ziehe ein Input-Modul aus der Palette, um die Pipeline zu starten.</div>
+                        </div>
                     </div>
                     <div class="pipeline-inspector">
                         <div class="pipeline-inspector-title">Inspector</div>
@@ -109,6 +112,11 @@
                                 <div class="icon">🧩</div>
                                 <div class="message">Wähle ein Modul aus.</div>
                             </div>
+                        </div>
+                        <div class="pipeline-context" id="pipelineContext">
+                            <div class="pipeline-context-title">Setup-Hinweise</div>
+                            <div class="pipeline-context-next" id="pipelineContextNextStep">Konfiguration prüfen</div>
+                            <ul class="pipeline-context-list" id="pipelineContextHints"></ul>
                         </div>
                     </div>
                 </div>
