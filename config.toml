@@ -1,6 +1,2 @@
-[graph]
-ringbuffer_id = "main"
-
-[[graph.inputs]]
-id = "source"
-input_type = "srt"
+api.enabled = true
+api.bind = "0.0.0.0:3008"
