@@ -6,8 +6,27 @@ use crate::codecs::{CodecInfo, CodecKind, ContainerKind};
 // ---------- Ring ----------
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct RingConfig {
+    #[serde(default = "default_ring_slots")]
     pub slots: usize,
+    #[serde(default = "default_ring_prealloc_samples")]
     pub prealloc_samples: usize,
+}
+
+impl Default for RingConfig {
+    fn default() -> Self {
+        Self {
+            slots: 6000,
+            prealloc_samples: 9600,
+        }
+    }
+}
+
+fn default_ring_slots() -> usize {
+    RingConfig::default().slots
+}
+
+fn default_ring_prealloc_samples() -> usize {
+    RingConfig::default().prealloc_samples
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -220,9 +239,70 @@ pub struct HourlyRecorderConfig {
 }
 
 // ---------- Monitoring ----------
-#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct MonitoringConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_monitoring_port")]
     pub http_port: u16,
+}
+
+impl Default for MonitoringConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            http_port: 9090,
+        }
+    }
+}
+
+fn default_monitoring_port() -> u16 {
+    MonitoringConfig::default().http_port
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct ApiConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_api_bind")]
+    pub bind: String,
+}
+
+impl Default for ApiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: "0.0.0.0:3008".to_string(),
+        }
+    }
+}
+
+fn default_api_bind() -> String {
+    ApiConfig::default().bind
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct AudioHttpConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_audio_http_bind")]
+    pub bind: String,
+    #[serde(default)]
+    pub codec_id: Option<String>,
+}
+
+impl Default for AudioHttpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: "0.0.0.0:3011".to_string(),
+            codec_id: None,
+        }
+    }
+}
+
+fn default_audio_http_bind() -> String {
+    AudioHttpConfig::default().bind
 }
 
 // ---------- Metadata ----------
@@ -244,6 +324,7 @@ pub struct InfluxHistoryConfig {
 // ---------- Root ----------
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Config {
+    #[serde(default)]
     pub ring: RingConfig,
     pub alsa_in: Option<AlsaInConfig>,
     pub udp_out: Option<UdpOutConfig>,
@@ -254,10 +335,16 @@ pub struct Config {
     #[serde(default)]
     pub monitoring: MonitoringConfig,
     #[serde(default)]
+    pub api: ApiConfig,
+    #[serde(default)]
+    pub audio_http: AudioHttpConfig,
+    #[serde(default)]
     pub metadata: MetadataConfig,
     pub influx_history: Option<InfluxHistoryConfig>,
     #[serde(default)]
     pub audio_http_codec_id: Option<String>,
+    #[serde(default)]
+    pub peak_storage_enabled: bool,
     #[serde(default)]
     pub codecs: CodecConfigs,
     #[serde(default)]
@@ -295,6 +382,15 @@ pub struct ValidatedGraphConfig {
 }
 
 impl Config {
+    pub fn legacy_ring_needed(&self) -> bool {
+        self.srt_in.as_ref().is_some_and(|cfg| cfg.enabled)
+            || self.alsa_in.as_ref().is_some_and(|cfg| cfg.enabled)
+            || self.srt_out.as_ref().is_some_and(|cfg| cfg.enabled)
+            || self.icecast_out.as_ref().is_some_and(|cfg| cfg.enabled)
+            || self.recorder.as_ref().is_some_and(|cfg| cfg.enabled)
+            || self.peak_storage_enabled
+    }
+
     pub fn codec_instances(&self) -> Vec<CodecInstanceConfig> {
         match &self.codecs {
             CodecConfigs::List(list) => list.clone(),
