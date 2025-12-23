@@ -973,10 +973,11 @@ function renderPipelineEditor(status) {
     attachPipelineEvents();
 }
 
-function ensureNodeMetadata(node) {
+function ensureNodeMetadata(node, options = {}) {
     if (!node) {
         return node;
     }
+    const { allowInference = false } = options;
     if (node.type === '') {
         node.type = null;
     }
@@ -989,7 +990,7 @@ function ensureNodeMetadata(node) {
     if (!node.backendType && node.type) {
         node.backendType = node.type;
     }
-    if (!node.backendType && !node.type) {
+    if (allowInference && !node.backendType && !node.type) {
         const inferred = inferModuleType(node.kind, node.label);
         if (inferred) {
             node.type = inferred;
@@ -1030,7 +1031,7 @@ function seedPipelineModel(status) {
             backendType: node.backendType ?? null,
             x: columnX[node.kind] ?? 40,
             y: 40 + row * 120
-        });
+        }, { allowInference: true });
     });
 
     pipelineEditorState.edges = graphEdges.map((edge, index) => ({
@@ -1387,6 +1388,7 @@ function updatePipelineInspector() {
     }
     const connectedEdges = pipelineEditorState.edges.filter(edge => edge.from === selected.id || edge.to === selected.id);
     const resolvedType = selected.type || selected.backendType;
+    const missingBackendType = !selected.type && !selected.backendType;
     const catalogEntry = findCatalogEntry(selected.kind, resolvedType);
     const configFields = mergeConfigFields(
         baseConfigFieldsForKind(selected.kind),
@@ -1403,6 +1405,11 @@ function updatePipelineInspector() {
             <div class="label">Label</div>
             <input class="pipeline-inspector-input" type="text" id="pipelineInspectorLabel" />
         </div>
+        ${missingBackendType ? `
+            <div class="pipeline-warning-banner">
+                ⚠️ Dieser Node hat keinen Typ. Bitte wähle einen gültigen Typ in der Pipeline-Konfiguration.
+            </div>
+        ` : ''}
         <div>
             <div class="label">Typ</div>
             <div class="value">${selected.kind}${resolvedType ? ` · ${resolvedType}` : ''}</div>
