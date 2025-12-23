@@ -202,9 +202,11 @@ async function fetchAllData() {
         if (!statusResponse.ok) {
             throw new Error('Status API nicht erreichbar');
         }
-        
+
         const status = await statusResponse.json();
         const codecs = codecsResponse.ok ? await codecsResponse.json() : [];
+
+        await loadPipelineCatalog();
         
         // Update global state
         currentStatus = status;
@@ -221,6 +223,21 @@ async function fetchAllData() {
     } catch (error) {
         updateConnectionState(false);
         showOfflineView();
+    }
+}
+
+async function loadPipelineCatalog() {
+    try {
+        const response = await fetch('/api/catalog');
+        if (!response.ok) {
+            return;
+        }
+        const catalog = await response.json();
+        if (Array.isArray(catalog) && catalog.length > 0) {
+            pipelineCatalog = catalog;
+        }
+    } catch (error) {
+        // Keep fallback catalog
     }
 }
 
@@ -655,7 +672,7 @@ const pipelineEditorState = {
     eventsBound: false
 };
 
-const pipelineCatalog = [
+const defaultPipelineCatalog = [
     {
         title: 'Inputs',
         kind: 'input',
@@ -924,6 +941,8 @@ const pipelineCatalog = [
         ]
     }
 ];
+
+let pipelineCatalog = defaultPipelineCatalog;
 
 const pipelineSignalTypes = {
     raw_pcm: {
