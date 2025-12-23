@@ -1377,7 +1377,11 @@ function handlePointerMove(event) {
     renderEdges(document.getElementById('pipelineEdges'));
 }
 
-function handlePointerUp() {
+function handlePointerUp(event) {
+    const handle = event?.target?.closest('.node-handle');
+    if (handle && handle.dataset.handle === 'input' && pipelineEditorState.connectingFrom) {
+        addPipelineEdge(pipelineEditorState.connectingFrom, handle.dataset.nodeId);
+    }
     if (pipelineEditorState.draggingNodeId) {
         pipelineEditorState.draggingNodeId = null;
         updatePipelinePreview();
