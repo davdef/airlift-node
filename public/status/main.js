@@ -286,7 +286,7 @@ function updateUI(status, codecs = []) {
     applyModuleFilterVisibility();
     updateConnectionState(true);
 
-    if (viewState === 'offline') {
+    if (viewState === 'offline' || viewState === 'idle') {
         return;
     }
 
@@ -463,7 +463,11 @@ function determineViewState(status, localState) {
     const hasLocalIssues = (resolvedState.issues || []).length > 0;
     const isEmptyConfig = resolvedState.isEmptyGraph;
 
-    if (isEmptyConfig || hasLocalIssues) {
+    if (isEmptyConfig) {
+        return 'idle';
+    }
+
+    if (hasLocalIssues) {
         return 'setup';
     }
 
@@ -745,6 +749,7 @@ const pipelineEditorState = {
     edges: [],
     nextNodeId: 1,
     selectedNodeId: null,
+    selectedEdgeId: null,
     draggingNodeId: null,
     dragOffset: { x: 0, y: 0 },
     connectingFrom: null,
@@ -1224,7 +1229,12 @@ function renderEdges(svg) {
             const midX = (from.x + to.x) / 2;
             path = `M ${from.x} ${from.y} C ${midX} ${from.y} ${midX} ${to.y} ${to.x} ${to.y}`;
         }
-        return `<path class="pipeline-edge ${signalClass} ${invalidClass}" d="${path}" />`;
+        const selectedClass = pipelineEditorState.selectedEdgeId === edge.id ? 'selected' : '';
+        return `<path class="pipeline-edge ${signalClass} ${invalidClass} ${selectedClass}"
+            data-edge-id="${edge.id}"
+            data-edge-from="${edge.from}"
+            data-edge-to="${edge.to}"
+            d="${path}" />`;
     }).join('');
 
     const tempLine = pipelineEditorState.tempEdgeId
@@ -1301,6 +1311,7 @@ function attachPipelineEvents() {
     const paletteItems = document.querySelectorAll('.pipeline-palette-item');
     const canvas = document.getElementById('pipelineCanvas');
     const nodesLayer = document.getElementById('pipelineNodes');
+    const edgesLayer = document.getElementById('pipelineEdges');
 
     paletteItems.forEach(item => {
         item.addEventListener('dragstart', (event) => {
@@ -1341,6 +1352,17 @@ function attachPipelineEvents() {
                 });
             });
 
+            canvas.addEventListener('pointerdown', (event) => {
+                if (event.target.closest('.pipeline-node') || event.target.closest('.pipeline-edge')) {
+                    return;
+                }
+                pipelineEditorState.selectedNodeId = null;
+                pipelineEditorState.selectedEdgeId = null;
+                renderNodes(document.getElementById('pipelineNodes'));
+                renderEdges(document.getElementById('pipelineEdges'));
+                updatePipelineInspector();
+            });
+
             canvas.addEventListener('mousemove', (event) => {
                 if (!pipelineEditorState.tempEdgeId || !pipelineEditorState.connectingFrom) {
                     return;
@@ -1359,10 +1381,19 @@ function attachPipelineEvents() {
 
         if (nodesLayer) {
             nodesLayer.addEventListener('pointerdown', handleNodePointerDown);
+            nodesLayer.addEventListener('contextmenu', handleNodeContextMenu);
+        }
+
+        if (edgesLayer) {
+            edgesLayer.addEventListener('pointerdown', handleEdgePointerDown);
+            edgesLayer.addEventListener('contextmenu', handleEdgeContextMenu);
         }
 
         document.addEventListener('pointermove', handlePointerMove);
         document.addEventListener('pointerup', handlePointerUp);
+        document.addEventListener('keydown', handlePipelineKeydown);
+        document.addEventListener('pointerdown', handlePipelineContextClose);
+        document.addEventListener('scroll', closePipelineContextMenu, true);
         pipelineEditorState.eventsBound = true;
     }
 }
@@ -1388,6 +1419,7 @@ function handleNodePointerDown(event) {
     if (nodeElement) {
         const nodeId = nodeElement.dataset.nodeId;
         pipelineEditorState.selectedNodeId = nodeId;
+        pipelineEditorState.selectedEdgeId = null;
         const rect = nodeElement.getBoundingClientRect();
         pipelineEditorState.draggingNodeId = nodeId;
         pipelineEditorState.dragOffset = {
@@ -1397,6 +1429,135 @@ function handleNodePointerDown(event) {
         renderNodes(document.getElementById('pipelineNodes'));
         updatePipelineInspector();
     }
+}
+
+function handleEdgePointerDown(event) {
+    const edgeElement = event.target.closest('.pipeline-edge');
+    const edgeId = edgeElement?.dataset?.edgeId;
+    if (!edgeId) {
+        return;
+    }
+    event.stopPropagation();
+    pipelineEditorState.selectedEdgeId = edgeId;
+    pipelineEditorState.selectedNodeId = null;
+    renderNodes(document.getElementById('pipelineNodes'));
+    renderEdges(document.getElementById('pipelineEdges'));
+    updatePipelineInspector();
+}
+
+function handleNodeContextMenu(event) {
+    const nodeElement = event.target.closest('.pipeline-node');
+    if (!nodeElement) {
+        return;
+    }
+    event.preventDefault();
+    const nodeId = nodeElement.dataset.nodeId;
+    pipelineEditorState.selectedNodeId = nodeId;
+    pipelineEditorState.selectedEdgeId = null;
+    renderNodes(document.getElementById('pipelineNodes'));
+    renderEdges(document.getElementById('pipelineEdges'));
+    updatePipelineInspector();
+    showPipelineContextMenu(event.clientX, event.clientY, [
+        {
+            label: 'Node entfernen',
+            action: () => removePipelineNode(nodeId)
+        }
+    ]);
+}
+
+function handleEdgeContextMenu(event) {
+    const edgeElement = event.target.closest('.pipeline-edge');
+    const edgeId = edgeElement?.dataset?.edgeId;
+    if (!edgeId) {
+        return;
+    }
+    event.preventDefault();
+    pipelineEditorState.selectedEdgeId = edgeId;
+    pipelineEditorState.selectedNodeId = null;
+    renderNodes(document.getElementById('pipelineNodes'));
+    renderEdges(document.getElementById('pipelineEdges'));
+    updatePipelineInspector();
+    showPipelineContextMenu(event.clientX, event.clientY, [
+        {
+            label: 'Kante entfernen',
+            action: () => removePipelineEdge(edgeId)
+        }
+    ]);
+}
+
+function handlePipelineKeydown(event) {
+    if (event.key !== 'Delete' && event.key !== 'Backspace') {
+        return;
+    }
+    const target = event.target;
+    const isEditable = target instanceof HTMLElement
+        && (target.tagName === 'INPUT'
+            || target.tagName === 'TEXTAREA'
+            || target.isContentEditable);
+    if (isEditable) {
+        return;
+    }
+    if (pipelineEditorState.selectedNodeId) {
+        event.preventDefault();
+        removePipelineNode(pipelineEditorState.selectedNodeId);
+        return;
+    }
+    if (pipelineEditorState.selectedEdgeId) {
+        event.preventDefault();
+        removePipelineEdge(pipelineEditorState.selectedEdgeId);
+    }
+}
+
+function ensurePipelineContextMenu() {
+    let menu = document.getElementById('pipelineContextMenu');
+    if (!menu) {
+        menu = document.createElement('div');
+        menu.id = 'pipelineContextMenu';
+        menu.className = 'pipeline-context-menu hidden';
+        document.body.appendChild(menu);
+    }
+    return menu;
+}
+
+function showPipelineContextMenu(x, y, items) {
+    const menu = ensurePipelineContextMenu();
+    menu.innerHTML = items.map((item, index) => `
+        <button type="button" class="pipeline-context-menu-item" data-index="${index}">
+            ${item.label}
+        </button>
+    `).join('');
+    menu.querySelectorAll('.pipeline-context-menu-item').forEach(button => {
+        const index = Number(button.dataset.index);
+        button.addEventListener('click', () => {
+            items[index]?.action?.();
+            closePipelineContextMenu();
+        });
+    });
+    menu.classList.remove('hidden');
+    const menuRect = menu.getBoundingClientRect();
+    const maxLeft = Math.max(8, window.innerWidth - menuRect.width - 8);
+    const maxTop = Math.max(8, window.innerHeight - menuRect.height - 8);
+    menu.style.left = `${Math.min(x, maxLeft)}px`;
+    menu.style.top = `${Math.min(y, maxTop)}px`;
+}
+
+function closePipelineContextMenu() {
+    const menu = document.getElementById('pipelineContextMenu');
+    if (!menu) {
+        return;
+    }
+    menu.classList.add('hidden');
+}
+
+function handlePipelineContextClose(event) {
+    const menu = document.getElementById('pipelineContextMenu');
+    if (!menu || menu.classList.contains('hidden')) {
+        return;
+    }
+    if (event.target.closest('.pipeline-context-menu')) {
+        return;
+    }
+    closePipelineContextMenu();
 }
 
 function handlePointerMove(event) {
@@ -1450,6 +1611,7 @@ function addPipelineNode({ kind, label, type, backendType, x, y }) {
         y: Math.max(20, y)
     }));
     pipelineEditorState.selectedNodeId = id;
+    pipelineEditorState.selectedEdgeId = null;
     renderNodes(document.getElementById('pipelineNodes'));
     renderEdges(document.getElementById('pipelineEdges'));
     updatePipelineInspector();
@@ -1464,13 +1626,64 @@ function addPipelineEdge(from, to) {
     if (exists) {
         return;
     }
+    const edgeId = `edge-${Date.now()}`;
     pipelineEditorState.edges.push({
-        id: `edge-${Date.now()}`,
+        id: edgeId,
         from,
         to
     });
+    pipelineEditorState.selectedEdgeId = edgeId;
+    pipelineEditorState.selectedNodeId = null;
     pipelineEditorState.connectingFrom = null;
     pipelineEditorState.tempEdgeId = null;
+    renderEdges(document.getElementById('pipelineEdges'));
+    updatePipelinePreview();
+}
+
+function removePipelineNode(nodeId) {
+    const index = pipelineEditorState.nodes.findIndex(node => node.id === nodeId);
+    if (index === -1) {
+        return;
+    }
+    pipelineEditorState.nodes.splice(index, 1);
+    pipelineEditorState.edges = pipelineEditorState.edges.filter(edge => edge.from !== nodeId && edge.to !== nodeId);
+    if (pipelineEditorState.selectedNodeId === nodeId) {
+        pipelineEditorState.selectedNodeId = null;
+    }
+    if (pipelineEditorState.selectedEdgeId) {
+        const stillExists = pipelineEditorState.edges.some(edge => edge.id === pipelineEditorState.selectedEdgeId);
+        if (!stillExists) {
+            pipelineEditorState.selectedEdgeId = null;
+        }
+    }
+    renderNodes(document.getElementById('pipelineNodes'));
+    renderEdges(document.getElementById('pipelineEdges'));
+    updatePipelineInspector();
+    updatePipelinePreview();
+}
+
+function removePipelineEdge(edgeRef) {
+    if (!edgeRef) {
+        return;
+    }
+    const edges = pipelineEditorState.edges;
+    let index = -1;
+    if (typeof edgeRef === 'string') {
+        index = edges.findIndex(edge => edge.id === edgeRef);
+    } else if (typeof edgeRef === 'object') {
+        if (edgeRef.id) {
+            index = edges.findIndex(edge => edge.id === edgeRef.id);
+        } else if (edgeRef.from && edgeRef.to) {
+            index = edges.findIndex(edge => edge.from === edgeRef.from && edge.to === edgeRef.to);
+        }
+    }
+    if (index === -1) {
+        return;
+    }
+    const [removed] = edges.splice(index, 1);
+    if (removed && pipelineEditorState.selectedEdgeId === removed.id) {
+        pipelineEditorState.selectedEdgeId = null;
+    }
     renderEdges(document.getElementById('pipelineEdges'));
     updatePipelinePreview();
 }
