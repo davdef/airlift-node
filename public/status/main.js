@@ -317,7 +317,15 @@ async function refreshAllData() {
 }
 
 // Start everything
-document.addEventListener('DOMContentLoaded', initializeAll);
+document.addEventListener('DOMContentLoaded', () => {
+    const minimalConfigButton = document.getElementById('generateMinimalConfig');
+    if (minimalConfigButton) {
+        minimalConfigButton.addEventListener('click', () => {
+            showMessage('Minimal-Konfig-Generator folgt (UI vorbereitet).', 'info');
+        });
+    }
+    initializeAll();
+});
 
 function determineViewState(status) {
     if (!status) {
@@ -335,6 +343,76 @@ function determineViewState(status) {
     }
     
     return 'normal';
+}
+
+function issueExample(issueKey) {
+    if (issueKey === 'graph') {
+        return `[inputs.source]\n` +
+            `type = "srt"\n` +
+            `enabled = true\n` +
+            `buffer = "main"\n\n` +
+            `[outputs.srt_out]\n` +
+            `type = "srt_out"\n` +
+            `enabled = true\n` +
+            `input = "source"\n` +
+            `buffer = "main"\n` +
+            `codec_id = "pcm_s16le"`;
+    }
+
+    if (issueKey === 'ringbuffer_id') {
+        return `[ringbuffers.main]\n` +
+            `slots = 6000\n` +
+            `chunk_ms = 100\n` +
+            `prealloc_samples = 9600`;
+    }
+
+    if (issueKey.startsWith('outputs.')) {
+        return `[outputs.stream_out]\n` +
+            `type = "icecast_out"\n` +
+            `enabled = true\n` +
+            `input = "source"\n` +
+            `buffer = "main"\n` +
+            `codec_id = "opus_ogg"\n` +
+            `host = "icecast.local"\n` +
+            `port = 8000\n` +
+            `mount = "/airlift"\n\n` +
+            `[codecs.opus_ogg]\n` +
+            `type = "opus_ogg"\n` +
+            `sample_rate = 48000\n` +
+            `channels = 2`;
+    }
+
+    if (issueKey.startsWith('services.')) {
+        return `[services.audio_http]\n` +
+            `type = "audio_http"\n` +
+            `enabled = true\n` +
+            `codec_id = "pcm_s16le"\n\n` +
+            `[codecs.pcm_s16le]\n` +
+            `type = "pcm"\n` +
+            `sample_rate = 48000\n` +
+            `channels = 2`;
+    }
+
+    return `[codecs.pcm_s16le]\n` +
+        `type = "pcm"\n` +
+        `sample_rate = 48000\n` +
+        `channels = 2`;
+}
+
+function issueExplanation(issueKey) {
+    if (issueKey === 'graph') {
+        return 'Definiere mindestens einen Input und einen Output, damit die Graph-Pipeline starten kann.';
+    }
+    if (issueKey === 'ringbuffer_id') {
+        return 'Ringbuffer benötigt eine ID, die Inputs/Outputs referenzieren können.';
+    }
+    if (issueKey.startsWith('outputs.')) {
+        return 'Outputs benötigen ein gültiges codec_id und eine Verbindung zu Input/Buffer.';
+    }
+    if (issueKey.startsWith('services.')) {
+        return 'Services mit Audio-Output brauchen ein codec_id, das in [codecs] definiert ist.';
+    }
+    return 'Lege die fehlenden Konfigurationsfelder mit minimalen Defaults an.';
 }
 
 function applyViewState(viewState, status) {
@@ -385,6 +463,7 @@ function togglePanels(show) {
 function renderSetupGuide(status) {
     const stepsElement = document.getElementById('setupSteps');
     const issuesElement = document.getElementById('setupIssues');
+    const issuesSection = document.getElementById('setupIssuesSection');
     const nextStepElement = document.getElementById('setupNextStep');
     const configurationIssues = status?.configuration_issues || [];
     const hasInputs = (status?.graph?.nodes || []).some(node => node.kind === 'input');
@@ -418,15 +497,19 @@ function renderSetupGuide(status) {
     stepsElement.innerHTML = steps.map(step => `<li>${step}</li>`).join('');
     
     if (configurationIssues.length > 0) {
-        issuesElement.classList.remove('hidden');
-        issuesElement.innerHTML = `
-            <h3>Fehlende Felder</h3>
-            <ul>
-                ${configurationIssues.map(issue => `<li><strong>${issue.key}</strong>: ${issue.message}</li>`).join('')}
-            </ul>
-        `;
+        issuesSection.classList.remove('hidden');
+        issuesElement.innerHTML = configurationIssues.map(issue => `
+            <div class="setup-issue-card">
+                <div class="setup-issue-header">
+                    <span>${issueExplanation(issue.key)}</span>
+                    <span class="setup-issue-key">${issue.key}</span>
+                </div>
+                <div class="setup-issue-message">${issue.message}</div>
+                <div class="setup-issue-example">${issueExample(issue.key)}</div>
+            </div>
+        `).join('');
     } else {
-        issuesElement.classList.add('hidden');
+        issuesSection.classList.add('hidden');
         issuesElement.innerHTML = '';
     }
 }

@@ -183,6 +183,69 @@ main {
     letter-spacing: 0.4px;
 }
 
+.setup-section {
+    margin-bottom: 16px;
+}
+
+.setup-section-header {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: var(--blue-light);
+    letter-spacing: 0.4px;
+    margin-bottom: 4px;
+}
+
+.setup-section-subtitle {
+    font-size: 12px;
+    color: #aab7c4;
+    margin-bottom: 12px;
+}
+
+.setup-issues-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    font-size: 12px;
+}
+
+.setup-issue-card {
+    padding: 10px 12px;
+    border-radius: 6px;
+    background: rgba(90, 160, 255, 0.08);
+    border: 1px solid rgba(90, 160, 255, 0.25);
+}
+
+.setup-issue-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    font-weight: 600;
+    color: #ffffff;
+    margin-bottom: 6px;
+    flex-wrap: wrap;
+}
+
+.setup-issue-key {
+    font-family: monospace;
+    color: var(--blue-light);
+}
+
+.setup-issue-message {
+    color: #c7d2df;
+    margin-bottom: 6px;
+}
+
+.setup-issue-example {
+    background: rgba(12, 14, 17, 0.65);
+    border: 1px solid #1f242c;
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 11px;
+    white-space: pre-wrap;
+}
+
 .setup-issues ul {
     margin: 0;
     padding-left: 16px;
