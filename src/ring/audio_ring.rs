@@ -23,6 +23,7 @@ struct Inner {
 pub struct AudioRing {
     inner: Arc<Mutex<Inner>>,
     next_seq: Arc<AtomicU64>,
+    arc_replacements: Arc<AtomicU64>,
 }
 
 #[derive(Clone)]
@@ -58,6 +59,7 @@ impl AudioRing {
         Self {
             inner: Arc::new(Mutex::new(inner)),
             next_seq: Arc::new(AtomicU64::new(1)),
+            arc_replacements: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -72,7 +74,7 @@ impl AudioRing {
             existing_vec.clear();
             existing_vec.extend_from_slice(&pcm);
         } else {
-            // Fallback: create new Arc if we can't get mutable access
+            self.arc_replacements.fetch_add(1, Ordering::Relaxed);
             g.slots[idx].pcm = Arc::new(pcm);
         }
         
@@ -119,6 +121,7 @@ impl AudioRing {
             capacity: g.cap,
             head_seq: g.head_seq,
             next_seq: self.next_seq.load(Ordering::Relaxed),
+            arc_replacements: self.arc_replacements.load(Ordering::Relaxed),
         }
     }
 }
@@ -192,4 +195,5 @@ pub struct RingStats {
     pub capacity: usize,
     pub head_seq: u64,
     pub next_seq: u64,
+    pub arc_replacements: u64,
 }

@@ -4,7 +4,7 @@ use axum::{
     response::sse::{Event, Sse},
 };
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::sync::Arc;
 use tokio::time::{Duration, interval};
@@ -26,6 +26,13 @@ pub struct RingStatus {
     pub head_index: u64,
     pub tail_index: u64,
     pub fill_ratio: f64,
+    pub arc_replacements: u64,
+}
+
+#[derive(Serialize, Clone)]
+pub struct ConfigRequirement {
+    pub key: String,
+    pub message: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -106,6 +113,8 @@ pub struct FileOutStatus {
 pub struct StatusResponse {
     pub timestamp_ms: u64,
     pub ring: RingStatus,
+    pub configuration_required: bool,
+    pub configuration_issues: Vec<ConfigRequirement>,
     pub modules: Vec<ModuleInfo>,
     pub inactive_modules: Vec<InactiveModule>,
     pub graph: GraphStatus,
@@ -163,6 +172,8 @@ fn build_status(
 
     let mut modules = Vec::new();
     let mut inactive_modules = Vec::new();
+
+    let configuration_issues = build_config_requirements(config);
 
     let ring_id = graph_ringbuffer_id(config);
 
@@ -395,7 +406,10 @@ fn build_status(
             head_index,
             tail_index,
             fill_ratio,
+            arc_replacements: ring_stats.arc_replacements,
         },
+        configuration_required: !configuration_issues.is_empty(),
+        configuration_issues,
         modules,
         inactive_modules,
         graph,
@@ -750,6 +764,67 @@ fn build_controls(
     }
 
     controls
+}
+
+fn build_config_requirements(config: &Config) -> Vec<ConfigRequirement> {
+    let mut requirements = Vec::new();
+
+    if config.ringbuffer_required() && config.ringbuffers.is_empty() {
+        requirements.push(ConfigRequirement {
+            key: "ringbuffer_id".to_string(),
+            message: "Ringbuffer-Konfiguration erforderlich".to_string(),
+        });
+    }
+
+    let codec_ids: HashSet<String> = config
+        .codec_instances()
+        .into_iter()
+        .map(|codec| codec.id)
+        .collect();
+
+    for (id, output) in config.outputs.iter().filter(|(_, output)| output.enabled) {
+        let Some(codec_id) = output.codec_id.as_deref().filter(|id| !id.is_empty()) else {
+            requirements.push(ConfigRequirement {
+                key: format!("outputs.{id}.codec_id"),
+                message: format!("Output '{}' benötigt codec_id", id),
+            });
+            continue;
+        };
+
+        if !codec_ids.contains(codec_id) {
+            requirements.push(ConfigRequirement {
+                key: format!("outputs.{id}.codec_id"),
+                message: format!("Output '{}' verwendet unbekanntes codec_id '{}'", id, codec_id),
+            });
+        }
+    }
+
+    for (id, service) in config.services.iter().filter(|(_, service)| service.enabled) {
+        let requires_codec = matches!(service.service_type.as_str(), "audio_http" | "file_out");
+        if !requires_codec {
+            continue;
+        }
+
+        let Some(codec_id) = service.codec_id.as_deref().filter(|id| !id.is_empty()) else {
+            requirements.push(ConfigRequirement {
+                key: format!("services.{id}.codec_id"),
+                message: format!("Service '{}' benötigt codec_id", id),
+            });
+            continue;
+        };
+
+        if !codec_ids.contains(codec_id) {
+            requirements.push(ConfigRequirement {
+                key: format!("services.{id}.codec_id"),
+                message: format!(
+                    "Service '{}' verwendet unbekanntes codec_id '{}'",
+                    id, codec_id
+                ),
+            });
+        }
+    }
+
+    requirements
 }
 
 fn build_file_out_status(

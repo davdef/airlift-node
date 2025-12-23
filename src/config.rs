@@ -395,6 +395,10 @@ impl Config {
         }
     }
 
+    pub fn ringbuffer_required(&self) -> bool {
+        ringbuffer_required(&self.outputs, &self.services)
+    }
+
     pub fn has_graph_config(&self) -> bool {
         !self.ringbuffers.is_empty()
             || !self.inputs.is_empty()
