@@ -87,7 +87,7 @@ pub fn run_alsa_in(
                     decoder.set_next_timestamp(utc);
                     match decode_pcm_chunk(&mut decoder, &pcm_chunk) {
                         Ok(Some(frame)) => {
-                            let seq = ring.push(frame)?;
+                            let seq = ring.writer_push(frame.utc_ns, frame.pcm);
 
                             metrics.alsa_samples.fetch_add(
                                 TARGET_FRAMES as u64 * CHANNELS as u64,
