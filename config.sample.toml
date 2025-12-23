@@ -17,7 +17,6 @@ http_port = 8087
 [ringbuffers.main]
 # Ringbuffer-ID ist "main" und muss in input/output/service "buffer" referenziert werden.
 slots = 6000
-chunk_ms = 100
 prealloc_samples = 9600
 
 [inputs.source]
