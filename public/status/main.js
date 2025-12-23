@@ -227,24 +227,25 @@ async function fetchAllData() {
 function updateUI(status, codecs = []) {
     // Update timestamp
     document.getElementById('updateTime').textContent = formatTime(Date.now());
-    
-    const viewState = determineViewState(status);
+
+    renderAudioPipeline(status);
+    const localState = getLocalPipelineState(status);
+    const viewState = determineViewState(status, localState);
     currentViewState = viewState;
-    applyViewState(viewState, status);
+    applyViewState(viewState, status, localState);
     applyModuleFilterVisibility();
     updateConnectionState(true);
-    
+
     if (viewState !== 'normal') {
         return;
     }
-    
+
     // Render all components
-    renderAudioPipeline(status);
     renderModulesTable(status);
     renderInactiveModules(status);
     renderControls(status);
     renderCodecs(codecs);
-    
+
     // Update system status
     updateSystemStatus(status);
 }
@@ -398,22 +399,35 @@ document.addEventListener('DOMContentLoaded', () => {
     initializeAll();
 });
 
-function determineViewState(status) {
+function determineViewState(status, localState) {
     if (!status) {
         return 'offline';
     }
-    
-    const configurationIssues = status.configuration_issues || [];
-    const hasInputs = (status.graph?.nodes || []).some(node => node.kind === 'input');
-    const hasOutputs = (status.graph?.nodes || []).some(node => node.kind === 'output');
-    const hasConfigIssues = status.configuration_required || configurationIssues.length > 0;
-    const isEmptyConfig = !hasInputs && !hasOutputs;
-    
-    if (hasConfigIssues || isEmptyConfig) {
+    const resolvedState = localState || getLocalPipelineState(status);
+    const hasLocalIssues = (resolvedState.issues || []).length > 0;
+    const isEmptyConfig = resolvedState.nodesCount === 0;
+
+    if (hasLocalIssues || isEmptyConfig) {
         return 'setup';
     }
-    
+
     return 'normal';
+}
+
+function getLocalPipelineState(status) {
+    if (pipelineEditorState.nodes.length === 0 && (status?.graph?.nodes || []).length > 0) {
+        seedPipelineModel(status);
+    }
+    const model = getPipelineGraphModel();
+    const { issues } = buildPipelineGraphConfig(model);
+    return {
+        nodesCount: model.nodes.length,
+        issues,
+        hasInputs: model.nodes.some(node => node.kind === 'input'),
+        hasOutputs: model.nodes.some(node => node.kind === 'output'),
+        hasBuffers: model.nodes.some(node => node.kind === 'buffer'),
+        hasCodecs: model.nodes.some(node => node.kind === 'processing')
+    };
 }
 
 function issueExample(issueKey) {
@@ -486,14 +500,14 @@ function issueExplanation(issueKey) {
     return 'Lege die fehlenden Konfigurationsfelder mit minimalen Defaults an.';
 }
 
-function applyViewState(viewState, status) {
+function applyViewState(viewState, status, localState) {
     if (viewState === 'offline') {
         showOfflineView();
         return;
     }
     
     if (viewState === 'setup') {
-        showSetupView(status);
+        showSetupView(status, localState);
         return;
     }
     
@@ -509,13 +523,13 @@ function showOfflineView() {
     setupPanel.classList.add('hidden');
 }
 
-function showSetupView(status) {
+function showSetupView(status, localState) {
     currentViewState = 'setup';
     document.getElementById('offlinePanel').classList.add('hidden');
     const setupPanel = document.getElementById('setupPanel');
     togglePanels(true);
     setupPanel.classList.remove('hidden');
-    renderSetupGuide(status);
+    renderSetupGuide(status, localState);
     const validation = window.renderPipelineConfigPreview?.();
     updatePipelineValidationState(validation?.issues || []);
 }
@@ -536,23 +550,34 @@ function togglePanels(show) {
     });
 }
 
-function renderSetupGuide(status) {
+function renderSetupGuide(status, localState) {
     const contextStepsElement = document.getElementById('pipelineContextHints');
     const contextNextStep = document.getElementById('pipelineContextNextStep');
     const issuesElement = document.getElementById('setupIssues');
     const issuesSection = document.getElementById('setupIssuesSection');
     const nextStepElement = document.getElementById('setupNextStep');
     const configurationIssues = status?.configuration_issues || [];
-    const hasInputs = (status?.graph?.nodes || []).some(node => node.kind === 'input');
-    const hasOutputs = (status?.graph?.nodes || []).some(node => node.kind === 'output');
-    
+    const resolvedState = localState || getLocalPipelineState(status);
+    const localIssues = resolvedState.issues || [];
+    const hasInputs = resolvedState.hasInputs;
+    const hasOutputs = resolvedState.hasOutputs;
+    const hasCodecIssues = localIssues.some(issue => issue.type === 'codec-missing');
+    const hasBufferIssues = localIssues.some(issue => issue.type === 'output-buffer-missing');
+    const hasConnectionIssues = localIssues.some(issue => ['output-connection', 'service-connection', 'signal-compat', 'unconnected', 'input-start'].includes(issue.type));
+
     let nextStep = 'Konfiguration prüfen';
     if (!hasInputs) {
         nextStep = 'Input konfigurieren';
     } else if (!hasOutputs) {
         nextStep = 'Output konfigurieren';
+    } else if (hasCodecIssues) {
+        nextStep = 'Codec ergänzen';
+    } else if (hasBufferIssues) {
+        nextStep = 'Buffer verbinden';
+    } else if (hasConnectionIssues) {
+        nextStep = 'Verbindungen prüfen';
     } else if (configurationIssues.length > 0) {
-        nextStep = 'Pflichtfelder ergänzen';
+        nextStep = 'Backend-Sync prüfen';
     }
     
     nextStepElement.textContent = nextStep;
@@ -567,8 +592,17 @@ function renderSetupGuide(status) {
     if (!hasOutputs) {
         steps.push('Mindestens einen Output mit codec_id konfigurieren.');
     }
-    if (configurationIssues.length > 0) {
-        steps.push('Offene Pflichtfelder in der Konfiguration beheben.');
+    if (hasCodecIssues) {
+        steps.push('Codec-Nodes ergänzen und Outputs/Services damit verbinden.');
+    }
+    if (hasBufferIssues) {
+        steps.push('Output mit einem Buffer verbinden.');
+    }
+    if (hasConnectionIssues) {
+        steps.push('Verbindungen zwischen Inputs, Buffern und Outputs prüfen.');
+    }
+    if (configurationIssues.length > 0 && localIssues.length === 0) {
+        steps.push('Backend-Konfiguration synchronisieren und Service neu laden.');
     }
     if (steps.length === 0) {
         steps.push('Konfiguration speichern und die API neu laden.');
@@ -1415,6 +1449,22 @@ function updatePipelineInspector() {
 
 function updatePipelinePreview() {
     renderPipelineConfigPreview();
+    refreshSetupFlowFromLocalState();
+}
+
+function refreshSetupFlowFromLocalState() {
+    if (!currentStatus) {
+        return;
+    }
+    const localState = getLocalPipelineState(currentStatus);
+    const viewState = determineViewState(currentStatus, localState);
+    if (viewState !== currentViewState) {
+        applyViewState(viewState, currentStatus, localState);
+        return;
+    }
+    if (viewState === 'setup') {
+        renderSetupGuide(currentStatus, localState);
+    }
 }
 
 function renderPipelineConfigPreview() {
@@ -1574,6 +1624,12 @@ function buildPipelineGraphConfig(model) {
             issues.push({
                 type: 'output-connection',
                 message: `Output "${node.label}" ist nicht mit Input oder Buffer verbunden.`
+            });
+        }
+        if (!upstreamBuffer) {
+            issues.push({
+                type: 'output-buffer-missing',
+                message: `Output "${node.label}" hat keinen Buffer.`
             });
         }
         if (!upstreamCodec) {
