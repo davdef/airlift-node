@@ -447,7 +447,6 @@ function issueExample(issueKey) {
     if (issueKey === 'ringbuffer_id') {
         return `[ringbuffers.main]\n` +
             `slots = 6000\n` +
-            `chunk_ms = 100\n` +
             `prealloc_samples = 9600`;
     }
 
@@ -713,7 +712,6 @@ const pipelineCatalog = [
                 supported: true,
                 configFields: [
                     { key: 'slots', required: true, example: '6000' },
-                    { key: 'chunk_ms', required: true, example: '100' },
                     { key: 'prealloc_samples', required: true, example: '9600' }
                 ]
             }
@@ -1576,7 +1574,6 @@ function buildPipelineGraphConfig(model) {
 
     const ringbufferDefaults = {
         slots: 6000,
-        chunk_ms: 100,
         prealloc_samples: 9600
     };
     const ringbufferIdMap = allocateNodeIds(bufferNodes, 'buffer');
@@ -1937,7 +1934,6 @@ function baseConfigFieldsForKind(kind) {
     if (kind === 'buffer') {
         return [
             { key: 'slots', required: true, example: '6000' },
-            { key: 'chunk_ms', required: true, example: '100' },
             { key: 'prealloc_samples', required: true, example: '9600' }
         ];
     }

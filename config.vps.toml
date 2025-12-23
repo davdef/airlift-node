@@ -6,7 +6,6 @@ http_port = 8087
 
 [ringbuffers.main]
 slots = 6000
-chunk_ms = 100
 prealloc_samples = 9600
 
 [inputs.rfm_icecast]
