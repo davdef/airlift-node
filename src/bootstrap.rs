@@ -146,7 +146,9 @@ pub fn start_workers(
     start_srt_in(cfg, context, running.clone());
     start_alsa_in(cfg, context);
     sync_output_states(cfg, context);
-    start_peak_storage(context);
+    if cfg.peak_storage_enabled {
+        start_peak_storage(context);
+    }
     start_recorder(cfg, context)?;
     Ok(())
 }
@@ -968,59 +970,64 @@ fn start_graph_services(
         });
     }));
 
-    let audio_http = graph
-        .services
-        .iter()
-        .find(|(_, svc)| svc.service_type == "audio_http");
-    if let Some((_id, service)) = audio_http {
-        if service.enabled {
-            let audio_bind = "0.0.0.0:3011";
-            let ring = context.agent.ring.clone();
-            let wav_dir = context.wav_dir.clone();
-            let codec_id = service
-                .codec_id
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("service requires codec_id"))?;
-            let codec_registry = context.codec_registry.clone();
-            let (codec_handle, codec_instance) = context
-                .codec_registry
-                .build_codec_handle(&codec_id)?;
-            codec_instance.mark_ready();
-            std::thread::spawn(move || {
-                let handle = codec_handle.clone();
-                let instance = codec_instance.clone();
-                if let Err(e) = crate::audio::http::start_audio_http_server(
-                    audio_bind,
-                    wav_dir,
-                    move || {
-                        GraphEncodedSource::Encoded(EncodedRingSource::new(
-                            ring.subscribe(),
-                            handle.clone(),
-                            instance.clone(),
-                        ))
-                    },
-                    Some(codec_id),
-                    codec_registry,
-                ) {
-                    error!("[audio_http] server failed: {}", e);
-                }
-            });
-            info!("[airlift] audio HTTP enabled (http://{})", audio_bind);
+    if cfg.audio_http.enabled {
+        let audio_http = graph
+            .services
+            .iter()
+            .find(|(_, svc)| svc.service_type == "audio_http");
+        if let Some((_id, service)) = audio_http {
+            if service.enabled {
+                let audio_bind = cfg.audio_http.bind.clone();
+                let audio_bind_for_thread = audio_bind.clone();
+                let ring = context.agent.ring.clone();
+                let wav_dir = context.wav_dir.clone();
+                let codec_id = service
+                    .codec_id
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("service requires codec_id"))?;
+                let codec_registry = context.codec_registry.clone();
+                let (codec_handle, codec_instance) = context
+                    .codec_registry
+                    .build_codec_handle(&codec_id)?;
+                codec_instance.mark_ready();
+                std::thread::spawn(move || {
+                    let handle = codec_handle.clone();
+                    let instance = codec_instance.clone();
+                    if let Err(e) = crate::audio::http::start_audio_http_server(
+                        &audio_bind_for_thread,
+                        wav_dir,
+                        move || {
+                            GraphEncodedSource::Encoded(EncodedRingSource::new(
+                                ring.subscribe(),
+                                handle.clone(),
+                                instance.clone(),
+                            ))
+                        },
+                        Some(codec_id),
+                        codec_registry,
+                    ) {
+                        error!("[audio_http] server failed: {}", e);
+                    }
+                });
+                info!("[airlift] audio HTTP enabled (http://{})", audio_bind);
+            }
         }
     }
 
-    let monitoring = graph
-        .services
-        .iter()
-        .find(|(_, svc)| svc.service_type == "monitoring");
-    if let Some((_id, service)) = monitoring {
-        if service.enabled {
-            crate::services::MonitoringService::start(
-                cfg,
-                &context.agent,
-                context.metrics.clone(),
-                running,
-            )?;
+    if cfg.monitoring.enabled {
+        let monitoring = graph
+            .services
+            .iter()
+            .find(|(_, svc)| svc.service_type == "monitoring");
+        if let Some((_id, service)) = monitoring {
+            if service.enabled {
+                crate::services::MonitoringService::start(
+                    cfg,
+                    &context.agent,
+                    context.metrics.clone(),
+                    running,
+                )?;
+            }
         }
     }
 

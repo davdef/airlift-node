@@ -6,71 +6,25 @@ pub fn register_services(
     api_bind: &str,
     audio_bind: &str,
     monitoring_port: u16,
+    api_enabled: bool,
+    audio_http_enabled: bool,
+    monitoring_enabled: bool,
 ) {
-    registry.register_service(ServiceDescriptor {
-        id: "api".to_string(),
-        service_type: "api".to_string(),
-        endpoints: vec![ServiceEndpoint {
-            name: "http".to_string(),
-            url: format!("http://{}", api_bind),
-        }],
-    });
-
-    registry.register_service(ServiceDescriptor {
-        id: "audio_http".to_string(),
-        service_type: "audio_http".to_string(),
-        endpoints: vec![
-            ServiceEndpoint {
-                name: "live".to_string(),
-                url: format!("http://{}/audio/live", audio_bind),
-            },
-            ServiceEndpoint {
-                name: "timeshift".to_string(),
-                url: format!("http://{}/audio/at", audio_bind),
-            },
-        ],
-    });
-
-    registry.register_service(ServiceDescriptor {
-        id: "monitoring".to_string(),
-        service_type: "monitoring".to_string(),
-        endpoints: vec![
-            ServiceEndpoint {
-                name: "metrics".to_string(),
-                url: format!("http://0.0.0.0:{}/metrics", monitoring_port),
-            },
-            ServiceEndpoint {
-                name: "health".to_string(),
-                url: format!("http://0.0.0.0:{}/health", monitoring_port),
-            },
-        ],
-    });
-}
-
-pub fn register_graph_services(
-    registry: &Registry,
-    api_bind: &str,
-    audio_bind: &str,
-    monitoring_port: u16,
-    graph: &ValidatedGraphConfig,
-) {
-    registry.register_service(ServiceDescriptor {
-        id: "api".to_string(),
-        service_type: "api".to_string(),
-        endpoints: vec![ServiceEndpoint {
-            name: "http".to_string(),
-            url: format!("http://{}", api_bind),
-        }],
-    });
-
-    if let Some((id, service)) = graph
-        .services
-        .iter()
-        .find(|(_, svc)| svc.service_type == "audio_http" && svc.enabled)
-    {
+    if api_enabled {
         registry.register_service(ServiceDescriptor {
-            id: id.clone(),
-            service_type: service.service_type.clone(),
+            id: "api".to_string(),
+            service_type: "api".to_string(),
+            endpoints: vec![ServiceEndpoint {
+                name: "http".to_string(),
+                url: format!("http://{}", api_bind),
+            }],
+        });
+    }
+
+    if audio_http_enabled {
+        registry.register_service(ServiceDescriptor {
+            id: "audio_http".to_string(),
+            service_type: "audio_http".to_string(),
             endpoints: vec![
                 ServiceEndpoint {
                     name: "live".to_string(),
@@ -84,14 +38,10 @@ pub fn register_graph_services(
         });
     }
 
-    if let Some((id, service)) = graph
-        .services
-        .iter()
-        .find(|(_, svc)| svc.service_type == "monitoring" && svc.enabled)
-    {
+    if monitoring_enabled {
         registry.register_service(ServiceDescriptor {
-            id: id.clone(),
-            service_type: service.service_type.clone(),
+            id: "monitoring".to_string(),
+            service_type: "monitoring".to_string(),
             endpoints: vec![
                 ServiceEndpoint {
                     name: "metrics".to_string(),
@@ -103,6 +53,74 @@ pub fn register_graph_services(
                 },
             ],
         });
+    }
+}
+
+pub fn register_graph_services(
+    registry: &Registry,
+    api_bind: &str,
+    audio_bind: &str,
+    monitoring_port: u16,
+    api_enabled: bool,
+    audio_http_enabled: bool,
+    monitoring_enabled: bool,
+    graph: &ValidatedGraphConfig,
+) {
+    if api_enabled {
+        registry.register_service(ServiceDescriptor {
+            id: "api".to_string(),
+            service_type: "api".to_string(),
+            endpoints: vec![ServiceEndpoint {
+                name: "http".to_string(),
+                url: format!("http://{}", api_bind),
+            }],
+        });
+    }
+
+    if audio_http_enabled {
+        if let Some((id, service)) = graph
+        .services
+        .iter()
+        .find(|(_, svc)| svc.service_type == "audio_http" && svc.enabled)
+        {
+            registry.register_service(ServiceDescriptor {
+                id: id.clone(),
+                service_type: service.service_type.clone(),
+                endpoints: vec![
+                    ServiceEndpoint {
+                        name: "live".to_string(),
+                        url: format!("http://{}/audio/live", audio_bind),
+                    },
+                    ServiceEndpoint {
+                        name: "timeshift".to_string(),
+                        url: format!("http://{}/audio/at", audio_bind),
+                    },
+                ],
+            });
+        }
+    }
+
+    if monitoring_enabled {
+        if let Some((id, service)) = graph
+        .services
+        .iter()
+        .find(|(_, svc)| svc.service_type == "monitoring" && svc.enabled)
+        {
+            registry.register_service(ServiceDescriptor {
+                id: id.clone(),
+                service_type: service.service_type.clone(),
+                endpoints: vec![
+                    ServiceEndpoint {
+                        name: "metrics".to_string(),
+                        url: format!("http://0.0.0.0:{}/metrics", monitoring_port),
+                    },
+                    ServiceEndpoint {
+                        name: "health".to_string(),
+                        url: format!("http://0.0.0.0:{}/health", monitoring_port),
+                    },
+                ],
+            });
+        }
     }
 
     for (id, service) in graph.services.iter() {

@@ -93,8 +93,8 @@ fn main() -> anyhow::Result<()> {
     // ------------------------------------------------------------
     // Services
     // ------------------------------------------------------------
-    let api_bind = "0.0.0.0:3008";
-    let audio_bind = "0.0.0.0:3011";
+    let api_bind = cfg.api.bind.as_str();
+    let audio_bind = cfg.audio_http.bind.as_str();
 
     if let Some(graph) = &graph {
         register_graph_services(
@@ -102,44 +102,66 @@ fn main() -> anyhow::Result<()> {
             api_bind,
             audio_bind,
             cfg.monitoring.http_port,
+            cfg.api.enabled,
+            cfg.audio_http.enabled,
+            cfg.monitoring.enabled,
             graph,
         );
     } else {
-        register_services(&registry, api_bind, audio_bind, cfg.monitoring.http_port);
+        register_services(
+            &registry,
+            api_bind,
+            audio_bind,
+            cfg.monitoring.http_port,
+            cfg.api.enabled,
+            cfg.audio_http.enabled,
+            cfg.monitoring.enabled,
+        );
     }
 
-    let api_state = ApiState {
-        peak_store: context.peak_store.clone(),
-        history_service: context.history_service.clone(),
-        ring: context.agent.ring.clone(),
-        encoded_ring: context.agent.encoded_ring.clone(),
-        control_state: context.control_state.clone(),
-        config: cfg.clone(),
-        registry: registry.clone(),
-        wav_dir: context.wav_dir.clone(),
-        codec_registry: context.codec_registry.clone(),
-    };
+    if cfg.api.enabled {
+        let api_state = ApiState {
+            peak_store: context.peak_store.clone(),
+            history_service: context.history_service.clone(),
+            ring: context.agent.ring.clone(),
+            encoded_ring: context.agent.encoded_ring.clone(),
+            control_state: context.control_state.clone(),
+            config: cfg.clone(),
+            registry: registry.clone(),
+            wav_dir: context.wav_dir.clone(),
+            codec_registry: context.codec_registry.clone(),
+        };
 
-    let api_service = ApiService::new(api_bind.parse()?);
-    api_service.start(api_state);
+        let api_service = ApiService::new(api_bind.parse()?);
+        api_service.start(api_state);
+    }
 
     if let Some(graph) = &graph {
         start_graph_workers(&cfg, graph, &context, running.clone())?;
     } else {
-        MonitoringService::start(
-            &cfg,
-            &context.agent,
-            context.metrics.clone(),
-            running.clone(),
-        )?;
+        if cfg.monitoring.enabled {
+            MonitoringService::start(
+                &cfg,
+                &context.agent,
+                context.metrics.clone(),
+                running.clone(),
+            )?;
+        }
 
-        let audio_http_service = AudioHttpService::new(audio_bind);
-        audio_http_service.start(
-            context.wav_dir.clone(),
-            context.agent.ring.clone(),
-            cfg.audio_http_codec_id.clone(),
-            context.codec_registry.clone(),
-        );
+        if cfg.audio_http.enabled {
+            let audio_http_service = AudioHttpService::new(audio_bind);
+            let codec_id = cfg
+                .audio_http
+                .codec_id
+                .clone()
+                .or_else(|| cfg.audio_http_codec_id.clone());
+            audio_http_service.start(
+                context.wav_dir.clone(),
+                context.agent.ring.clone(),
+                codec_id,
+                context.codec_registry.clone(),
+            );
+        }
 
         // ------------------------------------------------------------
         // Module workers (audio pipeline, recorder, peaks)
