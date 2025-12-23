@@ -629,6 +629,7 @@ const pipelineCatalog = [
         items: [
             {
                 type: 'srt',
+                backendType: 'srt',
                 label: 'SRT Input',
                 supported: true,
                 configFields: [
@@ -639,24 +640,28 @@ const pipelineCatalog = [
             },
             {
                 type: 'icecast',
+                backendType: 'icecast',
                 label: 'Icecast Input',
                 supported: true,
                 configFields: [{ key: 'url', required: true, example: 'https://example.com/stream.ogg' }]
             },
             {
                 type: 'http_stream',
+                backendType: 'http_stream',
                 label: 'HTTP Stream Input',
                 supported: true,
                 configFields: [{ key: 'url', required: true, example: 'https://example.com/stream.ogg' }]
             },
             {
                 type: 'alsa',
+                backendType: 'alsa',
                 label: 'ALSA Input',
                 supported: true,
                 configFields: [{ key: 'device', required: true, example: 'hw:0,0' }]
             },
             {
                 type: 'file_in',
+                backendType: 'file_in',
                 label: 'File Input',
                 supported: true,
                 configFields: [{ key: 'path', required: true, example: '/path/to/audio.wav' }]
@@ -669,6 +674,7 @@ const pipelineCatalog = [
         items: [
             {
                 type: null,
+                backendType: null,
                 label: 'Ringbuffer',
                 supported: true,
                 configFields: [
@@ -685,6 +691,7 @@ const pipelineCatalog = [
         items: [
             {
                 type: 'pcm',
+                backendType: 'pcm',
                 label: 'PCM',
                 supported: true,
                 configFields: [
@@ -694,6 +701,7 @@ const pipelineCatalog = [
             },
             {
                 type: 'opus_ogg',
+                backendType: 'opus_ogg',
                 label: 'Opus OGG',
                 supported: true,
                 configFields: [
@@ -706,6 +714,7 @@ const pipelineCatalog = [
             },
             {
                 type: 'opus_webrtc',
+                backendType: 'opus_webrtc',
                 label: 'Opus WebRTC',
                 supported: true,
                 configFields: [
@@ -717,6 +726,7 @@ const pipelineCatalog = [
             },
             {
                 type: 'mp3',
+                backendType: 'mp3',
                 label: 'MP3',
                 supported: true,
                 configFields: [
@@ -727,6 +737,7 @@ const pipelineCatalog = [
             },
             {
                 type: 'vorbis',
+                backendType: 'vorbis',
                 label: 'Vorbis',
                 supported: true,
                 configFields: [
@@ -737,12 +748,14 @@ const pipelineCatalog = [
             },
             {
                 type: 'aac_lc',
+                backendType: 'aac_lc',
                 label: 'AAC-LC',
                 supported: false,
                 configFields: []
             },
             {
                 type: 'flac',
+                backendType: 'flac',
                 label: 'FLAC',
                 supported: false,
                 configFields: []
@@ -755,6 +768,7 @@ const pipelineCatalog = [
         items: [
             {
                 type: 'audio_http',
+                backendType: 'audio_http',
                 label: 'Audio HTTP',
                 supported: true,
                 configFields: [
@@ -764,18 +778,21 @@ const pipelineCatalog = [
             },
             {
                 type: 'monitor',
+                backendType: 'monitor',
                 label: 'Monitor',
                 supported: true,
                 configFields: []
             },
             {
                 type: 'monitoring',
+                backendType: 'monitoring',
                 label: 'Monitoring',
                 supported: true,
                 configFields: []
             },
             {
                 type: 'peak_analyzer',
+                backendType: 'peak_analyzer',
                 label: 'Peak Analyzer',
                 supported: true,
                 configFields: [
@@ -785,6 +802,7 @@ const pipelineCatalog = [
             },
             {
                 type: 'influx_out',
+                backendType: 'influx_out',
                 label: 'InfluxDB',
                 supported: true,
                 configFields: [
@@ -795,6 +813,7 @@ const pipelineCatalog = [
             },
             {
                 type: 'broadcast_http',
+                backendType: 'broadcast_http',
                 label: 'Broadcast HTTP',
                 supported: true,
                 configFields: [
@@ -804,6 +823,7 @@ const pipelineCatalog = [
             },
             {
                 type: 'file_out',
+                backendType: 'file_out',
                 label: 'File-Out Service',
                 supported: true,
                 configFields: [
@@ -820,6 +840,7 @@ const pipelineCatalog = [
         items: [
             {
                 type: 'srt_out',
+                backendType: 'srt_out',
                 label: 'SRT Output',
                 supported: true,
                 configFields: [
@@ -830,6 +851,7 @@ const pipelineCatalog = [
             },
             {
                 type: 'icecast_out',
+                backendType: 'icecast_out',
                 label: 'Icecast Output',
                 supported: true,
                 configFields: [
@@ -848,6 +870,7 @@ const pipelineCatalog = [
             },
             {
                 type: 'udp_out',
+                backendType: 'udp_out',
                 label: 'UDP Output',
                 supported: true,
                 configFields: [
@@ -857,6 +880,7 @@ const pipelineCatalog = [
             },
             {
                 type: 'file_out',
+                backendType: 'file_out',
                 label: 'File Output',
                 supported: true,
                 configFields: [
@@ -917,6 +941,32 @@ function renderPipelineEditor(status) {
     attachPipelineEvents();
 }
 
+function ensureNodeMetadata(node) {
+    if (!node) {
+        return node;
+    }
+    if (node.type === '') {
+        node.type = null;
+    }
+    if (node.backendType === '') {
+        node.backendType = null;
+    }
+    if (!node.type && node.backendType) {
+        node.type = node.backendType;
+    }
+    if (!node.backendType && node.type) {
+        node.backendType = node.type;
+    }
+    if (!node.backendType && !node.type) {
+        const inferred = inferModuleType(node.kind, node.label);
+        if (inferred) {
+            node.type = inferred;
+            node.backendType = inferred;
+        }
+    }
+    return node;
+}
+
 function seedPipelineModel(status) {
     if (pipelineEditorState.nodes.length > 0) {
         return;
@@ -940,14 +990,15 @@ function seedPipelineModel(status) {
     pipelineEditorState.nodes = graphNodes.map((node) => {
         const row = rowCounters[node.kind] ?? 0;
         rowCounters[node.kind] = row + 1;
-        return {
+        return ensureNodeMetadata({
             id: node.id,
             label: node.label || node.id,
             kind: node.kind,
-            moduleType: inferModuleType(node.kind, node.label),
+            type: node.type ?? null,
+            backendType: node.backendType ?? null,
             x: columnX[node.kind] ?? 40,
             y: 40 + row * 120
-        };
+        });
     });
 
     pipelineEditorState.edges = graphEdges.map((edge, index) => ({
@@ -968,6 +1019,7 @@ function renderPalette(container) {
                      draggable="${planned ? 'false' : 'true'}"
                      data-kind="${group.kind}"
                      data-type="${item.type ?? ''}"
+                     data-backend-type="${item.backendType ?? item.type ?? ''}"
                      data-label="${item.label}"
                      data-planned="${planned}">
                     <span class="palette-badge">${item.type ?? group.kind}</span>
@@ -991,7 +1043,7 @@ function renderNodes(container) {
              data-node-id="${node.id}"
              style="left:${node.x}px; top:${node.y}px;">
             <div class="pipeline-node-title">${node.label}</div>
-            <div class="pipeline-node-meta">${node.kind}${node.moduleType ? ` · ${node.moduleType}` : ''}</div>
+            <div class="pipeline-node-meta">${node.kind}${node.type ? ` · ${node.type}` : ''}</div>
             <div class="pipeline-node-handles">
                 <div class="node-handle input" data-handle="input" data-node-id="${node.id}"></div>
                 <div class="node-handle output" data-handle="output" data-node-id="${node.id}"></div>
@@ -1127,7 +1179,8 @@ function attachPipelineEvents() {
             event.dataTransfer.setData('text/plain', JSON.stringify({
                 kind: item.dataset.kind,
                 label: item.dataset.label,
-                moduleType: item.dataset.type || null
+                type: item.dataset.type || null,
+                backendType: item.dataset.backendType || null
             }));
         });
     });
@@ -1144,12 +1197,13 @@ function attachPipelineEvents() {
                 if (!payload) {
                     return;
                 }
-                const { kind, label, moduleType } = JSON.parse(payload);
+                const { kind, label, type, backendType } = JSON.parse(payload);
                 const rect = canvas.getBoundingClientRect();
                 addPipelineNode({
                     kind,
                     label: `Neues ${label}`,
-                    moduleType,
+                    type,
+                    backendType,
                     x: event.clientX - rect.left - 60,
                     y: event.clientY - rect.top - 20
                 });
@@ -1248,16 +1302,17 @@ function handlePointerUp() {
     }
 }
 
-function addPipelineNode({ kind, label, moduleType, x, y }) {
+function addPipelineNode({ kind, label, type, backendType, x, y }) {
     const id = `local-${pipelineEditorState.nextNodeId++}`;
-    pipelineEditorState.nodes.push({
+    pipelineEditorState.nodes.push(ensureNodeMetadata({
         id,
         kind,
         label,
-        moduleType,
+        type: type ?? null,
+        backendType: backendType ?? null,
         x: Math.max(20, x),
         y: Math.max(20, y)
-    });
+    }));
     pipelineEditorState.selectedNodeId = id;
     renderNodes(document.getElementById('pipelineNodes'));
     renderEdges(document.getElementById('pipelineEdges'));
@@ -1299,7 +1354,7 @@ function updatePipelineInspector() {
         return;
     }
     const connectedEdges = pipelineEditorState.edges.filter(edge => edge.from === selected.id || edge.to === selected.id);
-    const resolvedType = selected.moduleType || inferModuleType(selected.kind, selected.label);
+    const resolvedType = selected.type || selected.backendType;
     const catalogEntry = findCatalogEntry(selected.kind, resolvedType);
     const configFields = mergeConfigFields(
         baseConfigFieldsForKind(selected.kind),
@@ -1313,8 +1368,8 @@ function updatePipelineInspector() {
         : (catalogEntry.supported === false ? 'planned' : 'supported');
     inspector.innerHTML = `
         <div>
-            <div class="label">Modul</div>
-            <div class="value">${selected.label}</div>
+            <div class="label">Label</div>
+            <input class="pipeline-inspector-input" type="text" id="pipelineInspectorLabel" />
         </div>
         <div>
             <div class="label">Typ</div>
@@ -1347,6 +1402,15 @@ function updatePipelineInspector() {
             `}
         </div>
     `;
+    const labelInput = inspector.querySelector('#pipelineInspectorLabel');
+    if (labelInput) {
+        labelInput.value = selected.label;
+        labelInput.oninput = (event) => {
+            selected.label = event.target.value;
+            renderNodes(document.getElementById('pipelineNodes'));
+            updatePipelinePreview();
+        };
+    }
 }
 
 function updatePipelinePreview() {
@@ -1369,17 +1433,25 @@ function renderPipelineConfigPreview() {
 
 function getPipelineGraphModel() {
     return {
-        nodes: pipelineEditorState.nodes.map(node => ({
-            id: node.id,
-            label: node.label,
-            kind: node.kind,
-            moduleType: node.moduleType
-        })),
+        nodes: pipelineEditorState.nodes.map(node => {
+            ensureNodeMetadata(node);
+            return {
+                id: node.id,
+                label: node.label,
+                kind: node.kind,
+                type: node.type,
+                backendType: node.backendType
+            };
+        }),
         edges: pipelineEditorState.edges.map(edge => ({
             from: edge.from,
             to: edge.to
         }))
     };
+}
+
+function resolveBackendType(node, fallback) {
+    return node?.backendType || node?.type || fallback;
 }
 
 function buildPipelineGraphConfig(model) {
@@ -1477,14 +1549,14 @@ function buildPipelineGraphConfig(model) {
     const codecEntries = {};
     codecNodes.forEach(node => {
         const codecId = codecIdMap.get(node.id);
-        const codecType = node.moduleType || inferCodecType(node.label);
+        const codecType = resolveBackendType(node, 'pcm');
         codecEntries[codecId] = buildCodecDefaults(codecType);
     });
 
     const inputs = {};
     inputNodes.forEach(node => {
         const inputId = inputIdMap.get(node.id);
-        const inputType = node.moduleType || inferInputType(node.label);
+        const inputType = resolveBackendType(node, 'srt');
         const bufferNode = findDownstreamNode(node.id, incoming, outgoing, nodesById, candidate => candidate.kind === 'buffer');
         const bufferId = bufferNode ? ringbufferIdMap.get(bufferNode.id) : primaryRingbufferId;
         inputs[inputId] = buildInputConfig(inputType, bufferId);
@@ -1493,7 +1565,7 @@ function buildPipelineGraphConfig(model) {
     const outputs = {};
     outputNodes.forEach(node => {
         const outputId = outputIdMap.get(node.id);
-        const outputType = node.moduleType || inferOutputType(node.label);
+        const outputType = resolveBackendType(node, 'srt_out');
         const upstreamInput = findUpstreamNode(node.id, incoming, nodesById, candidate => candidate.kind === 'input');
         const upstreamBuffer = findUpstreamNode(node.id, incoming, nodesById, candidate => candidate.kind === 'buffer');
         const upstreamCodec = findUpstreamNode(node.id, incoming, nodesById, candidate => candidate.kind === 'processing');
@@ -1521,7 +1593,7 @@ function buildPipelineGraphConfig(model) {
     const services = {};
     serviceNodes.forEach(node => {
         const serviceId = serviceIdMap.get(node.id);
-        const serviceType = node.moduleType || inferServiceType(node.label);
+        const serviceType = resolveBackendType(node, 'audio_http');
         const upstreamInput = findUpstreamNode(node.id, incoming, nodesById, candidate => candidate.kind === 'input');
         const upstreamBuffer = findUpstreamNode(node.id, incoming, nodesById, candidate => candidate.kind === 'buffer');
         const upstreamCodec = findUpstreamNode(node.id, incoming, nodesById, candidate => candidate.kind === 'processing');
@@ -1613,22 +1685,6 @@ function findDownstreamNode(startId, incoming, outgoing, nodesById, predicate) {
         (outgoing.get(current) || []).forEach(next => queue.push(next));
     }
     return null;
-}
-
-function inferInputType(label) {
-    return inferModuleType('input', label) || 'srt';
-}
-
-function inferOutputType(label) {
-    return inferModuleType('output', label) || 'srt_out';
-}
-
-function inferServiceType(label) {
-    return inferModuleType('service', label) || 'audio_http';
-}
-
-function inferCodecType(label) {
-    return inferModuleType('processing', label) || 'pcm';
 }
 
 function buildInputConfig(inputType, bufferId) {
