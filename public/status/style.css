@@ -154,6 +154,13 @@ main {
     transition: all 0.2s ease;
 }
 
+.filter-btn:disabled,
+.filter-btn.disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+    color: #6f8192;
+}
+
 .filter-btn:hover {
     color: var(--blue-light);
 }
@@ -162,6 +169,18 @@ main {
     background: rgba(90, 160, 255, 0.2);
     border-color: rgba(90, 160, 255, 0.35);
     color: var(--blue-light);
+}
+
+.filter-badge {
+    font-size: 10px;
+    color: #9fb4c8;
+    background: rgba(90, 160, 255, 0.12);
+    border: 1px solid rgba(90, 160, 255, 0.35);
+    padding: 4px 8px;
+    border-radius: 999px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    white-space: nowrap;
 }
 
 .panel-title {
