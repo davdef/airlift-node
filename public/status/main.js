@@ -138,7 +138,7 @@ async function fetchAllData() {
         // Initialize waveforms with history
         await Promise.all([
             initializeRingbuffer(status),
-            initializeRecorder(status)
+            initializeFileOut(status)
         ]);
         
     } catch (error) {
@@ -229,7 +229,7 @@ function setupWebSocket() {
                 // Update waveforms with new peak
                 if (peaks !== null || silence) {
                     updateRingbufferPoint(data.timestamp, peaks || [0, 0], silence);
-                    updateRecorderPoint(data.timestamp, peaks, silence);
+                    updateFileOutPoint(data.timestamp, peaks, silence);
                 }
                 
                 // Auto-refresh data every 10 WS messages

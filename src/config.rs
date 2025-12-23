@@ -105,6 +105,7 @@ pub struct InputConfig {
     pub streamid: Option<String>,
     pub device: Option<String>,
     pub url: Option<String>,
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -142,6 +143,8 @@ pub struct ServiceConfig {
     pub url: Option<String>,
     pub db: Option<String>,
     pub interval_ms: Option<u64>,
+    pub wav_dir: Option<String>,
+    pub retention_days: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -509,6 +512,11 @@ fn validate_inputs(
                     anyhow::bail!("input '{}' requires device", id);
                 }
             }
+            "file_in" => {
+                if input.path.as_deref().unwrap_or("").is_empty() {
+                    anyhow::bail!("input '{}' requires path", id);
+                }
+            }
             other => {
                 anyhow::bail!("input '{}' has unsupported type '{}'", id, other);
             }
@@ -613,7 +621,7 @@ fn validate_outputs(
                     );
                 }
             }
-            "recorder" => {
+            "file_out" => {
                 require_output_field(id, "wav_dir", output.wav_dir.as_ref())?;
                 require_output_field(id, "retention_days", output.retention_days.as_ref())?;
                 if matches!(info.container, ContainerKind::Rtp) {
@@ -698,6 +706,11 @@ fn validate_services(
             "broadcast_http" => {
                 require_service_field(id, "url", service.url.as_ref())?;
                 require_service_field(id, "interval_ms", service.interval_ms.as_ref())?;
+            }
+            "file_out" => {
+                require_service_field(id, "codec_id", service.codec_id.as_ref())?;
+                require_service_field(id, "wav_dir", service.wav_dir.as_ref())?;
+                require_service_field(id, "retention_days", service.retention_days.as_ref())?;
             }
             other => {
                 anyhow::bail!("service '{}' has unsupported type '{}'", id, other);

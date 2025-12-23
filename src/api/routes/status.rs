@@ -93,7 +93,7 @@ pub struct GraphStatus {
 }
 
 #[derive(Serialize, Clone)]
-pub struct RecorderStatus {
+pub struct FileOutStatus {
     pub enabled: bool,
     pub path: String,
     pub format: String,
@@ -109,7 +109,7 @@ pub struct StatusResponse {
     pub modules: Vec<ModuleInfo>,
     pub inactive_modules: Vec<InactiveModule>,
     pub graph: GraphStatus,
-    pub recorder: RecorderStatus,
+    pub file_out: FileOutStatus,
 }
 
 pub async fn get_status(State(state): State<ApiState>) -> Json<StatusResponse> {
@@ -171,7 +171,8 @@ fn build_status(
     let alsa_in = control_state.alsa_in.snapshot();
     let icecast_in = control_state.icecast_in.snapshot();
     let icecast_out = control_state.icecast_out.snapshot();
-    let recorder = control_state.recorder.snapshot();
+    let file_in = control_state.file_in.snapshot();
+    let file_out = control_state.file_out.snapshot();
     let ring_module = control_state.ring.snapshot();
 
     let codec_snapshots = codec_registry.snapshots();
@@ -213,7 +214,7 @@ fn build_status(
         }),
     );
 
-    let recorder_controls = build_controls("recorder", &recorder, "Vorbereitet", None);
+    let file_out_controls = build_controls("file_out", &file_out, "Vorbereitet", None);
 
     if let Some(ring_id) = ring_id {
         add_module_if_active(
@@ -248,6 +249,16 @@ fn build_status(
                 None,
                 build_controls("alsa_in", &alsa_in, "Nicht unterstützt", None),
             ),
+            "file_in" => (
+                file_in.clone(),
+                "File-In",
+                Some(ModuleDetails {
+                    input_type: Some(input.input_type.clone()),
+                    url: input.path.clone(),
+                    buffer: Some(input.buffer.clone()),
+                }),
+                build_controls("file_in", &file_in, "Nicht unterstützt", None),
+            ),
             _ => continue,
         };
 
@@ -272,7 +283,7 @@ fn build_status(
                 "Icecast-Out",
                 build_controls("icecast_out", &icecast_out, "Nicht unterstützt", None),
             ),
-            "recorder" => (recorder.clone(), "Recorder", recorder_controls.clone()),
+            "file_out" => (file_out.clone(), "File-Out", file_out_controls.clone()),
             _ => (
                 static_snapshot(output.enabled, output.enabled),
                 output.output_type.as_str(),
@@ -323,6 +334,7 @@ fn build_status(
             "srt" => (srt_in.clone(), "SRT-IN"),
             "icecast" | "http_stream" => (icecast_in.clone(), "Icecast-IN"),
             "alsa" => (alsa_in.clone(), "ALSA-IN"),
+            "file_in" => (file_in.clone(), "File-In"),
             _ => continue,
         };
         add_inactive_module(
@@ -339,7 +351,7 @@ fn build_status(
         let (snapshot, label) = match output.output_type.as_str() {
             "srt_out" => (srt_out.clone(), "SRT-OUT"),
             "icecast_out" => (icecast_out.clone(), "Icecast-Out"),
-            "recorder" => (recorder.clone(), "Recorder"),
+            "file_out" => (file_out.clone(), "File-Out"),
             _ => (
                 static_snapshot(output.enabled, output.enabled),
                 output.output_type.as_str(),
@@ -360,16 +372,18 @@ fn build_status(
         &srt_in,
         &icecast_in,
         &alsa_in,
+        &file_in,
         &srt_out,
         &icecast_out,
-        &recorder,
+        &file_out,
         &ring_module,
         config,
         registry,
         &codec_map,
     );
 
-    let recorder_status = build_recorder_status(config, recorder_controls, codec_registry);
+    let file_out_spec = find_file_out_signal(config);
+    let file_out_status = build_file_out_status(file_out_spec, file_out_controls, codec_registry);
 
     StatusResponse {
         timestamp_ms: now_ms(),
@@ -385,7 +399,7 @@ fn build_status(
         modules,
         inactive_modules,
         graph,
-        recorder: recorder_status,
+        file_out: file_out_status,
     }
 }
 
@@ -453,9 +467,10 @@ fn build_graph(
     srt_in: &ModuleSnapshot,
     icecast_in: &ModuleSnapshot,
     alsa_in: &ModuleSnapshot,
+    file_in: &ModuleSnapshot,
     srt_out: &ModuleSnapshot,
     icecast_out: &ModuleSnapshot,
-    recorder: &ModuleSnapshot,
+    file_out: &ModuleSnapshot,
     ring: &ModuleSnapshot,
     config: &Config,
     registry: &Registry,
@@ -500,6 +515,7 @@ fn build_graph(
             "srt" => (srt_in, "SRT-IN"),
             "icecast" | "http_stream" => (icecast_in, "Icecast-IN"),
             "alsa" => (alsa_in, "ALSA-IN"),
+            "file_in" => (file_in, "File-In"),
             _ => continue,
         };
         if snapshot.enabled && snapshot.running {
@@ -523,7 +539,7 @@ fn build_graph(
         let (snapshot, label) = match output.output_type.as_str() {
             "srt_out" => (srt_out, "SRT-OUT"),
             "icecast_out" => (icecast_out, "Icecast-Out"),
-            "recorder" => (recorder, "Recorder"),
+            "file_out" => (file_out, "File-Out"),
             _ => {
                 if !output.enabled {
                     continue;
@@ -561,7 +577,12 @@ fn build_graph(
 fn service_consumes_ring(service: &ServiceDescriptor) -> bool {
     matches!(
         service.service_type.as_str(),
-        "audio_http" | "monitoring" | "peak_analyzer" | "influx_out" | "broadcast_http"
+        "audio_http"
+            | "monitoring"
+            | "peak_analyzer"
+            | "influx_out"
+            | "broadcast_http"
+            | "file_out"
     )
 }
 
@@ -569,6 +590,7 @@ fn humanize_service_label(service: &ServiceDescriptor) -> String {
     match service.service_type.as_str() {
         "audio_http" => "Audio HTTP".to_string(),
         "monitoring" => "Monitoring".to_string(),
+        "file_out" => "File-Out".to_string(),
         _ => service.service_type.replace('_', " ").to_string(),
     }
 }
@@ -730,21 +752,15 @@ fn build_controls(
     controls
 }
 
-fn build_recorder_status(
-    config: &Config,
+fn build_file_out_status(
+    file_out_spec: Option<FileOutSignalSpec>,
     controls: Vec<ControlInfo>,
     codec_registry: &CodecRegistry,
-) -> RecorderStatus {
-    let (enabled, path, retention_days, format, current_files) = config
-        .outputs
-        .iter()
-        .find(|(_, output)| output.output_type == "recorder")
-        .map(|(_, output)| {
-            let base_dir = output.wav_dir.clone().unwrap_or_else(|| "–".to_string());
-            let retention_days = output.retention_days.unwrap_or(0);
+) -> FileOutStatus {
+    let (enabled, path, retention_days, format, current_files) = file_out_spec
+        .map(|spec| {
             let current_hour = now_ms() / 1000 / 3600;
-            let codec_id = output.codec_id.as_deref().unwrap_or_default();
-            let info = codec_registry.get_info(codec_id).ok();
+            let info = codec_registry.get_info(&spec.codec_id).ok();
             let (format, extension) = info
                 .as_ref()
                 .map(|info| match info.container {
@@ -756,21 +772,21 @@ fn build_recorder_status(
                 .unwrap_or_else(|| ("–".to_string(), "dat".to_string()));
             let file_path = format!(
                 "{}/{}.{}",
-                base_dir.trim_end_matches('/'),
+                spec.wav_dir.trim_end_matches('/'),
                 current_hour,
                 extension
             );
             (
-                output.enabled,
-                base_dir,
-                retention_days,
+                spec.enabled,
+                spec.wav_dir,
+                spec.retention_days,
                 format,
                 vec![file_path],
             )
         })
         .unwrap_or((false, "–".to_string(), 0, "–".to_string(), Vec::new()));
 
-    RecorderStatus {
+    FileOutStatus {
         enabled,
         path,
         format,
@@ -778,6 +794,39 @@ fn build_recorder_status(
         current_files,
         controls,
     }
+}
+
+#[derive(Clone)]
+struct FileOutSignalSpec {
+    enabled: bool,
+    wav_dir: String,
+    retention_days: u64,
+    codec_id: String,
+}
+
+fn find_file_out_signal(config: &Config) -> Option<FileOutSignalSpec> {
+    config
+        .outputs
+        .values()
+        .find(|output| output.output_type == "file_out")
+        .map(|output| FileOutSignalSpec {
+            enabled: output.enabled,
+            wav_dir: output.wav_dir.clone().unwrap_or_else(|| "–".to_string()),
+            retention_days: output.retention_days.unwrap_or(0),
+            codec_id: output.codec_id.clone().unwrap_or_default(),
+        })
+        .or_else(|| {
+            config
+                .services
+                .values()
+                .find(|service| service.service_type == "file_out")
+                .map(|service| FileOutSignalSpec {
+                    enabled: service.enabled,
+                    wav_dir: service.wav_dir.clone().unwrap_or_else(|| "–".to_string()),
+                    retention_days: service.retention_days.unwrap_or(0),
+                    codec_id: service.codec_id.clone().unwrap_or_default(),
+                })
+        })
 }
 
 fn graph_ringbuffer_id(config: &Config) -> Option<&str> {

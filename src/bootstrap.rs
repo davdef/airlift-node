@@ -8,12 +8,13 @@ use crate::agent;
 use crate::api::registry::{ModuleDescriptor, ModuleRegistration, Registry};
 use crate::codecs::registry::{CodecRegistry, resolve_codec_configs};
 use crate::config::{Config, ValidatedGraphConfig};
-use crate::control::ControlState;
+use crate::control::{ControlState, ModuleState};
 use crate::io::broadcast_http::BroadcastHttp;
+use crate::io::file_in::FileInConfig;
+use crate::io::file_out::{self, FileOutConfig, FsRetention, run_file_out};
 use crate::io::influx_out::InfluxOut;
 use crate::io::peak_analyzer::{PeakAnalyzer, PeakEvent};
 use crate::monitoring;
-use crate::recorder::{self, FsRetention, RecorderConfig, run_recorder};
 use crate::ring::{EncodedRingRead, EncodedRingReader};
 use crate::web::influx_service::InfluxHistoryService;
 use crate::web::peaks::{PeakPoint, PeakStorage};
@@ -100,8 +101,8 @@ pub fn register_modules(cfg: &Config, registry: &Registry) {
     );
     register_toggle_module(
         registry,
-        "recorder",
-        "recorder",
+        "file_out",
+        "file_out",
         cfg.recorder.as_ref().map(|c| c.enabled),
     );
 
@@ -233,18 +234,6 @@ impl crate::io::icecast_out::EncodedFrameSource for GraphEncodedSource {
     }
 }
 
-impl recorder::EncodedFrameSource for GraphEncodedSource {
-    fn poll(&mut self) -> anyhow::Result<recorder::EncodedRead> {
-        match self.poll_next() {
-            EncodedRingRead::Frame { frame, utc_ns } => {
-                Ok(recorder::EncodedRead::Frame { frame, utc_ns })
-            }
-            EncodedRingRead::Gap { missed } => Ok(recorder::EncodedRead::Gap { missed }),
-            EncodedRingRead::Empty => Ok(recorder::EncodedRead::Empty),
-        }
-    }
-}
-
 impl crate::audio::http::EncodedFrameSource for GraphEncodedSource {
     fn poll(&mut self) -> anyhow::Result<crate::audio::http::EncodedRead> {
         match self.poll_next() {
@@ -347,6 +336,32 @@ fn start_graph_inputs(
             "alsa" => {
                 context.control_state.alsa_in.set_enabled(false);
             }
+            "file_in" => {
+                let path = input
+                    .path
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("input requires path"))?;
+                context.control_state.file_in.set_enabled(true);
+                let ring_clone = ring.clone();
+                let state = context.control_state.file_in.clone();
+                let running_clone = running.clone();
+                let ring_state = ring_state.clone();
+                std::thread::spawn(move || {
+                    let cfg = FileInConfig {
+                        enabled: true,
+                        path: PathBuf::from(path),
+                    };
+                    if let Err(e) = crate::io::file_in::run_file_in(
+                        ring_clone,
+                        cfg,
+                        running_clone,
+                        state,
+                        ring_state,
+                    ) {
+                        error!("[file_in] fatal: {}", e);
+                    }
+                });
+            }
             _ => {}
         }
     }
@@ -446,45 +461,62 @@ fn start_graph_outputs(
                     }
                 });
             }
-            "recorder" => {
-                context.control_state.recorder.set_enabled(true);
-                let base_dir = PathBuf::from(output.wav_dir.clone().unwrap_or_default());
-                let codec_info = context.codec_registry.get_info(&codec_id)?;
-                if matches!(codec_info.container, crate::codecs::ContainerKind::Rtp) {
-                    anyhow::bail!(
-                        "recorder does not support RTP container (codec_id '{}')",
-                        codec_id
-                    );
-                }
-                let retentions: Vec<Box<dyn recorder::RetentionPolicy>> = vec![Box::new(
-                    FsRetention::new(base_dir.clone(), output.retention_days.unwrap_or(0)),
-                )];
-                let rec_cfg = RecorderConfig {
-                    idle_sleep: Duration::from_millis(5),
-                    retention_interval: Duration::from_secs(3600),
-                };
-                let state = context.control_state.recorder.clone();
-                let ring_state = ring_state.clone();
-                let codec_id = codec_id.clone();
-                std::thread::spawn(move || {
-                    if let Err(e) = run_recorder(
-                        encoded_reader,
-                        rec_cfg,
-                        base_dir,
-                        codec_id,
-                        codec_info,
-                        retentions,
-                        state,
-                        ring_state,
-                    ) {
-                        error!("[recorder] fatal: {}", e);
-                    }
-                });
+            "file_out" => {
+                start_file_out_worker(
+                    context,
+                    ring_state.clone(),
+                    codec_id.clone(),
+                    output.wav_dir.clone().unwrap_or_default(),
+                    output.retention_days.unwrap_or(0),
+                )?;
             }
             _ => {}
         }
     }
 
+    Ok(())
+}
+
+fn start_file_out_worker(
+    context: &AppContext,
+    ring_state: Arc<ModuleState>,
+    codec_id: String,
+    wav_dir: String,
+    retention_days: u64,
+) -> anyhow::Result<()> {
+    context.control_state.file_out.set_enabled(true);
+    let base_dir = PathBuf::from(wav_dir);
+    let codec_info = context.codec_registry.get_info(&codec_id)?;
+    if matches!(codec_info.container, crate::codecs::ContainerKind::Rtp) {
+        anyhow::bail!(
+            "file_out does not support RTP container (codec_id '{}')",
+            codec_id
+        );
+    }
+    let retentions: Vec<Box<dyn file_out::RetentionPolicy>> = vec![Box::new(FsRetention::new(
+        base_dir.clone(),
+        retention_days,
+    ))];
+    let file_out_cfg = FileOutConfig {
+        idle_sleep: Duration::from_millis(5),
+        retention_interval: Duration::from_secs(3600),
+    };
+    let state = context.control_state.file_out.clone();
+    let source = context.agent.encoded_ring.subscribe();
+    std::thread::spawn(move || {
+        if let Err(e) = run_file_out(
+            source,
+            file_out_cfg,
+            base_dir,
+            codec_id,
+            codec_info,
+            retentions,
+            state,
+            ring_state,
+        ) {
+            error!("[file_out] fatal: {}", e);
+        }
+    });
     Ok(())
 }
 
@@ -496,6 +528,7 @@ fn start_graph_services(
 ) -> anyhow::Result<()> {
     let peak_events = Arc::new(PeakEventFanout::default());
     let peak_store = context.peak_store.clone();
+    let ring_state = context.control_state.ring.clone();
     peak_events.add_handler(Box::new(move |evt: &PeakEvent| {
         peak_store.add_peak(PeakPoint {
             timestamp: evt.utc_ns / 1_000_000,
@@ -595,6 +628,19 @@ fn start_graph_services(
                     broadcast.handle(evt);
                 });
                 peak_events.add_handler(handler);
+            }
+            "file_out" => {
+                let codec_id = service
+                    .codec_id
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("service requires codec_id"))?;
+                start_file_out_worker(
+                    context,
+                    ring_state.clone(),
+                    codec_id,
+                    service.wav_dir.clone().unwrap_or_default(),
+                    service.retention_days.unwrap_or(0),
+                )?;
             }
             _ => {}
         }
