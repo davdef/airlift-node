@@ -1,1200 +1,1628 @@
-class AircheckPlayer {
-    constructor() {
-        this.canvas = document.getElementById("waveform");
-        if (!this.canvas) {
-            console.error("Canvas #waveform not found");
-            return;
-        }
-        this.ctx = this.canvas.getContext("2d");
+/**
+ * AircheckPlayer - Optimierte Version
+ * Modular, performant, mobiltauglich
+ */
 
-        // === BUFFER-INFO (vom Server) ===
-        this.bufferStart = null; // ms
-        this.bufferEnd   = null; // ms
-
-        // === HISTORY (von /history + WS) ===
-        this.history = [];          // [{ ts, peaks: [...] }]
-        this.latestWsTs = null;
-        this.lastWsPerf = null;
-        this.loadingHistory = false;
-        this.lastHistoryRequest = null;
-        this.pendingHistoryWindow = null;
-
-        // === WEBSOCKET RECONNECT ===
-        this.ws = null;
-        this.wsReconnectAttempts = 0;
-        this.wsReconnectTimer = null;
-        this.wsReconnectBaseDelay = 1000;
-        this.wsReconnectMaxDelay = 30_000;
-
-        // === VIEWPORT ===
-        this.minVisibleDuration = 5_000;           // 5s
-        this.maxVisibleDuration = 2 * 60 * 60_000; // 2h harte Obergrenze
-        this.visibleDuration    = 30_000;          // Start: 30s
-        this.viewportLeft = 0;
-        this.viewportRight = 0;
-        this.followLive = true;     // Viewport folgt Live
-        this.isLiveAudio = false;   // Audio-Modus
-        this.dragging = false;
-
-        // === INTERACTION STATE ===
-        this.mouseDown = false;
-        this.dragStartX = 0;
-        this.dragStartLeft = 0;
-
-        // Touch
-        this.touchDragging = false;
-        this.pinchStartDist = null;
-        this.pinchStartViewport = null;
-
-        // === AUDIO ===
-        this.audio = new Audio();
-        this.audio.crossOrigin = "anonymous";
-        this.audio.preload = "none";
-        
-        // Setze MIME-Typ für bessere Browser-Unterstützung
-        if ('type' in this.audio) {
-            this.audio.type = "audio/ogg; codecs=opus";
-        }
-        
-        this.isPlaying = false;
-        this.playbackServerStartTime = null; // ms
-        this.cacheBustCounter = 0;
-
-        // === DEBUG-UI ===
-        this.debug = {
-            mode:       document.getElementById("dbgMode"),
-            viewport:   document.getElementById("dbgViewport"),
-            playhead:   document.getElementById("dbgPlayhead"),
-            audioTime:  document.getElementById("dbgAudioTime"),
-            history:    document.getElementById("dbgHistory"),
-            lastWs:     document.getElementById("dbgLastWs"),
-            status:     document.getElementById("status"),
-            bufferInfo: document.getElementById("bufferInfo"),
-            audioState: document.getElementById("dbgAudioState")
-        };
-
-        this.setStatus("Initialisiere Player...");
-
-        this.setupViewportHeight();
-        this.setupCanvas();
-        this.setupUI();
-        this.setupInteraction();
-        this.setupAudioEvents();
-        this.setupWebSocket();
-        this.fetchBufferInfo().then(() => {
-            this.maybeLoadInitialHistory();
-        });
-
-        this.startRenderLoop();
-
-        console.log("🎵 Aircheck Player gestartet");
-        this.setStatus("Player bereit");
+// ============================================================================
+//  KONFIGURATION
+// ============================================================================
+const CONFIG = {
+    // Viewport
+    MIN_VISIBLE_DURATION: 5_000,           // 5 Sekunden
+    MAX_VISIBLE_DURATION: 7 * 24 * 60 * 60_000, // 7 Tage
+    DEFAULT_VISIBLE_DURATION: 30_000,      // 30 Sekunden
+    
+    // History
+    HISTORY_BUFFER_FACTOR: 2.0,           // Wie viel mehr History als sichtbar laden
+    MIN_HISTORY_SPAN: 1_000,              // Mindestspanne für History-Request
+    HISTORY_RATE_LIMIT: 150,              // ms zwischen History-Requests
+    
+    // Rendering
+    WAVEFORM_RESOLUTION_FACTOR: 2.0,      // Max Punkte pro Pixel
+    SMOOTHING_THRESHOLD: 300_000,         // >5 Minuten = Glättung
+    SMOOTHING_WINDOW: 0.01,               // 1% der Punkte als Fenster
+    
+    // WebSocket
+    WS_RECONNECT_BASE_DELAY: 1_000,
+    WS_RECONNECT_MAX_DELAY: 30_000,
+    WS_HEARTBEAT_INTERVAL: 30_000,
+    
+    // Audio
+    AUDIO_LOAD_TIMEOUT: 5_000,
+    AUDIO_RETRY_COUNT: 3,
+    
+    // Timeline
+    TICK_STEPS: [
+        { duration: 30_000, step: 1_000, format: 'ss' },      // <30s: Sekunden
+        { duration: 120_000, step: 5_000, format: 'mm:ss' },  // <2min
+        { duration: 300_000, step: 10_000, format: 'mm:ss' }, // <5min
+        { duration: 900_000, step: 30_000, format: 'HH:mm' }, // <15min
+        { duration: 3_600_000, step: 60_000, format: 'HH:mm' }, // <1h
+        { duration: 18_000_000, step: 300_000, format: 'HH:mm' }, // <5h
+        { duration: Infinity, step: 3_600_000, format: 'HH:mm' }  // >=5h
+    ],
+    
+    // Farben
+    COLORS: {
+        background: '#111',
+        waveform: '#5aa0ff',
+        waveformFill: 'rgba(90, 160, 255, 0.25)',
+        timeline: '#888',
+        grid: '#333',
+        playheadLive: '#ff4d4d',
+        playheadTimeshift: '#ffd92c',
+        bufferRange: 'rgba(255, 255, 255, 0.1)',
+        error: '#ff6b6b',
+        success: '#4ecdc4'
     }
+};
 
-    // ---------------------------------------------------
-    //  Hilfsfunktionen
-    // ---------------------------------------------------
-    setStatus(msg) {
-        if (this.debug.status) {
-            this.debug.status.textContent = msg;
-        }
-    }
-
-    formatTime(ts) {
-        if (!Number.isFinite(ts)) return "--:--:--";
+// ============================================================================
+//  UTILITY FUNCTIONS
+// ============================================================================
+class TimeUtils {
+    static formatTime(ts, format = 'HH:mm:ss') {
+        if (!Number.isFinite(ts)) return '--:--:--';
         const d = new Date(ts);
-        const h = String(d.getHours()).padStart(2, "0");
-        const m = String(d.getMinutes()).padStart(2, "0");
-        const s = String(d.getSeconds()).padStart(2, "0");
-        return `${h}:${m}:${s}`;
-    }
-
-    getTickStep() {
-        const span = this.viewportRight - this.viewportLeft;
-        if (span <= 30_000)   return 1_000;   // 1s
-        if (span <= 120_000)  return 5_000;   // 5s
-        if (span <= 300_000)  return 10_000;  // 10s
-        if (span <= 900_000)  return 30_000;  // 30s
-        if (span <= 1_800_000)return 60_000;  // 1min
-        return 300_000;                       // 5min
-    }
-
-    getCurrentPlaybackTime() {
-        if (this.isLiveAudio) {
-            // Live: Aktuellste Server-Zeit
-            return this.getServerNow() ?? this.bufferEnd ?? 0;
-        }
         
-        if (this.playbackServerStartTime != null) {
-            // Timeshift: Server-Startzeit + Audio-Offset
-            return this.playbackServerStartTime + (this.audio.currentTime * 1000);
+        switch(format) {
+            case 'ss': return d.getSeconds().toString().padStart(2, '0');
+            case 'mm:ss': 
+                return `${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`;
+            case 'HH:mm':
+                return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
+            case 'HH:mm:ss':
+            default:
+                return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`;
         }
+    }
+    
+    static getTickConfig(duration) {
+        return CONFIG.TICK_STEPS.find(step => duration <= step.duration) || CONFIG.TICK_STEPS[CONFIG.TICK_STEPS.length - 1];
+    }
+    
+    static calculateOptimalTickSpacing(canvasWidth, viewportDuration) {
+        // Adaptive Tick-Spacing basierend auf Canvas-Breite und Zeitspanne
+        const targetTicks = Math.max(3, Math.min(10, canvasWidth / 100)); // 3-10 Ticks
         
-        // Fallback: Aktuellste verfügbare Server-Zeit
-        return this.getServerNow() ?? this.bufferEnd ?? 0;
-    }
-
-    updateServerTime(ts) {
-        this.latestWsTs = ts;
-        this.lastWsPerf = performance.now();
-    }
-
-    getServerNow() {
-        if (this.latestWsTs != null && this.lastWsPerf != null) {
-            return this.latestWsTs + (performance.now() - this.lastWsPerf);
-        }
-        if (this.bufferEnd != null) {
-            return this.bufferEnd;
-        }
-        return null;
-    }
-
-    getCacheBustValue() {
-        const serverNow = this.getServerNow();
-        if (serverNow != null) {
-            return Math.floor(serverNow);
-        }
-        this.cacheBustCounter += 1;
-        return this.cacheBustCounter;
-    }
-
-    setupCanvas() {
-        const resize = () => {
-            const rect = this.canvas.getBoundingClientRect();
-            this.canvas.width = rect.width;
-            this.canvas.height = rect.height;
-        };
-        resize();
-        window.addEventListener("resize", resize);
-    }
-
-    setupViewportHeight() {
-        const setVh = () => {
-            const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
-            document.documentElement.style.setProperty("--vh", `${viewportHeight * 0.01}px`);
-        };
-
-        setVh();
-        window.addEventListener("resize", setVh);
-        if (window.visualViewport) {
-            window.visualViewport.addEventListener("resize", setVh);
-        }
-    }
-
-    // ---------------------------------------------------
-    //  Buffer-Info & Initial-History
-    // ---------------------------------------------------
-    async fetchBufferInfo() {
-        try {
-            const res = await fetch("/api/peaks");
-            const data = await res.json();
-            if (data && data.ok) {
-                this.bufferStart = data.start;
-                this.bufferEnd   = data.end;
-
-                // initial viewport an Buffer-Ende (Live-Bereich)
-                const span = this.visibleDuration;
-                this.viewportRight = this.bufferEnd;
-                this.viewportLeft  = this.bufferEnd - span;
-                this.clampViewportToBuffer();
-
-                // LADE INITIAL HISTORY für diesen Viewport
-                await this.loadHistoryWindow(this.viewportLeft, this.viewportRight);
-
-                if (this.debug.bufferInfo) {
-                    const durMs = this.bufferEnd - this.bufferStart;
-                    const mins = (durMs / 60000).toFixed(1);
-                    this.debug.bufferInfo.textContent =
-                        `Buffer: ${this.formatTime(this.bufferStart)} – ${this.formatTime(this.bufferEnd)} (${mins} min)`;
-                }
-
-                this.setStatus("Buffer-Info geladen");
-            } else {
-                this.setStatus("Buffer-Info fehlgeschlagen");
+        // Versuche passenden Step aus Config zu finden
+        const config = TimeUtils.getTickConfig(viewportDuration);
+        const stepMs = config.step;
+        const expectedTicks = viewportDuration / stepMs;
+        
+        // Wenn zu viele Ticks, größeren Step nehmen
+        if (expectedTicks > targetTicks * 1.5) {
+            let adjustedStep = stepMs;
+            while (viewportDuration / adjustedStep > targetTicks * 1.5 && adjustedStep < viewportDuration / 2) {
+                adjustedStep *= 2;
             }
-        } catch (err) {
-            console.error("buffer-info error", err);
-            this.setStatus("Fehler bei Buffer-Info");
+            return { step: adjustedStep, format: config.format };
         }
-    }
-
-    async maybeLoadInitialHistory() {
-        // Initialer History-Load wird bereits in fetchBufferInfo erledigt.
-        if (this.history.length) return;
-        if (!this.bufferEnd) return;
-        const from = this.bufferEnd - 60_000;
-        const to   = this.bufferEnd;
-        await this.loadHistoryWindow(from, to);
-    }
-
-    // ---------------------------------------------------
-    //  WebSocket (Live-Peaks)
-    // ---------------------------------------------------
-    setupWebSocket() {
-        if (this.wsReconnectTimer) {
-            clearTimeout(this.wsReconnectTimer);
-            this.wsReconnectTimer = null;
+        
+        // Wenn zu wenige Ticks, kleineren Step nehmen
+        if (expectedTicks < targetTicks * 0.5 && stepMs > 1000) {
+            let adjustedStep = stepMs;
+            while (viewportDuration / adjustedStep < targetTicks * 0.5 && adjustedStep > 1000) {
+                adjustedStep /= 2;
+            }
+            return { step: adjustedStep, format: config.format };
         }
-        const proto = location.protocol === "https:" ? "wss://" : "ws://";
+        
+        return { step: stepMs, format: config.format };
+    }
+}
+
+// ============================================================================
+//  WEBSOCKET MANAGER
+// ============================================================================
+class WebSocketManager {
+    constructor(onMessage, onStatus) {
+        this.onMessage = onMessage;
+        this.onStatus = onStatus;
+        this.ws = null;
+        this.reconnectAttempts = 0;
+        this.reconnectTimer = null;
+        this.heartbeatTimer = null;
+        this.lastMessageTime = null;
+        this.isConnected = false;
+    }
+    
+    connect() {
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+        
+        const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
         const wsUrl = proto + window.location.host + '/ws';
+        
         if (this.ws) {
             this.ws.onopen = null;
             this.ws.onerror = null;
             this.ws.onclose = null;
             this.ws.onmessage = null;
-            try {
-                this.ws.close();
-            } catch {
-                // ignore close errors
-            }
+            try { this.ws.close(); } catch {}
         }
+        
         this.ws = new WebSocket(wsUrl);
-
+        
         this.ws.onopen = () => {
-            console.log("[WS] connected");
-            this.setStatus("WebSocket verbunden");
-            this.wsReconnectAttempts = 0;
+            console.log('[WS] Connected');
+            this.isConnected = true;
+            this.reconnectAttempts = 0;
+            this.startHeartbeat();
+            this.onStatus('connected', 'WebSocket verbunden');
         };
-
+        
         this.ws.onerror = (err) => {
-            console.error("[WS] error", err);
-            this.setStatus("WebSocket-Fehler");
+            console.error('[WS] Error:', err);
+            this.onStatus('error', 'WebSocket-Fehler');
         };
-
+        
         this.ws.onclose = () => {
-            console.warn("[WS] closed");
-            this.setStatus("WebSocket getrennt");
-            this.scheduleWebSocketReconnect();
+            console.warn('[WS] Closed');
+            this.isConnected = false;
+            this.stopHeartbeat();
+            this.onStatus('disconnected', 'WebSocket getrennt');
+            this.scheduleReconnect();
         };
-
+        
         this.ws.onmessage = (e) => {
-            let data;
+            this.lastMessageTime = Date.now();
             try {
-                data = JSON.parse(e.data);
-            } catch {
-                return;
+                const data = JSON.parse(e.data);
+                if (data && Array.isArray(data.peaks) && typeof data.timestamp === 'number') {
+                    this.onMessage(data);
+                }
+            } catch (err) {
+                console.warn('[WS] Parse error:', err);
             }
-            if (!data || !Array.isArray(data.peaks) || typeof data.timestamp !== "number") return;
-
-            const ts = data.timestamp;
-            this.updateServerTime(ts);
-            this.bufferEnd = ts;
-
-            if (!this.followLive) {
-                return;
-            }
-
-            const entry = {
-                ts,
-                peaks: [data.peaks[0], data.peaks[1]],
-                silence: !!data.silence
-            };
-
-            const last = this.history[this.history.length - 1];
-            if (last && ts < last.ts) {
-                this.history.push(entry);
-                this.history.sort((a,b)=>a.ts - b.ts);
-            } else {
-                this.history.push(entry);
-            }
-            this.trimHistory();
-
         };
     }
-
-    scheduleWebSocketReconnect() {
-        if (this.wsReconnectTimer) return;
-        const attempt = this.wsReconnectAttempts + 1;
+    
+    startHeartbeat() {
+        if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+        this.heartbeatTimer = setInterval(() => {
+            if (this.isConnected && this.ws.readyState === WebSocket.OPEN) {
+                // Send ping if supported, otherwise just check connection
+                if (Date.now() - this.lastMessageTime > CONFIG.WS_HEARTBEAT_INTERVAL * 2) {
+                    console.warn('[WS] No messages received, reconnecting...');
+                    this.ws.close();
+                }
+            }
+        }, CONFIG.WS_HEARTBEAT_INTERVAL);
+    }
+    
+    stopHeartbeat() {
+        if (this.heartbeatTimer) {
+            clearInterval(this.heartbeatTimer);
+            this.heartbeatTimer = null;
+        }
+    }
+    
+    scheduleReconnect() {
+        if (this.reconnectTimer) return;
+        
         const delay = Math.min(
-            this.wsReconnectBaseDelay * Math.pow(2, this.wsReconnectAttempts),
-            this.wsReconnectMaxDelay
+            CONFIG.WS_RECONNECT_BASE_DELAY * Math.pow(2, this.reconnectAttempts),
+            CONFIG.WS_RECONNECT_MAX_DELAY
         );
-        this.wsReconnectAttempts = attempt;
-        console.warn(`[WS] reconnecting in ${delay}ms (attempt ${attempt})`);
-        this.setStatus(`WebSocket reconnect in ${Math.ceil(delay / 1000)}s`);
-        this.wsReconnectTimer = setTimeout(() => {
-            this.wsReconnectTimer = null;
-            this.setupWebSocket();
+        
+        this.reconnectAttempts++;
+        console.warn(`[WS] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
+        
+        this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            this.connect();
         }, delay);
     }
-
-    // ---------------------------------------------------
-    //  UI Buttons
-    // ---------------------------------------------------
-    setupUI() {
-        const liveBtn = document.getElementById("liveBtn");
-        const playBtn = document.getElementById("playBtn");
-
-        if (liveBtn) {
-            liveBtn.addEventListener("click", () => {
-                this.switchToLive();
-            });
+    
+    disconnect() {
+        this.stopHeartbeat();
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
         }
-
-        if (playBtn) {
-            playBtn.addEventListener("click", () => {
-                this.togglePlayback();
-            });
+        if (this.ws) {
+            this.ws.close();
         }
     }
+}
 
+// ============================================================================
+//  HISTORY MANAGER
+// ============================================================================
+class HistoryManager {
+    constructor(onHistoryUpdate) {
+        this.history = [];
+        this.onHistoryUpdate = onHistoryUpdate;
+        this.loading = false;
+        this.pendingRequest = null;
+        this.lastRequestTime = 0;
+        this.cache = new Map(); // Cache für bereits geladene Bereiche
+    }
+    
+    async loadWindow(from, to) {
+        // Validierung
+        const span = to - from;
+        if (span <= 0) {
+            console.log('[History] Invalid span:', span);
+            return;
+        }
+        
+        // Mindestspanne
+        const actualTo = Math.max(to, from + CONFIG.MIN_HISTORY_SPAN);
+        
+        // Rate Limiting
+        const now = performance.now();
+        if (now - this.lastRequestTime < CONFIG.HISTORY_RATE_LIMIT) {
+            if (!this.pendingRequest) {
+                this.pendingRequest = { from, to: actualTo };
+            } else {
+                // Merge mit pending request
+                this.pendingRequest.from = Math.min(this.pendingRequest.from, from);
+                this.pendingRequest.to = Math.max(this.pendingRequest.to, actualTo);
+            }
+            return;
+        }
+        
+        // Bereits gecached?
+        const cacheKey = `${Math.floor(from)}-${Math.floor(to)}`;
+        if (this.cache.has(cacheKey)) {
+            this.mergeData(this.cache.get(cacheKey));
+            return;
+        }
+        
+        try {
+            this.loading = true;
+            this.lastRequestTime = now;
+            
+            const url = `/api/history?from=${Math.floor(from)}&to=${Math.floor(actualTo)}`;
+            console.log('[History] Loading:', url);
+            
+            const response = await fetch(url);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            
+            const data = await response.json();
+            if (!Array.isArray(data)) throw new Error('Invalid response format');
+            
+            // Konvertierung und Caching
+            const converted = data.map(point => ({
+                ts: point.ts,
+                peaks: [point.peak_l, point.peak_r],
+                amp: (point.peak_l + point.peak_r) / 2,
+                silence: point.silence || false
+            }));
+            
+            this.cache.set(cacheKey, converted);
+            this.mergeData(converted);
+            console.log(`[History] Loaded ${converted.length} points, total: ${this.history.length}`);
+            
+        } catch (error) {
+            console.error('[History] Load error:', error);
+            throw error;
+        } finally {
+            this.loading = false;
+            
+            // Pending Request verarbeiten
+            if (this.pendingRequest) {
+                const pending = this.pendingRequest;
+                this.pendingRequest = null;
+                setTimeout(() => this.loadWindow(pending.from, pending.to), 50);
+            }
+        }
+    }
+    
+    mergeData(newData) {
+        // Effizienter Merge mit Map
+        const map = new Map(this.history.map(item => [item.ts, item]));
+        newData.forEach(item => map.set(item.ts, item));
+        
+        this.history = Array.from(map.values()).sort((a, b) => a.ts - b.ts);
+        this.onHistoryUpdate(this.history);
+    }
+    
+    trimHistory(viewportLeft, viewportRight, visibleDuration) {
+        if (!this.history.length) return;
+        
+        const buffer = visibleDuration * CONFIG.HISTORY_BUFFER_FACTOR;
+        const min = viewportLeft - buffer;
+        const max = viewportRight + buffer;
+        
+        const firstVisible = this.history.findIndex(p => p.ts >= min);
+        const lastVisible = this.history.findIndex(p => p.ts > max);
+        
+        if (firstVisible > 0 || lastVisible < this.history.length) {
+            this.history = this.history.slice(
+                Math.max(0, firstVisible),
+                lastVisible === -1 ? this.history.length : lastVisible
+            );
+        }
+    }
+    
+    getVisiblePoints(viewportLeft, viewportRight, canvasWidth) {
+        if (!this.history.length) return [];
+        
+        // Binäre Suche für effiziente Filterung
+        let start = 0;
+        let end = this.history.length - 1;
+        
+        while (start <= end) {
+            const mid = Math.floor((start + end) / 2);
+            if (this.history[mid].ts < viewportLeft) {
+                start = mid + 1;
+            } else {
+                end = mid - 1;
+            }
+        }
+        
+        const firstIndex = start;
+        
+        start = 0;
+        end = this.history.length - 1;
+        while (start <= end) {
+            const mid = Math.floor((start + end) / 2);
+            if (this.history[mid].ts <= viewportRight) {
+                start = mid + 1;
+            } else {
+                end = mid - 1;
+            }
+        }
+        
+        const lastIndex = end;
+        
+        if (firstIndex > lastIndex) return [];
+        
+        let visible = this.history.slice(firstIndex, lastIndex + 1);
+        
+        // Downsampling für Performance
+        const maxPoints = canvasWidth * CONFIG.WAVEFORM_RESOLUTION_FACTOR;
+        if (visible.length > maxPoints) {
+            const step = visible.length / maxPoints;
+            const downsampled = [];
+            for (let i = 0; i < maxPoints; i++) {
+                const idx = Math.floor(i * step);
+                if (idx < visible.length) {
+                    downsampled.push(visible[idx]);
+                }
+            }
+            visible = downsampled;
+        }
+        
+        // Glättung für große Zeiträume
+        if ((viewportRight - viewportLeft) > CONFIG.SMOOTHING_THRESHOLD && visible.length > 10) {
+            const windowSize = Math.max(1, Math.floor(visible.length * CONFIG.SMOOTHING_WINDOW));
+            const smoothed = [];
+            
+            for (let i = 0; i < visible.length; i++) {
+                const start = Math.max(0, i - windowSize);
+                const end = Math.min(visible.length - 1, i + windowSize);
+                
+                let sum = 0;
+                let count = 0;
+                
+                for (let j = start; j <= end; j++) {
+                    sum += visible[j].amp || 
+                           (Array.isArray(visible[j].peaks) ? 
+                            visible[j].peaks.reduce((a, b) => a + b, 0) / visible[j].peaks.length : 0);
+                    count++;
+                }
+                
+                smoothed.push({
+                    ...visible[i],
+                    smoothedAmp: sum / count
+                });
+            }
+            visible = smoothed;
+        }
+        
+        return visible;
+    }
+    
+    clear() {
+        this.history = [];
+        this.cache.clear();
+    }
+}
+
+// ============================================================================
+//  VIEWPORT CONTROLLER
+// ============================================================================
+class ViewportController {
+    constructor(bufferStart, bufferEnd) {
+        this.bufferStart = bufferStart;
+        this.bufferEnd = bufferEnd;
+        
+        this.left = 0;
+        this.right = 0;
+        this.duration = CONFIG.DEFAULT_VISIBLE_DURATION;
+        this.followLive = true;
+        
+        // Pinch-Zoom State
+        this.pinchStart = null;
+        this.pinchStartDuration = null;
+    }
+    
+    updateBuffer(bufferStart, bufferEnd) {
+        this.bufferStart = bufferStart;
+        this.bufferEnd = bufferEnd;
+        this.clampToBuffer();
+    }
+    
+    setLive(liveTime) {
+        if (!this.followLive) return;
+        
+        this.right = liveTime;
+        this.left = liveTime - this.duration;
+        this.clampToBuffer();
+    }
+    
+    zoom(factor, centerX, canvasWidth) {
+        this.followLive = false;
+        
+        const centerTime = this.left + (centerX / canvasWidth) * this.duration;
+        const newDuration = this.duration * factor;
+        
+        // Limits
+        const bufferSpan = this.bufferEnd - this.bufferStart;
+        const maxDuration = Math.min(CONFIG.MAX_VISIBLE_DURATION, bufferSpan || CONFIG.MAX_VISIBLE_DURATION);
+        const clampedDuration = Math.max(CONFIG.MIN_VISIBLE_DURATION, Math.min(maxDuration, newDuration));
+        
+        this.duration = clampedDuration;
+        this.left = centerTime - (centerX / canvasWidth) * this.duration;
+        this.right = this.left + this.duration;
+        
+        this.clampToBuffer();
+    }
+    
+    pan(deltaPixels, canvasWidth) {
+        if (this.duration <= 0) return;
+        
+        const msPerPixel = this.duration / canvasWidth;
+        const deltaMs = deltaPixels * msPerPixel;
+        
+        this.left -= deltaMs;
+        this.right -= deltaMs;
+        
+        this.clampToBuffer();
+    }
+    
+    clampToBuffer() {
+        if (this.bufferStart == null || this.bufferEnd == null) return;
+        
+        // Viewport komplett außerhalb?
+        if (this.left > this.bufferEnd || this.right < this.bufferStart) {
+            // Zurück zum Live-Bereich
+            this.right = this.bufferEnd;
+            this.left = this.right - this.duration;
+        }
+        
+        // Nach links begrenzen
+        if (this.left < this.bufferStart) {
+            this.left = this.bufferStart;
+            this.right = this.left + this.duration;
+        }
+        
+        // Nach rechts begrenzen
+        if (this.right > this.bufferEnd) {
+            this.right = this.bufferEnd;
+            this.left = this.right - this.duration;
+            
+            // Falls zu klein wird (nahe Buffer-Ende)
+            if (this.left < this.bufferStart) {
+                this.left = this.bufferStart;
+                this.duration = this.right - this.left;
+            }
+        }
+        
+        // Sicherstellen, dass duration konsistent bleibt
+        this.duration = this.right - this.left;
+    }
+    
+    startPinch(distance) {
+        this.pinchStart = distance;
+        this.pinchStartDuration = this.duration;
+    }
+    
+    updatePinch(distance) {
+        if (!this.pinchStart || !this.pinchStartDuration) return;
+        
+        const scale = this.pinchStart / distance; // Umgekehrt für intuitives Zoom
+        const newDuration = this.pinchStartDuration * scale;
+        
+        // Limits anwenden
+        const bufferSpan = this.bufferEnd - this.bufferStart;
+        const maxDuration = Math.min(CONFIG.MAX_VISIBLE_DURATION, bufferSpan || CONFIG.MAX_VISIBLE_DURATION);
+        const clampedDuration = Math.max(CONFIG.MIN_VISIBLE_DURATION, Math.min(maxDuration, newDuration));
+        
+        // Viewport um Mittelpunkt zoomen
+        const center = (this.left + this.right) / 2;
+        this.duration = clampedDuration;
+        this.left = center - this.duration / 2;
+        this.right = center + this.duration / 2;
+        
+        this.clampToBuffer();
+    }
+    
+    endPinch() {
+        this.pinchStart = null;
+        this.pinchStartDuration = null;
+    }
+    
+    get visibleRange() {
+        return { left: this.left, right: this.right, duration: this.duration };
+    }
+}
+
+// ============================================================================
+//  AUDIO CONTROLLER
+// ============================================================================
+class AudioController {
+    constructor(onStateChange, onError) {
+        this.audio = new Audio();
+        this.audio.crossOrigin = 'anonymous';
+        this.audio.preload = 'none';
+        
+        this.isLive = true;
+        this.playbackStartTime = null;
+        this.currentRetry = 0;
+        this.loadTimeout = null;
+        this.onStateChange = onStateChange;
+        this.onError = onError;
+        
+        this.setupEvents();
+    }
+    
+    setupEvents() {
+        const events = ['play', 'pause', 'playing', 'waiting', 'ended', 'error', 'loadedmetadata', 'canplay'];
+        events.forEach(event => {
+            this.audio.addEventListener(event, (e) => {
+                console.log(`[Audio] ${event}:`, e.type, this.audio.readyState, this.audio.error);
+                this.handleEvent(event);
+            });
+        });
+    }
+    
+    handleEvent(event) {
+        switch(event) {
+            case 'play':
+                this.onStateChange('playing');
+                break;
+            case 'pause':
+                this.onStateChange('paused');
+                break;
+            case 'playing':
+                this.currentRetry = 0;
+                this.onStateChange('playing');
+                break;
+            case 'waiting':
+                this.onStateChange('buffering');
+                break;
+            case 'error':
+                this.handleAudioError();
+                break;
+            case 'canplay':
+                this.onStateChange('ready');
+                break;
+        }
+    }
+    
+    handleAudioError() {
+        if (this.loadTimeout) {
+            clearTimeout(this.loadTimeout);
+            this.loadTimeout = null;
+        }
+        
+        const error = this.audio.error;
+        let message = 'Audio-Fehler';
+        let details = {};
+        
+        if (error) {
+            switch(error.code) {
+                case MediaError.MEDIA_ERR_ABORTED:
+                    message = 'Abgebrochen';
+                    details = { code: error.code, userAction: true };
+                    break;
+                case MediaError.MEDIA_ERR_NETWORK:
+                    message = 'Netzwerk-Fehler';
+                    details = { code: error.code, retry: this.currentRetry < CONFIG.AUDIO_RETRY_COUNT };
+                    break;
+                case MediaError.MEDIA_ERR_DECODE:
+                    message = 'Dekodierungsfehler';
+                    details = { code: error.code, fatal: true };
+                    break;
+                case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
+                    message = 'Format nicht unterstützt';
+                    details = { code: error.code, fatal: true };
+                    break;
+                default:
+                    message = `Unbekannter Fehler (${error.code})`;
+                    details = { code: error.code };
+            }
+        }
+        
+        console.error('[Audio] Error:', message, details);
+        this.onError(message, details);
+        
+        // Automatischer Retry für Netzwerkfehler
+        if (error && error.code === MediaError.MEDIA_ERR_NETWORK && 
+            this.currentRetry < CONFIG.AUDIO_RETRY_COUNT) {
+            this.currentRetry++;
+            console.log(`[Audio] Retry ${this.currentRetry}/${CONFIG.AUDIO_RETRY_COUNT}`);
+            setTimeout(() => this.reload(), 1000 * this.currentRetry);
+        }
+    }
+    
+    playLive() {
+        this.isLive = true;
+        this.playbackStartTime = null;
+        this.currentRetry = 0;
+        
+        const src = `/audio/live?_=${Date.now()}`;
+        this.loadSource(src, true);
+    }
+    
+    playTimeshift(serverTime) {
+        this.isLive = false;
+        this.playbackStartTime = serverTime;
+        this.currentRetry = 0;
+        
+        const src = `/audio/at?ts=${Math.floor(serverTime)}&_=${Date.now()}`;
+        this.loadSource(src, false);
+    }
+    
+    loadSource(src, autoplay = true) {
+        if (this.loadTimeout) {
+            clearTimeout(this.loadTimeout);
+        }
+        
+        this.audio.pause();
+        this.audio.src = src;
+        
+        if (autoplay) {
+            this.loadTimeout = setTimeout(() => {
+                if (this.audio.readyState < 2) { // Noch keine Metadaten
+                    this.onError('Audio-Ladezeit überschritten', { timeout: true });
+                    this.loadTimeout = null;
+                }
+            }, CONFIG.AUDIO_LOAD_TIMEOUT);
+            
+            this.audio.load();
+            this.audio.play().catch(err => {
+                console.warn('[Audio] Autoplay prevented:', err);
+                this.onStateChange('paused');
+            });
+        } else {
+            this.audio.load();
+        }
+    }
+    
+    reload() {
+        if (this.audio.src) {
+            const currentSrc = this.audio.src;
+            this.audio.src = '';
+            this.audio.src = currentSrc + (currentSrc.includes('?') ? '&' : '?') + '_retry=' + Date.now();
+            this.audio.load();
+            this.audio.play().catch(console.warn);
+        }
+    }
+    
+    pause() {
+        this.audio.pause();
+    }
+    
+    getCurrentTime(referenceTime) {
+        if (this.isLive) {
+            return referenceTime;
+        }
+        
+        if (this.playbackStartTime != null && !this.audio.paused) {
+            return this.playbackStartTime + (this.audio.currentTime * 1000);
+        }
+        
+        return this.playbackStartTime || referenceTime;
+    }
+    
+    getState() {
+        return {
+            isLive: this.isLive,
+            paused: this.audio.paused,
+            currentTime: this.audio.currentTime,
+            duration: this.audio.duration,
+            readyState: this.audio.readyState,
+            error: this.audio.error
+        };
+    }
+}
+
+// ============================================================================
+//  RENDERER
+// ============================================================================
+class Renderer {
+    constructor(canvas) {
+        this.canvas = canvas;
+        this.ctx = canvas.getContext('2d');
+        this.pixelRatio = window.devicePixelRatio || 1;
+        
+        this.resizeObserver = new ResizeObserver(() => this.resize());
+        this.resizeObserver.observe(canvas);
+        
+        // Performance-Optimierung
+        this.lastRenderTime = 0;
+        this.renderInterval = 1000 / 60; // 60 FPS
+        this.cachedTimeline = null;
+        this.cacheValid = false;
+    }
+    
+    resize() {
+        const rect = this.canvas.getBoundingClientRect();
+        this.canvas.width = rect.width * this.pixelRatio;
+        this.canvas.height = rect.height * this.pixelRatio;
+        this.ctx.scale(this.pixelRatio, this.pixelRatio);
+        this.cacheValid = false;
+    }
+    
+    render(viewport, history, audioState, bufferRange) {
+        const now = performance.now();
+        if (now - this.lastRenderTime < this.renderInterval) {
+            return;
+        }
+        this.lastRenderTime = now;
+        
+        const w = this.canvas.width / this.pixelRatio;
+        const h = this.canvas.height / this.pixelRatio;
+        
+        // Clear
+        this.ctx.fillStyle = CONFIG.COLORS.background;
+        this.ctx.fillRect(0, 0, w, h);
+        
+        // Buffer-Bereich visualisieren
+        this.drawBufferRange(w, h, viewport, bufferRange);
+        
+        // Timeline (mit Caching)
+        this.drawTimeline(w, h, viewport);
+        
+        // Waveform
+        this.drawWaveform(w, h, viewport, history);
+        
+        // Playhead
+        this.drawPlayhead(w, h, viewport, audioState);
+        
+        // Status-Overlay
+        this.drawStatusOverlay(w, h, audioState);
+    }
+    
+    drawBufferRange(w, h, viewport, bufferRange) {
+        if (!bufferRange || bufferRange.start >= bufferRange.end) return;
+        
+        const { left, right, duration } = viewport.visibleRange;
+        const pxPerMs = w / duration;
+        
+        const bufferLeft = Math.max(left, bufferRange.start);
+        const bufferRight = Math.min(right, bufferRange.end);
+        
+        if (bufferRight <= bufferLeft) return;
+        
+        const x1 = ((bufferLeft - left) / duration) * w;
+        const x2 = ((bufferRight - left) / duration) * w;
+        const width = x2 - x1;
+        
+        this.ctx.fillStyle = CONFIG.COLORS.bufferRange;
+        this.ctx.fillRect(x1, 40, width, h - 40);
+        
+        // Buffer-Kanten
+        this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+        this.ctx.lineWidth = 1;
+        this.ctx.beginPath();
+        this.ctx.moveTo(x1, 40);
+        this.ctx.lineTo(x1, h);
+        this.ctx.moveTo(x2, 40);
+        this.ctx.lineTo(x2, h);
+        this.ctx.stroke();
+    }
+    
+    drawTimeline(w, h, viewport) {
+        const { left, right, duration } = viewport.visibleRange;
+        
+        // Cache invalidation prüfen
+        if (!this.cachedTimeline || !this.cacheValid || 
+            this.cachedTimeline.left !== left || 
+            this.cachedTimeline.right !== right ||
+            this.cachedTimeline.width !== w) {
+            
+            this.cachedTimeline = {
+                left, right, width: w,
+                ticks: this.calculateTicks(w, left, right, duration)
+            };
+            this.cacheValid = true;
+        }
+        
+        const { ticks } = this.cachedTimeline;
+        
+        // Gitterlinien
+        this.ctx.strokeStyle = CONFIG.COLORS.grid;
+        this.ctx.lineWidth = 1;
+        this.ctx.beginPath();
+        
+        ticks.forEach(tick => {
+            this.ctx.moveTo(tick.x, 40);
+            this.ctx.lineTo(tick.x, h);
+        });
+        this.ctx.stroke();
+        
+        // Beschriftungen (mit Überlappungsprüfung)
+        this.ctx.font = '11px sans-serif';
+        this.ctx.fillStyle = CONFIG.COLORS.timeline;
+        this.ctx.textBaseline = 'top';
+        
+        let lastX = -Infinity;
+        const minSpacing = 40; // Mindestabstand zwischen Beschriftungen in Pixeln
+        
+        ticks.forEach(tick => {
+            if (tick.x - lastX >= minSpacing) {
+                this.ctx.fillText(tick.label, tick.x + 2, 42);
+                lastX = tick.x;
+            }
+        });
+        
+        // Viewport-Zeitraum oben links
+        this.ctx.fillStyle = '#fff';
+        this.ctx.fillText(
+            `${TimeUtils.formatTime(left)} – ${TimeUtils.formatTime(right)}`,
+            10, 10
+        );
+    }
+    
+    calculateTicks(w, left, right, duration) {
+        const tickConfig = TimeUtils.calculateOptimalTickSpacing(w, duration);
+        const step = tickConfig.step;
+        const format = tickConfig.format;
+        
+        const firstTick = Math.ceil(left / step) * step;
+        const ticks = [];
+        const pxPerMs = w / duration;
+        
+        for (let time = firstTick; time <= right; time += step) {
+            const x = ((time - left) / duration) * w;
+            ticks.push({
+                x: Math.round(x),
+                time: time,
+                label: TimeUtils.formatTime(time, format)
+            });
+        }
+        
+        return ticks;
+    }
+    
+    drawWaveform(w, h, viewport, history) {
+        const points = history.getVisiblePoints(viewport.left, viewport.right, w);
+        if (points.length < 2) return;
+        
+        const { left, duration } = viewport.visibleRange;
+        const pxPerMs = w / duration;
+        const midY = h / 2;
+        const maxHeight = h * 0.45;
+        
+        this.ctx.beginPath();
+        this.ctx.fillStyle = CONFIG.COLORS.waveformFill;
+        this.ctx.strokeStyle = CONFIG.COLORS.waveform;
+        this.ctx.lineWidth = 1;
+        
+        // Obere Linie
+        for (let i = 0; i < points.length; i++) {
+            const point = points[i];
+            const x = (point.ts - left) * pxPerMs;
+            const amp = point.smoothedAmp !== undefined ? point.smoothedAmp : 
+                       point.amp || (Array.isArray(point.peaks) ? 
+                       point.peaks.reduce((a, b) => a + b, 0) / point.peaks.length : 0);
+            
+            const height = Math.max(1, Math.min(1, amp)) * maxHeight;
+            const y = midY - height;
+            
+            if (i === 0) {
+                this.ctx.moveTo(x, y);
+            } else {
+                this.ctx.lineTo(x, y);
+            }
+        }
+        
+        // Untere Linie (rückwärts)
+        for (let i = points.length - 1; i >= 0; i--) {
+            const point = points[i];
+            const x = (point.ts - left) * pxPerMs;
+            const amp = point.smoothedAmp !== undefined ? point.smoothedAmp :
+                       point.amp || (Array.isArray(point.peaks) ? 
+                       point.peaks.reduce((a, b) => a + b, 0) / point.peaks.length : 0);
+            
+            const height = Math.max(1, Math.min(1, amp)) * maxHeight;
+            const y = midY + height;
+            
+            this.ctx.lineTo(x, y);
+        }
+        
+        this.ctx.closePath();
+        this.ctx.fill();
+        this.ctx.stroke();
+    }
+    
+    drawPlayhead(w, h, viewport, audioState) {
+        const currentTime = audioState.currentTime;
+        const { left, duration } = viewport.visibleRange;
+        
+        const x = ((currentTime - left) / duration) * w;
+        if (x < 0 || x > w) return;
+        
+        const color = audioState.isLive ? CONFIG.COLORS.playheadLive : CONFIG.COLORS.playheadTimeshift;
+        
+        // Linie
+        this.ctx.strokeStyle = color;
+        this.ctx.lineWidth = 2;
+        this.ctx.beginPath();
+        this.ctx.moveTo(x, 35);
+        this.ctx.lineTo(x, h);
+        this.ctx.stroke();
+        
+        // Dreieck oben
+        this.ctx.fillStyle = color;
+        this.ctx.beginPath();
+        this.ctx.moveTo(x, 30);
+        this.ctx.lineTo(x - 6, 20);
+        this.ctx.lineTo(x + 6, 20);
+        this.ctx.closePath();
+        this.ctx.fill();
+    }
+    
+    drawStatusOverlay(w, h, audioState) {
+        this.ctx.font = '12px sans-serif';
+        this.ctx.fillStyle = audioState.isLive ? CONFIG.COLORS.playheadLive : CONFIG.COLORS.playheadTimeshift;
+        this.ctx.textBaseline = 'bottom';
+        
+        const mode = audioState.isLive ? 'LIVE' : 'TIMESHIFT';
+        const time = TimeUtils.formatTime(audioState.currentTime);
+        
+        this.ctx.fillText(`▶ ${time} [${mode}]`, 10, h - 10);
+        
+        // Buffer-Indicator
+        if (audioState.buffering) {
+            this.ctx.fillStyle = CONFIG.COLORS.error;
+            this.ctx.fillText('Buffering...', w - 80, h - 10);
+        }
+    }
+}
+
+// ============================================================================
+//  UI MANAGER
+// ============================================================================
+class UIManager {
+    constructor(player) {
+        this.player = player;
+        this.elements = {};
+        this.init();
+    }
+    
+    init() {
+        this.elements = {
+            canvas: document.getElementById('waveform'),
+            liveBtn: document.getElementById('liveBtn'),
+            playBtn: document.getElementById('playBtn'),
+            status: document.getElementById('status'),
+            debugPanel: document.querySelector('.debug-panel'),
+            errorOverlay: this.createErrorOverlay()
+        };
+        
+        this.attachEvents();
+    }
+    
+    createErrorOverlay() {
+        const overlay = document.createElement('div');
+        overlay.className = 'error-overlay';
+        overlay.style.cssText = `
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            background: ${CONFIG.COLORS.error};
+            color: white;
+            padding: 10px 15px;
+            border-radius: 5px;
+            display: none;
+            z-index: 1000;
+            max-width: 300px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+        `;
+        document.body.appendChild(overlay);
+        return overlay;
+    }
+    
+    attachEvents() {
+        if (this.elements.liveBtn) {
+            this.elements.liveBtn.addEventListener('click', () => this.player.switchToLive());
+        }
+        
+        if (this.elements.playBtn) {
+            this.elements.playBtn.addEventListener('click', () => this.player.togglePlayback());
+        }
+        
+        // Touch/Mouse Events werden direkt am Canvas behandelt
+    }
+    
+    showError(message, details = {}) {
+        this.elements.errorOverlay.textContent = message;
+        this.elements.errorOverlay.style.display = 'block';
+        
+        if (details.fatal) {
+            this.elements.errorOverlay.style.background = CONFIG.COLORS.error;
+        } else if (details.retry) {
+            this.elements.errorOverlay.style.background = '#ffa726';
+        }
+        
+        setTimeout(() => {
+            this.elements.errorOverlay.style.display = 'none';
+        }, details.fatal ? 10000 : 5000);
+    }
+    
+    updateStatus(text, type = 'info') {
+        if (!this.elements.status) return;
+        
+        this.elements.status.textContent = text;
+        this.elements.status.className = `status status-${type}`;
+    }
+    
+    toggleDebug(show) {
+        if (this.elements.debugPanel) {
+            this.elements.debugPanel.style.display = show ? 'block' : 'none';
+        }
+    }
+}
+
+// ============================================================================
+//  MAIN PLAYER CLASS
+// ============================================================================
+class AircheckPlayer {
+    constructor() {
+        this.canvas = document.getElementById('waveform');
+        if (!this.canvas) {
+            console.error('Canvas #waveform nicht gefunden');
+            return;
+        }
+        
+        // Module initialisieren
+        this.ui = new UIManager(this);
+        this.viewport = new ViewportController(null, null);
+        this.history = new HistoryManager(() => this.cacheValid = false);
+        this.audio = new AudioController(
+            (state) => this.onAudioStateChange(state),
+            (error, details) => this.ui.showError(error, details)
+        );
+        this.renderer = new Renderer(this.canvas);
+        
+        // State
+        this.serverTime = null;
+        this.lastWsUpdate = null;
+        this.bufferInfo = { start: null, end: null };
+        this.isDragging = false;
+        this.dragStart = { x: 0, left: 0 };
+        this.cacheValid = false;
+        
+        // Performance
+        this.animationFrame = null;
+        this.lastRenderTime = 0;
+        
+        // Initialisierung
+        this.initWebSocket();
+        this.initInteraction();
+        this.fetchBufferInfo();
+        this.startRenderLoop();
+        
+        console.log('🎵 Aircheck Player gestartet (optimierte Version)');
+        this.ui.updateStatus('Player initialisiert', 'success');
+    }
+    
+    async fetchBufferInfo() {
+        try {
+            const response = await fetch('/api/peaks');
+            const data = await response.json();
+            
+            if (data?.ok) {
+                this.bufferInfo = { start: data.start, end: data.end };
+                this.viewport.updateBuffer(data.start, data.end);
+                
+                // Initial viewport auf Live-Bereich
+                this.viewport.setLive(data.end);
+                
+                // Initiale History laden
+                await this.history.loadWindow(
+                    this.viewport.left,
+                    this.viewport.right
+                );
+                
+                this.ui.updateStatus(`Buffer geladen (${this.formatDuration(data.end - data.start)})`, 'success');
+            }
+        } catch (error) {
+            console.error('Buffer-Info Fehler:', error);
+            this.ui.updateStatus('Buffer-Info fehlgeschlagen', 'error');
+        }
+    }
+    
+    initWebSocket() {
+        this.wsManager = new WebSocketManager(
+            (data) => this.handleWsMessage(data),
+            (state, message) => this.ui.updateStatus(message, state === 'error' ? 'error' : 'info')
+        );
+        this.wsManager.connect();
+    }
+    
+    handleWsMessage(data) {
+        this.serverTime = data.timestamp;
+        this.lastWsUpdate = performance.now();
+        
+        // Buffer-Ende aktualisieren
+        if (data.timestamp > (this.bufferInfo.end || 0)) {
+            this.bufferInfo.end = data.timestamp;
+            this.viewport.updateBuffer(this.bufferInfo.start, this.bufferInfo.end);
+        }
+        
+        // History-Eintrag hinzufügen
+        const entry = {
+            ts: data.timestamp,
+            peaks: [data.peaks[0], data.peaks[1]],
+            amp: (data.peaks[0] + data.peaks[1]) / 2,
+            silence: !!data.silence
+        };
+        
+        this.history.mergeData([entry]);
+        
+        // Viewport aktualisieren wenn Live-Modus
+        if (this.viewport.followLive) {
+            this.viewport.setLive(data.timestamp);
+        }
+    }
+    
+    initInteraction() {
+        // Mouse Events
+        this.canvas.addEventListener('mousedown', this.handleMouseDown.bind(this));
+        window.addEventListener('mousemove', this.handleMouseMove.bind(this));
+        window.addEventListener('mouseup', this.handleMouseUp.bind(this));
+        
+        // Touch Events
+        this.canvas.addEventListener('touchstart', this.handleTouchStart.bind(this), { passive: false });
+        this.canvas.addEventListener('touchmove', this.handleTouchMove.bind(this), { passive: false });
+        this.canvas.addEventListener('touchend', this.handleTouchEnd.bind(this));
+        
+        // Wheel (Zoom)
+        this.canvas.addEventListener('wheel', this.handleWheel.bind(this), { passive: false });
+        
+        // Keyboard
+        document.addEventListener('keydown', this.handleKeyDown.bind(this));
+    }
+    
+    handleMouseDown(e) {
+        this.isDragging = false;
+        this.dragStart.x = e.clientX;
+        this.dragStart.left = this.viewport.left;
+        this.viewport.followLive = false;
+    }
+    
+    handleMouseMove(e) {
+        if (this.dragStart.x === null) return;
+        
+        const dx = e.clientX - this.dragStart.x;
+        
+        if (!this.isDragging && Math.abs(dx) > 3) {
+            this.isDragging = true;
+        }
+        
+        if (this.isDragging) {
+            const w = this.canvas.clientWidth;
+            this.viewport.pan(dx, w);
+            this.dragStart.x = e.clientX;
+            this.dragStart.left = this.viewport.left;
+            this.cacheValid = false;
+        }
+    }
+    
+    handleMouseUp(e) {
+        if (!this.isDragging && this.dragStart.x !== null) {
+            // Click = Seek
+            const rect = this.canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            this.handleSeek(x);
+        }
+        
+        this.isDragging = false;
+        this.dragStart.x = null;
+    }
+    
+    handleTouchStart(e) {
+        e.preventDefault();
+        
+        if (e.touches.length === 1) {
+            // Single touch = drag
+            this.dragStart.x = e.touches[0].clientX;
+            this.dragStart.left = this.viewport.left;
+            this.viewport.followLive = false;
+        } else if (e.touches.length === 2) {
+            // Pinch zoom
+            const dx = e.touches[0].clientX - e.touches[1].clientX;
+            const dy = e.touches[0].clientY - e.touches[1].clientY;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            this.viewport.startPinch(distance);
+        }
+    }
+    
+    handleTouchMove(e) {
+        e.preventDefault();
+        
+        if (e.touches.length === 2 && this.viewport.pinchStart !== null) {
+            // Pinch zoom
+            const dx = e.touches[0].clientX - e.touches[1].clientX;
+            const dy = e.touches[0].clientY - e.touches[1].clientY;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            this.viewport.updatePinch(distance);
+            this.cacheValid = false;
+        } else if (e.touches.length === 1 && this.dragStart.x !== null) {
+            // Drag
+            const dx = e.touches[0].clientX - this.dragStart.x;
+            const w = this.canvas.clientWidth;
+            
+            if (!this.isDragging && Math.abs(dx) > 5) {
+                this.isDragging = true;
+            }
+            
+            if (this.isDragging) {
+                this.viewport.pan(dx, w);
+                this.dragStart.x = e.touches[0].clientX;
+                this.dragStart.left = this.viewport.left;
+                this.cacheValid = false;
+            }
+        }
+    }
+    
+    handleTouchEnd(e) {
+        if (!this.isDragging && this.dragStart.x !== null && e.changedTouches.length === 1) {
+            // Tap = Seek
+            const rect = this.canvas.getBoundingClientRect();
+            const touch = e.changedTouches[0];
+            const x = touch.clientX - rect.left;
+            this.handleSeek(x);
+        }
+        
+        this.isDragging = false;
+        this.dragStart.x = null;
+        this.viewport.endPinch();
+    }
+    
+    handleWheel(e) {
+        e.preventDefault();
+        
+        const factor = e.deltaY > 0 ? 1.25 : 0.8;
+        const rect = this.canvas.getBoundingClientRect();
+        const centerX = e.clientX - rect.left;
+        const w = this.canvas.clientWidth;
+        
+        this.viewport.zoom(factor, centerX, w);
+        this.cacheValid = false;
+    }
+    
+    handleKeyDown(e) {
+        // Space = Play/Pause
+        if (e.code === 'Space' && !e.target.matches('input, textarea')) {
+            e.preventDefault();
+            this.togglePlayback();
+        }
+        
+        // Arrow keys = Seek
+        if (e.code.startsWith('Arrow')) {
+            e.preventDefault();
+            const step = e.shiftKey ? 30000 : 5000; // Shift = 30s, normal = 5s
+            
+            if (e.code === 'ArrowLeft') {
+                this.seekRelative(-step);
+            } else if (e.code === 'ArrowRight') {
+                this.seekRelative(step);
+            }
+        }
+    }
+    
+    handleSeek(x) {
+        const w = this.canvas.clientWidth;
+        const { left, duration } = this.viewport.visibleRange;
+        
+        const targetTime = left + (x / w) * duration;
+        this.seekTo(targetTime);
+    }
+    
+    seekTo(serverTime) {
+        // Prüfen ob Zeit im Buffer liegt
+        if (serverTime < this.bufferInfo.start || serverTime > this.bufferInfo.end) {
+            this.ui.showError('Zeitpunkt nicht verfügbar', { fatal: false });
+            return;
+        }
+        
+        this.audio.playTimeshift(serverTime);
+        this.viewport.followLive = false;
+        
+        // Viewport um Seek-Position zentrieren
+        const center = serverTime;
+        this.viewport.left = center - this.viewport.duration / 2;
+        this.viewport.right = center + this.viewport.duration / 2;
+        this.viewport.clampToBuffer();
+        
+        this.cacheValid = false;
+    }
+    
+    seekRelative(ms) {
+        const currentTime = this.audio.getCurrentTime(this.getServerNow());
+        this.seekTo(currentTime + ms);
+    }
+    
+    switchToLive() {
+        this.audio.playLive();
+        this.viewport.followLive = true;
+        this.viewport.setLive(this.getServerNow());
+        this.cacheValid = false;
+    }
+    
     togglePlayback() {
-        if (this.audio.paused) {
-            if (!this.audio.src) {
+        const state = this.audio.getState();
+        if (state.paused) {
+            if (!state.isLive && this.audio.playbackStartTime === null) {
                 this.switchToLive();
             } else {
-                this.audio.play().catch(err => {
-                    console.error("Audio play error", err);
-                    this.setStatus("Audio-Fehler (Play)");
-                });
+                this.audio.audio.play().catch(console.error);
             }
         } else {
             this.audio.pause();
         }
     }
-
-    // VERBESSERTE LIVE-SWITCH-METHODE MIT FEHLERHANDLING
-    switchToLive() {
-        this.isLiveAudio = true;
-        this.followLive = true;
-        this.playbackServerStartTime = null;
-
-        // Setze zuerst die Quelle, dann spiele ab
-        this.audio.src = "/audio/live";
-        
-        // Füge einen Cache-Buster hinzu, um Caching-Probleme zu vermeiden
-        if (this.audio.src.includes('?')) {
-            this.audio.src += '&_=' + this.getCacheBustValue();
-        } else {
-            this.audio.src += '?_=' + this.getCacheBustValue();
-        }
-        
-        // Preload deaktivieren für Live-Streams
-        this.audio.preload = "none";
-        
-        // Warte kurz, dann versuche zu spielen
-        setTimeout(() => {
-            this.audio.play()
-                .then(() => {
-                    console.log("Live audio playback started");
-                    this.setStatus("LIVE");
-                })
-                .catch(err => {
-                    console.error("Live play error:", err);
-                    this.setStatus("Live-Play Fehler - " + err.message);
-                    
-                    // Fallback: Versuche es ohne Autoplay, nur Quelle setzen
-                    setTimeout(() => {
-                        this.audio.load(); // Lade die Quelle neu
-                        this.setStatus("Klicke Play um Live zu starten");
-                    }, 1000);
-                });
-        }, 100);
-        
-        // Viewport auf Live-Bereich setzen
-        const ref = this.getServerNow() ?? this.bufferEnd ?? 0;
-        this.viewportRight = ref;
-        this.viewportLeft  = ref - this.visibleDuration;
-        this.clampViewportToBuffer();
-        this.loadHistoryWindow(this.viewportLeft, this.viewportRight);
-    }
-
-    // ---------------------------------------------------
-    //  Audio Events
-    // ---------------------------------------------------
-    setupAudioEvents() {
-        this.audio.addEventListener("play", () => {
-            this.isPlaying = true;
-            console.log("Audio playback started");
-        });
-
-        this.audio.addEventListener("pause", () => {
-            this.isPlaying = false;
-            console.log("Audio playback paused");
-        });
-
-        this.audio.addEventListener("loadedmetadata", () => {
-            console.log("Audio metadata loaded");
-            this.setStatus("Audio geladen");
-        });
-
-        this.audio.addEventListener("canplay", () => {
-            console.log("Audio can play");
-            this.setStatus("Bereit zum Abspielen");
-        });
-
-        this.audio.addEventListener("waiting", () => {
-            console.log("Audio buffering...");
-            this.setStatus("Pufferung...");
-        });
-
-        this.audio.addEventListener("stalled", () => {
-            console.warn("Audio stalled - connection interrupted");
-            this.setStatus("Verbindung unterbrochen");
-        });
-
-        this.audio.addEventListener("suspend", () => {
-            console.log("Audio loading suspended");
-        });
-
-        this.audio.addEventListener("emptied", () => {
-            console.log("Audio element emptied");
-            this.setStatus("Audio-Quelle geändert");
-        });
-
-        this.audio.addEventListener("ended", () => {
-            console.log("Audio playback ended");
-            this.isPlaying = false;
-            if (!this.isLiveAudio) {
-                this.setStatus("Timeshift beendet");
-            }
-        });
-
-        this.audio.addEventListener("error", (e) => {
-            console.error("Audio error:", e, this.audio.error);
-            let errorMsg = "Audio-Fehler";
-            
-            if (this.audio.error) {
-                switch (this.audio.error.code) {
-                    case MediaError.MEDIA_ERR_ABORTED:
-                        errorMsg = "Audio abgebrochen";
-                        break;
-                    case MediaError.MEDIA_ERR_NETWORK:
-                        errorMsg = "Netzwerk-Fehler";
-                        break;
-                    case MediaError.MEDIA_ERR_DECODE:
-                        errorMsg = "Audio-Dekodierungsfehler";
-                        break;
-                    case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
-                        errorMsg = "Audio-Format nicht unterstützt";
-                        break;
-                    default:
-                        errorMsg = `Audio-Fehler (Code: ${this.audio.error.code})`;
-                }
-            }
-            
-            this.setStatus(errorMsg);
-            
-            // Bei Timeshift-Fehlern automatisch zurück zu Live wechseln
-            if (!this.isLiveAudio) {
-                console.log("Timeshift failed, switching back to live...");
-                setTimeout(() => {
-                    this.switchToLive();
-                }, 1000);
-            }
-        });
-    }
-
-    // ---------------------------------------------------
-    //  Interaktion (Maus + Touch)
-    // ---------------------------------------------------
-    setupInteraction() {
-        const canvas = this.canvas;
-        let lastWheelAt = 0;
-
-        // MOUSE
-        canvas.addEventListener("mousedown", (e) => {
-            // Verhindere Drag wenn kürzlich gezoomt wurde
-            if (lastWheelAt && performance.now() - lastWheelAt < 100) {
-                return;
-            }
-            this.mouseDown = true;
-            this.dragging = false;
-            this.dragStartX = e.clientX;
-            this.dragStartLeft = this.viewportLeft;
-        });
-
-        window.addEventListener("mousemove", (e) => {
-            if (!this.mouseDown) return;
-
-            const dx = e.clientX - this.dragStartX;
-
-            if (!this.dragging && Math.abs(dx) > 4) {
-                this.dragging = true;
-                this.followLive = false;
-            }
-
-            if (this.dragging) {
-                const span = this.viewportRight - this.viewportLeft;
-                if (span <= 0) return;
-
-                const pxPerMs = this.canvas.width / span;
-                const msShift = dx / pxPerMs;
-
-                this.viewportLeft  = this.dragStartLeft - msShift;
-                this.viewportRight = this.viewportLeft + this.visibleDuration;
-
-                this.clampViewportToBuffer();
-            }
-        });
-
-        window.addEventListener("mouseup", (e) => {
-            if (!this.mouseDown) return;
-            if (!this.dragging) {
-                const rect = canvas.getBoundingClientRect();
-                const x = e.clientX - rect.left;
-                this.handleCanvasClickSeek(x);
-            }
-            this.mouseDown = false;
-            this.dragging = false;
-        });
-
-        // Maus-Wheel (Zoom)
-        let wheelTimeout = null;
-        canvas.addEventListener("wheel", (e) => {
-            e.preventDefault();
-            
-            // Verhindere versehentliches Dragging nach Zoom
-            if (this.mouseDown) {
-                this.mouseDown = false;
-                this.dragging = false;
-            }
-        
-            // Debouncing für smoother Zoom
-            if (wheelTimeout) return;
-            lastWheelAt = performance.now();
-            wheelTimeout = setTimeout(() => {
-                wheelTimeout = null;
-            }, 50);
-        
-            const factor = e.deltaY > 0 ? 1.25 : 0.8;
-            this.applyZoom(factor, e.clientX);
-        }, { passive: false });
-
-        // TOUCH
-        const getDistance = (a, b) => {
-            const dx = a.clientX - b.clientX;
-            const dy = a.clientY - b.clientY;
-            return Math.sqrt(dx * dx + dy * dy);
-        };
-
-        canvas.addEventListener("touchstart", (e) => {
-            e.preventDefault();
-            if (e.touches.length === 1) {
-                // Single touch = drag or tap
-                const t = e.touches[0];
-                this.dragStartX = t.clientX;
-                this.dragStartLeft = this.viewportLeft;
-                this.touchDragging = false;
-                this.pinchStartDist = null;
-            } else if (e.touches.length === 2) {
-                // Pinch
-                this.pinchStartDist = getDistance(e.touches[0], e.touches[1]);
-                this.pinchStartViewport = {
-                    left: this.viewportLeft,
-                    right: this.viewportRight,
-                    dur: this.visibleDuration
-                };
-                this.followLive = false;
-            }
-        }, { passive: false });
-
-        canvas.addEventListener("touchmove", (e) => {
-            e.preventDefault();
-
-            if (e.touches.length === 2 && this.pinchStartDist !== null) {
-                // Pinch-Zoom - PRÄZISER
-                const newDist = getDistance(e.touches[0], e.touches[1]);
-                const scale = newDist / this.pinchStartDist; // Umgekehrt für intuitiveres Zoomverhalten
-        
-                let newDur = this.pinchStartViewport.dur / scale; // Durch Teilen statt Multiplizieren
-        
-                const bufferSpan = (this.bufferStart && this.bufferEnd)
-                    ? (this.bufferEnd - this.bufferStart)
-                    : this.maxVisibleDuration;
-                const maxDur = Math.min(this.maxVisibleDuration, bufferSpan);
-                newDur = Math.max(this.minVisibleDuration, Math.min(maxDur, newDur));
-        
-                // Viewport um den originalen Mittelpunkt zoomen
-                const center = (this.pinchStartViewport.left + this.pinchStartViewport.right) / 2;
-                this.visibleDuration = newDur;
-                this.viewportLeft = center - newDur / 2;
-                this.viewportRight = center + newDur / 2;
-        
-                this.clampViewportToBuffer();
-                return;
-            }
-
-            if (e.touches.length === 1 && this.pinchStartDist === null) {
-                const t = e.touches[0];
-                const dx = t.clientX - this.dragStartX;
-
-                if (!this.touchDragging && Math.abs(dx) > 4) {
-                    this.touchDragging = true;
-                    this.followLive = false;
-                }
-
-                if (this.touchDragging) {
-                    const span = this.viewportRight - this.viewportLeft;
-                    if (span <= 0) return;
-                    const pxPerMs = canvas.width / span;
-                    const msShift = dx / pxPerMs;
-
-                    this.viewportLeft  = this.dragStartLeft - msShift;
-                    this.viewportRight = this.viewportLeft + this.visibleDuration;
-
-                    this.clampViewportToBuffer();
-                }
-            }
-        }, { passive: false });
-
-        canvas.addEventListener("touchend", (e) => {
-            if (!this.touchDragging && this.pinchStartDist === null && e.changedTouches.length === 1) {
-                const rect = canvas.getBoundingClientRect();
-                const t = e.changedTouches[0];
-                const x = t.clientX - rect.left;
-                this.handleCanvasClickSeek(x);
-            }
-            this.touchDragging = false;
-            this.pinchStartDist = null;
-        }, { passive: false });
-    }
-
-    // Zoom um Maus-/Touchposition
-    applyZoom(factor, clientX) {
-        this.followLive = false;
-
-        const rect = this.canvas.getBoundingClientRect();
-        const rel = (clientX - rect.left) / rect.width; // 0..1
-
-        const span = this.viewportRight - this.viewportLeft;
-        if (span <= 0) return;
-
-        const centerTs = this.viewportLeft + rel * span;
-
-        let newDur = this.visibleDuration * factor;
-
-        const bufferSpan = (this.bufferStart && this.bufferEnd)
-            ? (this.bufferEnd - this.bufferStart)
-            : this.maxVisibleDuration;
-
-        const maxDur = Math.min(this.maxVisibleDuration, bufferSpan);
-        newDur = Math.max(this.minVisibleDuration, Math.min(maxDur, newDur));
-
-        this.visibleDuration = newDur;
-        this.viewportLeft  = centerTs - newDur / 2;
-        this.viewportRight = centerTs + newDur / 2;
-
-        this.clampViewportToBuffer();
-    }
-
-    clampViewportToBuffer() {
-        const span = this.visibleDuration;
-        
-        // MUSS Server-Zeiten verwenden!
-        if (this.bufferStart != null && this.bufferEnd != null) {
-            const leftLimit = this.bufferStart;
-            const rightLimit = this.bufferEnd;
-            
-            // Viewport komplett nach rechts verschieben wenn nötig
-            if (this.viewportRight > rightLimit) {
-                this.viewportRight = rightLimit;
-                this.viewportLeft = this.viewportRight - span;
-            }
-            
-            if (this.viewportLeft < leftLimit) {
-                this.viewportLeft = leftLimit;
-                this.viewportRight = this.viewportLeft + span;
-            }
-            
-            // Sicherstellen dass Viewport gültig ist
-            if (this.viewportRight > rightLimit) {
-                this.viewportRight = rightLimit;
-                this.viewportLeft = Math.max(leftLimit, this.viewportRight - span);
-            }
-            
-            this.trimHistory();
-            return;
-        }
-        
-        // Fallback nur für History (aber auch das sind Server-Zeiten!)
-        if (!this.history.length) return;
-        
-        const earliest = this.history[0].ts;
-        const latest = this.history[this.history.length - 1].ts;
-        
-        if (this.viewportRight > latest) {
-            this.viewportRight = latest;
-            this.viewportLeft = this.viewportRight - span;
-        }
-        
-        if (this.viewportLeft < earliest) {
-            this.viewportLeft = earliest;
-            this.viewportRight = this.viewportLeft + span;
-        }
-        
-        this.trimHistory();
-    }
-
-    // ---------------------------------------------------
-    //  Seeking
-    // ---------------------------------------------------
-    handleCanvasClickSeek(x) {
-        const w = this.canvas.width;
-        const span = this.viewportRight - this.viewportLeft;
-        if (span <= 0) return;
-
-        const rel = x / w;
-        const targetServerTime = this.viewportLeft + rel * span;
-        this.seekAudio(targetServerTime);
-    }
-
-    // VERBESSERTE SEEK-METHODE MIT FEHLERHANDLING
-    seekAudio(targetServerTime) {
-        if (!Number.isFinite(targetServerTime)) return;
-        
-        // Prüfe ob der Zeitpunkt im Buffer liegt
-        if (this.bufferStart !== null && this.bufferEnd !== null) {
-            if (targetServerTime < this.bufferStart || targetServerTime > this.bufferEnd) {
-                console.warn("Seek outside buffer range");
-                this.setStatus("Zeitpunkt nicht im Buffer verfügbar");
-                return;
-            }
-        }
-
-        this.isLiveAudio = false;
-        this.followLive = false;
-        this.playbackServerStartTime = targetServerTime;
-
-        const src = `/audio/at?ts=${Math.floor(targetServerTime)}&_=${this.getCacheBustValue()}`;
-        
-        // Pausiere aktuellen Stream zuerst
-        this.audio.pause();
-        
-        // Setze neue Quelle
-        this.audio.src = src;
-        
-        // Warte auf canplay, dann starte
-        const playOnce = () => {
-            this.audio.removeEventListener('canplay', playOnce);
-            const startClient = performance.now();
-            
-            this.audio.play()
-                .then(() => {
-                    const latency = performance.now() - startClient;
-                    console.log("⏱️ Timeshift started, latency =", latency.toFixed(1), "ms");
-                    this.setStatus("Timeshift");
-                })
-                .catch(err => {
-                    console.error("Timeshift play error", err);
-                    this.setStatus("Timeshift-Fehler - " + err.message);
-                    
-                    // Fallback zu Live
-                    setTimeout(() => {
-                        console.log("Timeshift failed, switching to live...");
-                        this.switchToLive();
-                    }, 1000);
-                });
-        };
-        
-        this.audio.addEventListener('canplay', playOnce);
-        
-        // Timeout falls canplay nicht kommt
-        setTimeout(() => {
-            if (!this.isPlaying && !this.isLiveAudio) {
-                this.audio.play().catch(() => {
-                    this.switchToLive();
-                });
-            }
-        }, 2000);
-    }
-
-    // ---------------------------------------------------
-    //  History laden
-    // ---------------------------------------------------
-    async loadHistoryWindow(from, to) {
-        try {
-            if (this.loadingHistory) {
-                this.pendingHistoryWindow = { from, to };
-                return;
-            }
-            this.loadingHistory = true;
-            // VERHINDERE REQUEST MIT GLEICHEN ZEITEN ODER NEGATIVER SPANNE
-            const span = to - from;
-            if (span <= 0) {
-                console.log("[History] Skipping (invalid span:", span, "ms)");
-                return;
-            }
-            
-            // Mindestspanne von 1000ms (1 Sekunde)
-            const minSpan = 1000;
-            if (span < minSpan) {
-                // Korrigiere to, um mindestens 1s zu haben
-                to = from + minSpan;
-                console.log("[History] Adjusted span to minimum 1s");
-            }
-            
-            const url = `/api/history?from=${Math.floor(from)}&to=${Math.floor(to)}`;
-            
-            // console.log("[History] Loading:", url, "span:", span, "ms");
-            
-            // LIGHT RATE LIMITING: Verhindere zu häufige Requests
-            const nowPerf = performance.now();
-            if (this.lastHistoryRequest && (nowPerf - this.lastHistoryRequest < 150)) {
-                // console.log("[History] Rate limiting, skipping...");
-                return;
-            }
-            this.lastHistoryRequest = nowPerf;
-            
-            const res = await fetch(url);
-            if (!res.ok) {
-                throw new Error(`HTTP ${res.status}`);
-            }
-            
-            const data = await res.json();
-            console.log("[History] Loaded", data.length, "points");
-            
-            if (!Array.isArray(data)) {
-                console.warn("[History] API returned non-array");
-                return;
-            }
-            
-            // Konvertiere Format
-            const converted = data.map(point => ({
-                ts: point.ts,  // Schon in Millisekunden!
-                peaks: [point.peak_l, point.peak_r],
-                amp: (point.peak_l + point.peak_r) / 2.0,
-                silence: point.silence || false
-            }));
-            
-            // Merge mit existing history
-            const map = new Map(this.history.map(e => [e.ts, e]));
-            converted.forEach(p => map.set(p.ts, p));
-            this.history = Array.from(map.values()).sort((a,b) => a.ts - b.ts);
-            this.trimHistory();
-            
-        } catch (err) {
-            console.error("[History] Load failed:", err);
-        } finally {
-            this.loadingHistory = false;
-            if (this.pendingHistoryWindow) {
-                const pending = this.pendingHistoryWindow;
-                this.pendingHistoryWindow = null;
-                this.loadHistoryWindow(pending.from, pending.to);
-            }
+    
+    onAudioStateChange(state) {
+        // UI-Updates basierend auf Audio-State
+        switch(state) {
+            case 'playing':
+                this.ui.updateStatus('Wiedergabe', 'success');
+                break;
+            case 'paused':
+                this.ui.updateStatus('Pausiert', 'info');
+                break;
+            case 'buffering':
+                this.ui.updateStatus('Buffering...', 'warning');
+                break;
+            case 'ready':
+                this.ui.updateStatus('Bereit', 'success');
+                break;
         }
     }
-
-    trimHistory() {
-        if (!this.history.length) return;
-        if (!Number.isFinite(this.viewportLeft) || !Number.isFinite(this.viewportRight)) return;
-
-        const span = this.visibleDuration;
-        const buffer = span * 2;
-        const min = this.viewportLeft - buffer;
-        const max = this.viewportRight + buffer;
-
-        if (!Number.isFinite(min) || !Number.isFinite(max)) return;
-
-        const trimmed = this.history.filter(e => e.ts >= min && e.ts <= max);
-        if (trimmed.length !== this.history.length) {
-            this.history = trimmed;
+    
+    getServerNow() {
+        if (this.serverTime && this.lastWsUpdate) {
+            return this.serverTime + (performance.now() - this.lastWsUpdate);
         }
+        return this.bufferInfo.end || Date.now();
     }
-
-    maybeLoadMoreHistory() {
-        if (this.loadingHistory) return;
-        if (this.bufferStart == null || this.bufferEnd == null) return;
-        if (this.followLive && this.history.length) return;
-
-        const span = this.visibleDuration;
-        if (span <= 0) return;
-
-        const earliest = this.history.length ? this.history[0].ts : null;
-        const latest = this.history.length ? this.history[this.history.length - 1].ts : null;
-
-        let from = null;
-        let to = null;
-
-        if (!this.history.length) {
-            from = this.viewportLeft;
-            to = this.viewportRight;
-        } else if (this.viewportLeft < earliest) {
-            from = this.viewportLeft;
-            to = Math.min(earliest, this.viewportRight);
-        } else if (this.viewportRight > latest) {
-            from = Math.max(latest, this.viewportLeft);
-            to = this.viewportRight;
-        } else {
-            return;
-        }
-
-        from = Math.max(from, this.bufferStart);
-        to = Math.min(to, this.bufferEnd);
-
-        const minSpan = 2000;
-        if (to - from < minSpan) {
-            return;
-        }
-
-        this.loadHistoryWindow(from, to);
+    
+    formatDuration(ms) {
+        if (ms < 60000) return `${(ms / 1000).toFixed(0)}s`;
+        if (ms < 3600000) return `${(ms / 60000).toFixed(1)}min`;
+        if (ms < 86400000) return `${(ms / 3600000).toFixed(1)}h`;
+        return `${(ms / 86400000).toFixed(1)}d`;
     }
-
-    // ---------------------------------------------------
-    //  Render-Loop
-    // ---------------------------------------------------
+    
     startRenderLoop() {
-        const loop = () => {
-            if (this.followLive && this.latestWsTs && !this.dragging) {
-                this.viewportRight = this.latestWsTs;
-                this.viewportLeft  = this.viewportRight - this.visibleDuration;
-                this.clampViewportToBuffer();
+        const render = () => {
+            // History nachladen wenn nötig
+            if (!this.history.loading) {
+                const { left, right } = this.viewport.visibleRange;
+                const buffer = this.viewport.duration * CONFIG.HISTORY_BUFFER_FACTOR;
+                
+                const historyStart = this.history.history[0]?.ts || Infinity;
+                const historyEnd = this.history.history[this.history.history.length - 1]?.ts || -Infinity;
+                
+                if (left - buffer < historyStart) {
+                    this.history.loadWindow(left - buffer, historyStart);
+                }
+                
+                if (right + buffer > historyEnd) {
+                    this.history.loadWindow(historyEnd, right + buffer);
+                }
             }
-
-            this.maybeLoadMoreHistory();
-            this.draw();
-            this.updateDebugPanel();
-
-            requestAnimationFrame(loop);
+            
+            // Trimmen
+            this.history.trimHistory(
+                this.viewport.left,
+                this.viewport.right,
+                this.viewport.duration
+            );
+            
+            // Rendern
+            const audioState = {
+                currentTime: this.audio.getCurrentTime(this.getServerNow()),
+                isLive: this.audio.isLive,
+                buffering: this.audio.audio.readyState < 3
+            };
+            
+            this.renderer.render(
+                this.viewport,
+                this.history,
+                audioState,
+                this.bufferInfo
+            );
+            
+            this.animationFrame = requestAnimationFrame(render);
         };
-        requestAnimationFrame(loop);
+        
+        this.animationFrame = requestAnimationFrame(render);
     }
-
-    // ---------------------------------------------------
-    //  Debug-Panel
-    // ---------------------------------------------------
-    updateDebugPanel() {
-        const d = this.debug;
-        if (!d) return;
-
-        const mode = this.isLiveAudio
-            ? "LIVE"
-            : (this.playbackServerStartTime ? "TIMESHIFT" : "IDLE");
-        if (d.mode) d.mode.textContent = mode;
-
-        if (d.viewport) {
-            const spanSec = (this.viewportRight - this.viewportLeft) / 1000;
-            d.viewport.textContent =
-                `${this.formatTime(this.viewportLeft)} – ${this.formatTime(this.viewportRight)} (${spanSec.toFixed(1)} s)`;
-        }
-
-        const ph = this.getCurrentPlaybackTime();
-        if (d.playhead) {
-            d.playhead.textContent =
-                `${ph} (${this.formatTime(ph)})`;
-        }
-
-        if (d.audioTime) {
-            const duration = this.audio.duration ? this.audio.duration.toFixed(3) : "N/A";
-            d.audioTime.textContent = `${this.audio.currentTime.toFixed(3)} s (${duration} s total)`;
-        }
-
-        if (d.history) {
-            const len = this.history.length;
-            if (len) {
-                d.history.textContent =
-                    `${len} Punkte | ${this.formatTime(this.history[0].ts)} – ${this.formatTime(this.history[len - 1].ts)}`;
-            } else {
-                d.history.textContent = "leer";
-            }
-        }
-
-        if (d.lastWs) {
-            if (this.latestWsTs) {
-                d.lastWs.textContent =
-                    `${this.latestWsTs} (${this.formatTime(this.latestWsTs)})`;
-            } else {
-                d.lastWs.textContent = "–";
-            }
+    
+    destroy() {
+        if (this.animationFrame) {
+            cancelAnimationFrame(this.animationFrame);
         }
         
-        // Audio-Zustand
-        if (d.audioState) {
-            let state = "unknown";
-            if (this.audio.readyState >= 4) state = "ready";
-            else if (this.audio.readyState >= 3) state = "loaded";
-            else if (this.audio.readyState >= 2) state = "metadata";
-            else if (this.audio.readyState >= 1) state = "loading";
-            
-            d.audioState.textContent = `Audio: ${state} (${this.audio.readyState})`;
-        }
-    }
-
-    // ---------------------------------------------------
-    //  Zeichnen
-    // ---------------------------------------------------
-    draw() {
-        const w = this.canvas.width;
-        const h = this.canvas.height;
-
-        this.ctx.fillStyle = "#111"; // dunkler Hintergrund
-        this.ctx.fillRect(0, 0, w, h);
-
-        this.drawTimeline();
-        this.drawWaveform();
-        this.drawPlayhead();
-        this.drawPlaybackInfo();
-    }
-
-    drawTimeline() {
-        const w = this.canvas.width;
-        const h = this.canvas.height;
-        const from = this.viewportLeft;
-        const to   = this.viewportRight;
-        const span = to - from;
-        if (!span || span <= 0) return;
-
-        this.ctx.font = "11px sans-serif";
-        this.ctx.fillStyle = "#eee";
-        this.ctx.fillText(
-            `${this.formatTime(from)} – ${this.formatTime(to)}`,
-            10,
-            14
-        );
-
-        const tick = this.getTickStep();
-        const startTick = Math.floor(from / tick) * tick;
-
-        this.ctx.strokeStyle = "#333";
-        this.ctx.fillStyle   = "#888";
-
-        for (let t = startTick; t <= to; t += tick) {
-            if (t < from) continue;
-            const rel = (t - from) / span;
-            const x = Math.floor(rel * w);
-
-            this.ctx.beginPath();
-            this.ctx.moveTo(x, 20);
-            this.ctx.lineTo(x, h);
-            this.ctx.stroke();
-
-            this.ctx.fillText(this.formatTime(t), x + 3, 30);
-        }
-    }
-
-    drawWaveform() {
-        if (!this.history.length) return;
-    
-        const w = this.canvas.width;
-        const h = this.canvas.height;
-        const mid = h / 2;
-    
-        const from = this.viewportLeft;
-        const to   = this.viewportRight;
-        const span = to - from;
-        if (!span || span <= 0) return;
-    
-        const pxPerMs = w / span;
-    
-        // Konsistente Auflösung: 1 Punkt pro Pixel (max)
-        const targetPoints = Math.min(w * 2, this.history.length); // Max 2x Canvas-Breite
+        this.wsManager?.disconnect();
+        this.history?.clear();
+        this.renderer?.resizeObserver?.disconnect();
         
-        // Filtere sichtbare Punkte und reduziere konsistent
-        let visible = this.history.filter(e => e.ts >= from && e.ts <= to);
-        
-        if (visible.length > targetPoints) {
-            // Gleichmäßige Reduktion beibehalten, aber konsistenter
-            const step = Math.max(1, visible.length / targetPoints);
-            const reduced = [];
-            for (let i = 0; i < targetPoints; i++) {
-                const index = Math.floor(i * step);
-                if (index < visible.length) {
-                    reduced.push(visible[index]);
-                }
-            }
-            visible = reduced;
-        }
-    
-        // Für sehr große Zeiträume: zusätzliche Glättung
-        if (span > 300_000) { // > 5 Minuten
-            const smoothed = [];
-            const windowSize = Math.max(1, Math.floor(visible.length / 500));
-            for (let i = 0; i < visible.length; i++) {
-                const start = Math.max(0, i - windowSize);
-                const end = Math.min(visible.length - 1, i + windowSize);
-                let sum = 0;
-                let count = 0;
-                for (let j = start; j <= end; j++) {
-                    const peaksArr = Array.isArray(visible[j].peaks) ? visible[j].peaks : [visible[j].amp || 0];
-                    const avg = peaksArr.reduce((a, b) => a + b, 0) / peaksArr.length;
-                    sum += avg;
-                    count++;
-                }
-                smoothed.push({
-                    ts: visible[i].ts,
-                    peaks: [sum / count]
-                });
-            }
-            visible = smoothed;
-        }
-    
-        this.ctx.beginPath();
-        this.ctx.fillStyle   = "rgba(90, 160, 255, 0.25)";
-        this.ctx.strokeStyle = "#5aa0ff";
-    
-        // Obere Hälfte
-        for (let i = 0; i < visible.length; i++) {
-            const p = visible[i];
-            const x = (p.ts - from) * pxPerMs;
-            const peaksArr = Array.isArray(p.peaks) ? p.peaks : [p.amp || 0];
-            const avg = peaksArr.reduce((a, b) => a + b, 0) / peaksArr.length;
-            const y = mid - Math.max(0.1, Math.min(1, avg)) * (h * 0.45); // Clamp auf 0.1-1.0
-            
-            if (i === 0) this.ctx.moveTo(x, y);
-            else this.ctx.lineTo(x, y);
-        }
-    
-        // Untere Hälfte
-        for (let i = visible.length - 1; i >= 0; i--) {
-            const p = visible[i];
-            const x = (p.ts - from) * pxPerMs;
-            const peaksArr = Array.isArray(p.peaks) ? p.peaks : [p.amp || 0];
-            const avg = peaksArr.reduce((a, b) => a + b, 0) / peaksArr.length;
-            const y = mid + Math.max(0.1, Math.min(1, avg)) * (h * 0.45); // Clamp auf 0.1-1.0
-            
-            this.ctx.lineTo(x, y);
-        }
-    
-        this.ctx.closePath();
-        this.ctx.fill();
-        this.ctx.stroke();
-    }
-
-    drawPlayhead() {
-        const w = this.canvas.width;
-        const h = this.canvas.height;
-        const from = this.viewportLeft;
-        const to   = this.viewportRight;
-        const span = to - from;
-        if (span <= 0) return;
-
-        const playbackTime = this.getCurrentPlaybackTime();
-        const rel = (playbackTime - from) / span;
-        const x = Math.floor(rel * w);
-
-        if (x < 0 || x > w) return;
-
-        const color = this.isLiveAudio ? "#ff4d4d" : "#ffd92c";
-
-        this.ctx.strokeStyle = color;
-        this.ctx.lineWidth = 2;
-        this.ctx.beginPath();
-        this.ctx.moveTo(x, 32);
-        this.ctx.lineTo(x, h);
-        this.ctx.stroke();
-        this.ctx.lineWidth = 1;
-
-        this.ctx.fillStyle = color;
-        this.ctx.beginPath();
-        this.ctx.moveTo(x, 28);
-        this.ctx.lineTo(x - 6, 18);
-        this.ctx.lineTo(x + 6, 18);
-        this.ctx.closePath();
-        this.ctx.fill();
-    }
-
-    drawPlaybackInfo() {
-        const h = this.canvas.height;
-
-        this.ctx.font = "11px sans-serif";
-        this.ctx.fillStyle = this.isLiveAudio ? "#ff4d4d" : "#ffd92c";
-
-        const mode = this.isLiveAudio ? "LIVE" : (this.playbackServerStartTime ? "TIMESHIFT" : "IDLE");
-        const time = this.formatTime(this.getCurrentPlaybackTime());
-        this.ctx.fillText(`▶ ${time} [${mode}]`, 10, h - 10);
+        // Event-Listener entfernen
+        // (müsste für jedes Modul implementiert werden)
     }
 }
 
-window.addEventListener("load", () => {
-    new AircheckPlayer();
+// ============================================================================
+//  STYLES (als CSS-Inline, besser in separate Datei)
+// ============================================================================
+const styles = `
+/* Mobile-first Responsive Design */
+:root {
+    --vh: 1vh;
+    --color-primary: #5aa0ff;
+    --color-danger: #ff4d4d;
+    --color-warning: #ffd92c;
+}
+
+.player-container {
+    width: 100%;
+    height: calc(var(--vh, 1vh) * 100);
+    display: flex;
+    flex-direction: column;
+    background: #111;
+    touch-action: none;
+    user-select: none;
+}
+
+.waveform-container {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+}
+
+#waveform {
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+
+.controls {
+    padding: 10px;
+    background: rgba(0, 0, 0, 0.8);
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.controls button {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 4px;
+    background: var(--color-primary);
+    color: white;
+    font-weight: bold;
+    cursor: pointer;
+    transition: opacity 0.2s;
+}
+
+.controls button:hover {
+    opacity: 0.9;
+}
+
+.controls button:active {
+    transform: scale(0.98);
+}
+
+#liveBtn {
+    background: var(--color-danger);
+}
+
+.status {
+    margin-left: auto;
+    padding: 5px 10px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+    font-size: 12px;
+    color: #fff;
+}
+
+.status-error { background: rgba(255, 77, 77, 0.3); }
+.status-warning { background: rgba(255, 217, 44, 0.3); }
+.status-success { background: rgba(78, 205, 196, 0.3); }
+
+/* Mobile Optimierungen */
+@media (max-width: 768px) {
+    .controls {
+        padding: 8px;
+    }
+    
+    .controls button {
+        padding: 10px;
+        flex: 1;
+        font-size: 14px;
+    }
+    
+    .status {
+        display: none; /* Auf mobilen Geräten Status im Overlay anzeigen */
+    }
+}
+
+/* Debug Panel (nur im Entwicklungsmodus) */
+.debug-panel {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: rgba(0, 0, 0, 0.9);
+    color: #fff;
+    padding: 10px;
+    font-size: 11px;
+    font-family: monospace;
+    display: none;
+}
+
+.debug-row {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 2px;
+}
+
+.debug-label {
+    color: #888;
+}
+
+/* Touch-friendly Vergrößerung */
+@media (hover: none) and (pointer: coarse) {
+    .controls button {
+        min-height: 44px; /* Apple Human Interface Guidelines */
+        min-width: 44px;
+    }
+    
+    #waveform {
+        cursor: pointer;
+    }
+}
+`;
+
+// Styles injecten
+const styleElement = document.createElement('style');
+styleElement.textContent = styles;
+document.head.appendChild(styleElement);
+
+// ============================================================================
+//  INITIALISIERUNG
+// ============================================================================
+window.addEventListener('load', () => {
+    // Viewport Height für Mobile
+    const setVH = () => {
+        const vh = window.visualViewport?.height || window.innerHeight;
+        document.documentElement.style.setProperty('--vh', `${vh * 0.01}px`);
+    };
+    
+    setVH();
+    window.addEventListener('resize', setVH);
+    if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', setVH);
+    }
+    
+    // Player starten
+    window.player = new AircheckPlayer();
 });
+
+// Export für Module
+export { AircheckPlayer, TimeUtils, CONFIG };
