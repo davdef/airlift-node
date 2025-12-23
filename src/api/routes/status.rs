@@ -164,8 +164,7 @@ fn build_status(
     let mut modules = Vec::new();
     let mut inactive_modules = Vec::new();
 
-    let graph_mode = config.has_graph_config();
-    let ring_id = graph_ringbuffer_id(config).unwrap_or("ring");
+    let ring_id = graph_ringbuffer_id(config);
 
     let srt_in = control_state.srt_in.module.snapshot();
     let srt_out = control_state.srt_out.module.snapshot();
@@ -215,186 +214,84 @@ fn build_status(
     );
 
     let recorder_controls = build_controls("recorder", &recorder, "Vorbereitet", None);
-    let icecast_input = config.inputs.iter().find(|(_, input)| {
-        matches!(input.input_type.as_str(), "icecast" | "http_stream")
-    });
-    let icecast_input_id = icecast_input
-        .map(|(id, _)| id.as_str())
-        .unwrap_or("icecast_in");
-    let icecast_details = icecast_input.map(|(_, input)| ModuleDetails {
-        input_type: Some(input.input_type.clone()),
-        url: input.url.clone(),
-        buffer: Some(input.buffer.clone()),
-    });
 
-    if graph_mode {
-        add_module_if_active(
-            &mut modules,
-            ring_id,
-            "Ringbuffer",
-            "buffer",
-            ring_module.clone(),
-            build_controls("ring", &ring_module, "Nicht unterstützt", None),
-            None,
-            None,
-            None,
-        );
+    add_module_if_active(
+        &mut modules,
+        ring_id,
+        "Ringbuffer",
+        "buffer",
+        ring_module.clone(),
+        build_controls("ring", &ring_module, "Nicht unterstützt", None),
+        None,
+        None,
+        None,
+    );
 
-        for (id, input) in config.inputs.iter() {
-            let (snapshot, label, details, controls) = match input.input_type.as_str() {
-                "srt" => (srt_in.clone(), "SRT-IN", None, srt_in_controls.clone()),
-                "icecast" | "http_stream" => (
-                    icecast_in.clone(),
-                    "Icecast-IN",
-                    Some(ModuleDetails {
-                        input_type: Some(input.input_type.clone()),
-                        url: input.url.clone(),
-                        buffer: Some(input.buffer.clone()),
-                    }),
-                    build_controls("icecast_in", &icecast_in, "Nicht unterstützt", None),
-                ),
-                "alsa" => (
-                    alsa_in.clone(),
-                    "ALSA-IN",
-                    None,
-                    build_controls("alsa_in", &alsa_in, "Nicht unterstützt", None),
-                ),
-                _ => continue,
-            };
-
-            add_module_if_active(
-                &mut modules,
-                id,
-                label,
-                "input",
-                snapshot,
-                controls,
+    for (id, input) in config.inputs.iter() {
+        let (snapshot, label, details, controls) = match input.input_type.as_str() {
+            "srt" => (srt_in.clone(), "SRT-IN", None, srt_in_controls.clone()),
+            "icecast" | "http_stream" => (
+                icecast_in.clone(),
+                "Icecast-IN",
+                Some(ModuleDetails {
+                    input_type: Some(input.input_type.clone()),
+                    url: input.url.clone(),
+                    buffer: Some(input.buffer.clone()),
+                }),
+                build_controls("icecast_in", &icecast_in, "Nicht unterstützt", None),
+            ),
+            "alsa" => (
+                alsa_in.clone(),
+                "ALSA-IN",
                 None,
-                None,
-                details,
-            );
-        }
+                build_controls("alsa_in", &alsa_in, "Nicht unterstützt", None),
+            ),
+            _ => continue,
+        };
 
-        for (id, output) in config.outputs.iter() {
-            let (snapshot, label, controls) = match output.output_type.as_str() {
-                "srt_out" => (srt_out.clone(), "SRT-OUT", srt_out_controls.clone()),
-                "icecast_out" => (
-                    icecast_out.clone(),
-                    "Icecast-Out",
-                    build_controls("icecast_out", &icecast_out, "Nicht unterstützt", None),
-                ),
-                "recorder" => (recorder.clone(), "Recorder", recorder_controls.clone()),
-                _ => (
-                    static_snapshot(output.enabled, output.enabled),
-                    output.output_type.as_str(),
-                    build_controls(&output.output_type, &ring_module, "Nicht unterstützt", None),
-                ),
-            };
+        add_module_if_active(
+            &mut modules,
+            id,
+            label,
+            "input",
+            snapshot,
+            controls,
+            None,
+            None,
+            details,
+        );
+    }
 
-            let codec_id = output.codec_id.clone();
-            let codec_info = codec_id
-                .as_deref()
-                .and_then(|id| codec_registry.get_info(id).ok());
+    for (id, output) in config.outputs.iter() {
+        let (snapshot, label, controls) = match output.output_type.as_str() {
+            "srt_out" => (srt_out.clone(), "SRT-OUT", srt_out_controls.clone()),
+            "icecast_out" => (
+                icecast_out.clone(),
+                "Icecast-Out",
+                build_controls("icecast_out", &icecast_out, "Nicht unterstützt", None),
+            ),
+            "recorder" => (recorder.clone(), "Recorder", recorder_controls.clone()),
+            _ => (
+                static_snapshot(output.enabled, output.enabled),
+                output.output_type.as_str(),
+                build_controls(&output.output_type, &ring_module, "Nicht unterstützt", None),
+            ),
+        };
 
-            add_module_if_active(
-                &mut modules,
-                id,
-                label,
-                "output",
-                snapshot,
-                controls,
-                codec_id,
-                codec_info,
-                None,
-            );
-        }
-    } else {
-        add_module_if_active(
-            &mut modules,
-            "ring",
-            "Ringbuffer",
-            "buffer",
-            ring_module.clone(),
-            build_controls("ring", &ring_module, "Nicht unterstützt", None),
-            None,
-            None,
-            None,
-        );
-        add_module_if_active(
-            &mut modules,
-            "srt_in",
-            "SRT-IN",
-            "input",
-            srt_in.clone(),
-            srt_in_controls.clone(),
-            None,
-            None,
-            None,
-        );
-        add_module_if_active(
-            &mut modules,
-            icecast_input_id,
-            "Icecast-IN",
-            "input",
-            icecast_in.clone(),
-            build_controls("icecast_in", &icecast_in, "Nicht unterstützt", None),
-            None,
-            None,
-            icecast_details.clone(),
-        );
-        add_module_if_active(
-            &mut modules,
-            "alsa_in",
-            "ALSA-IN",
-            "input",
-            alsa_in.clone(),
-            build_controls("alsa_in", &alsa_in, "Nicht unterstützt", None),
-            None,
-            None,
-            None,
-        );
-        let srt_out_codec_id = config.srt_out.as_ref().and_then(|cfg| cfg.codec_id.clone());
-        let srt_out_codec_info = srt_out_codec_id
+        let codec_id = output.codec_id.clone();
+        let codec_info = codec_id
             .as_deref()
             .and_then(|id| codec_registry.get_info(id).ok());
+
         add_module_if_active(
             &mut modules,
-            "srt_out",
-            "SRT-OUT",
+            id,
+            label,
             "output",
-            srt_out.clone(),
-            srt_out_controls.clone(),
-            srt_out_codec_id,
-            srt_out_codec_info,
-            None,
-        );
-        let icecast_codec_id = config
-            .icecast_out
-            .as_ref()
-            .and_then(|cfg| cfg.codec_id.clone());
-        let icecast_codec_info = icecast_codec_id
-            .as_deref()
-            .and_then(|id| codec_registry.get_info(id).ok());
-        add_module_if_active(
-            &mut modules,
-            "icecast_out",
-            "Icecast-Out",
-            "output",
-            icecast_out.clone(),
-            build_controls("icecast_out", &icecast_out, "Nicht unterstützt", None),
-            icecast_codec_id,
-            icecast_codec_info,
-            None,
-        );
-        add_module_if_active(
-            &mut modules,
-            "recorder",
-            "Recorder",
-            "output",
-            recorder.clone(),
-            recorder_controls.clone(),
-            None,
-            None,
+            snapshot,
+            controls,
+            codec_id,
+            codec_info,
             None,
         );
     }
@@ -419,92 +316,41 @@ fn build_status(
         }
     }
 
-    if graph_mode {
-        for (id, input) in config.inputs.iter() {
-            let (snapshot, label) = match input.input_type.as_str() {
-                "srt" => (srt_in.clone(), "SRT-IN"),
-                "icecast" | "http_stream" => (icecast_in.clone(), "Icecast-IN"),
-                "alsa" => (alsa_in.clone(), "ALSA-IN"),
-                _ => continue,
-            };
-            add_inactive_module(
-                &mut inactive_modules,
-                id,
-                label,
-                "input",
-                &snapshot,
-                Some(input.enabled),
-            );
-        }
+    for (id, input) in config.inputs.iter() {
+        let (snapshot, label) = match input.input_type.as_str() {
+            "srt" => (srt_in.clone(), "SRT-IN"),
+            "icecast" | "http_stream" => (icecast_in.clone(), "Icecast-IN"),
+            "alsa" => (alsa_in.clone(), "ALSA-IN"),
+            _ => continue,
+        };
+        add_inactive_module(
+            &mut inactive_modules,
+            id,
+            label,
+            "input",
+            &snapshot,
+            Some(input.enabled),
+        );
+    }
 
-        for (id, output) in config.outputs.iter() {
-            let (snapshot, label) = match output.output_type.as_str() {
-                "srt_out" => (srt_out.clone(), "SRT-OUT"),
-                "icecast_out" => (icecast_out.clone(), "Icecast-Out"),
-                "recorder" => (recorder.clone(), "Recorder"),
-                _ => (
-                    static_snapshot(output.enabled, output.enabled),
-                    output.output_type.as_str(),
-                ),
-            };
+    for (id, output) in config.outputs.iter() {
+        let (snapshot, label) = match output.output_type.as_str() {
+            "srt_out" => (srt_out.clone(), "SRT-OUT"),
+            "icecast_out" => (icecast_out.clone(), "Icecast-Out"),
+            "recorder" => (recorder.clone(), "Recorder"),
+            _ => (
+                static_snapshot(output.enabled, output.enabled),
+                output.output_type.as_str(),
+            ),
+        };
 
-            add_inactive_module(
-                &mut inactive_modules,
-                id,
-                label,
-                "output",
-                &snapshot,
-                Some(output.enabled),
-            );
-        }
-    } else {
         add_inactive_module(
             &mut inactive_modules,
-            "srt_in",
-            "SRT-IN",
-            "input",
-            &srt_in,
-            config.srt_in.as_ref().map(|cfg| cfg.enabled),
-        );
-        add_inactive_module(
-            &mut inactive_modules,
-            icecast_input_id,
-            "Icecast-IN",
-            "input",
-            &icecast_in,
-            icecast_input.map(|(_, input)| input.enabled),
-        );
-        add_inactive_module(
-            &mut inactive_modules,
-            "alsa_in",
-            "ALSA-IN",
-            "input",
-            &alsa_in,
-            config.alsa_in.as_ref().map(|cfg| cfg.enabled),
-        );
-        add_inactive_module(
-            &mut inactive_modules,
-            "srt_out",
-            "SRT-OUT",
+            id,
+            label,
             "output",
-            &srt_out,
-            config.srt_out.as_ref().map(|cfg| cfg.enabled),
-        );
-        add_inactive_module(
-            &mut inactive_modules,
-            "icecast_out",
-            "Icecast-Out",
-            "output",
-            &icecast_out,
-            config.icecast_out.as_ref().map(|cfg| cfg.enabled),
-        );
-        add_inactive_module(
-            &mut inactive_modules,
-            "recorder",
-            "Recorder",
-            "output",
-            &recorder,
-            config.recorder.as_ref().map(|cfg| cfg.enabled),
+            &snapshot,
+            Some(output.enabled),
         );
     }
 
@@ -615,14 +461,7 @@ fn build_graph(
 ) -> GraphStatus {
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
-    let graph_mode = config.has_graph_config();
-    let ring_id = graph_ringbuffer_id(config).unwrap_or("ring");
-    let icecast_input_id = config
-        .inputs
-        .iter()
-        .find(|(_, input)| matches!(input.input_type.as_str(), "icecast" | "http_stream"))
-        .map(|(id, _)| id.as_str())
-        .unwrap_or("icecast_in");
+    let ring_id = graph_ringbuffer_id(config);
 
     let ring_active = ring.enabled && ring.running;
     if ring_active {
@@ -652,147 +491,62 @@ fn build_graph(
         }
     }
 
-    if graph_mode {
-        for (id, input) in config.inputs.iter() {
-            let (snapshot, label) = match input.input_type.as_str() {
-                "srt" => (srt_in, "SRT-IN"),
-                "icecast" | "http_stream" => (icecast_in, "Icecast-IN"),
-                "alsa" => (alsa_in, "ALSA-IN"),
-                _ => continue,
-            };
-            if snapshot.enabled && snapshot.running {
-                nodes.push(GraphNode {
-                    id: id.to_string(),
-                    label: label.to_string(),
-                    kind: "input".to_string(),
+    for (id, input) in config.inputs.iter() {
+        let (snapshot, label) = match input.input_type.as_str() {
+            "srt" => (srt_in, "SRT-IN"),
+            "icecast" | "http_stream" => (icecast_in, "Icecast-IN"),
+            "alsa" => (alsa_in, "ALSA-IN"),
+            _ => continue,
+        };
+        if snapshot.enabled && snapshot.running {
+            nodes.push(GraphNode {
+                id: id.to_string(),
+                label: label.to_string(),
+                kind: "input".to_string(),
+            });
+            if ring_active {
+                edges.push(GraphEdge {
+                    from: id.to_string(),
+                    to: ring_id.to_string(),
                 });
-                if ring_active {
-                    edges.push(GraphEdge {
-                        from: id.to_string(),
-                        to: ring_id.to_string(),
-                    });
-                }
             }
         }
+    }
 
-        for (id, output) in config.outputs.iter() {
-            let (snapshot, label) = match output.output_type.as_str() {
-                "srt_out" => (srt_out, "SRT-OUT"),
-                "icecast_out" => (icecast_out, "Icecast-Out"),
-                "recorder" => (recorder, "Recorder"),
-                _ => {
-                    if !output.enabled {
-                        continue;
-                    }
-                    add_output_node(
-                        &mut nodes,
-                        &mut edges,
-                        ring_id,
-                        id,
-                        output.output_type.as_str(),
-                        ring_active,
-                        output.codec_id.clone(),
-                        codec_map,
-                    );
+    for (id, output) in config.outputs.iter() {
+        let (snapshot, label) = match output.output_type.as_str() {
+            "srt_out" => (srt_out, "SRT-OUT"),
+            "icecast_out" => (icecast_out, "Icecast-Out"),
+            "recorder" => (recorder, "Recorder"),
+            _ => {
+                if !output.enabled {
                     continue;
                 }
-            };
-
-            add_output_to_graph(
-                &mut nodes,
-                &mut edges,
-                ring_id,
-                id,
-                label,
-                snapshot,
-                ring_active,
-                output.codec_id.clone(),
-                codec_map,
-            );
-        }
-    } else {
-        if srt_in.enabled && srt_in.running {
-            nodes.push(GraphNode {
-                id: "srt_in".to_string(),
-                label: "SRT-IN".to_string(),
-                kind: "input".to_string(),
-            });
-            if ring_active {
-                edges.push(GraphEdge {
-                    from: "srt_in".to_string(),
-                    to: ring_id.to_string(),
-                });
+                add_output_node(
+                    &mut nodes,
+                    &mut edges,
+                    ring_id,
+                    id,
+                    output.output_type.as_str(),
+                    ring_active,
+                    output.codec_id.clone(),
+                    codec_map,
+                );
+                continue;
             }
-        }
-
-        if icecast_in.enabled && icecast_in.running {
-            nodes.push(GraphNode {
-                id: icecast_input_id.to_string(),
-                label: "Icecast-IN".to_string(),
-                kind: "input".to_string(),
-            });
-            if ring_active {
-                edges.push(GraphEdge {
-                    from: icecast_input_id.to_string(),
-                    to: ring_id.to_string(),
-                });
-            }
-        }
-
-        if alsa_in.enabled && alsa_in.running {
-            nodes.push(GraphNode {
-                id: "alsa_in".to_string(),
-                label: "ALSA-IN".to_string(),
-                kind: "input".to_string(),
-            });
-            if ring_active {
-                edges.push(GraphEdge {
-                    from: "alsa_in".to_string(),
-                    to: ring_id.to_string(),
-                });
-            }
-        }
+        };
 
         add_output_to_graph(
             &mut nodes,
             &mut edges,
             ring_id,
-            "srt_out",
-            "SRT-OUT",
-            srt_out,
+            id,
+            label,
+            snapshot,
             ring_active,
-            config.srt_out.as_ref().and_then(|cfg| cfg.codec_id.clone()),
+            output.codec_id.clone(),
             codec_map,
         );
-
-        add_output_to_graph(
-            &mut nodes,
-            &mut edges,
-            ring_id,
-            "icecast_out",
-            "Icecast-Out",
-            icecast_out,
-            ring_active,
-            config
-                .icecast_out
-                .as_ref()
-                .and_then(|cfg| cfg.codec_id.clone()),
-            codec_map,
-        );
-
-        if recorder.enabled && recorder.running {
-            nodes.push(GraphNode {
-                id: "recorder".to_string(),
-                label: "Recorder".to_string(),
-                kind: "output".to_string(),
-            });
-            if ring_active {
-                edges.push(GraphEdge {
-                    from: ring_id.to_string(),
-                    to: "recorder".to_string(),
-                });
-            }
-        }
     }
 
     GraphStatus { nodes, edges }
@@ -969,64 +723,40 @@ fn build_recorder_status(
     controls: Vec<ControlInfo>,
     codec_registry: &CodecRegistry,
 ) -> RecorderStatus {
-    let (enabled, path, retention_days, format, current_files) = match &config.recorder {
-        Some(cfg) => {
-            let mut files = Vec::new();
+    let (enabled, path, retention_days, format, current_files) = config
+        .outputs
+        .iter()
+        .find(|(_, output)| output.output_type == "recorder")
+        .map(|(_, output)| {
+            let base_dir = output.wav_dir.clone().unwrap_or_else(|| "–".to_string());
+            let retention_days = output.retention_days.unwrap_or(0);
             let current_hour = now_ms() / 1000 / 3600;
-            let wav_path = format!("{}/{}.wav", cfg.wav_dir.trim_end_matches('/'), current_hour);
-            files.push(wav_path);
-            let mut format = "wav".to_string();
-            if let Some(mp3) = &cfg.mp3 {
-                let mp3_path = format!("{}/{}.mp3", mp3.dir.trim_end_matches('/'), current_hour);
-                files.push(mp3_path);
-                format.push_str(" + mp3");
-            }
+            let codec_id = output.codec_id.as_deref().unwrap_or_default();
+            let info = codec_registry.get_info(codec_id).ok();
+            let (format, extension) = info
+                .as_ref()
+                .map(|info| match info.container {
+                    ContainerKind::Ogg => ("ogg".to_string(), "ogg".to_string()),
+                    ContainerKind::Mpeg => ("mp3".to_string(), "mp3".to_string()),
+                    ContainerKind::Raw => ("raw".to_string(), "raw".to_string()),
+                    ContainerKind::Rtp => ("rtp".to_string(), "rtp".to_string()),
+                })
+                .unwrap_or_else(|| ("–".to_string(), "dat".to_string()));
+            let file_path = format!(
+                "{}/{}.{}",
+                base_dir.trim_end_matches('/'),
+                current_hour,
+                extension
+            );
             (
-                cfg.enabled,
-                cfg.wav_dir.clone(),
-                cfg.retention_days,
+                output.enabled,
+                base_dir,
+                retention_days,
                 format,
-                files,
+                vec![file_path],
             )
-        }
-        None => {
-            let recorder_output = config
-                .outputs
-                .iter()
-                .find(|(_, output)| output.output_type == "recorder");
-            if let Some((_, output)) = recorder_output {
-                let base_dir = output.wav_dir.clone().unwrap_or_else(|| "–".to_string());
-                let retention_days = output.retention_days.unwrap_or(0);
-                let current_hour = now_ms() / 1000 / 3600;
-                let codec_id = output.codec_id.as_deref().unwrap_or_default();
-                let info = codec_registry.get_info(codec_id).ok();
-                let (format, extension) = info
-                    .as_ref()
-                    .map(|info| match info.container {
-                        ContainerKind::Ogg => ("ogg".to_string(), "ogg".to_string()),
-                        ContainerKind::Mpeg => ("mp3".to_string(), "mp3".to_string()),
-                        ContainerKind::Raw => ("raw".to_string(), "raw".to_string()),
-                        ContainerKind::Rtp => ("rtp".to_string(), "rtp".to_string()),
-                    })
-                    .unwrap_or_else(|| ("–".to_string(), "dat".to_string()));
-                let file_path = format!(
-                    "{}/{}.{}",
-                    base_dir.trim_end_matches('/'),
-                    current_hour,
-                    extension
-                );
-                (
-                    output.enabled,
-                    base_dir,
-                    retention_days,
-                    format,
-                    vec![file_path],
-                )
-            } else {
-                (false, "–".to_string(), 0, "–".to_string(), Vec::new())
-            }
-        }
-    };
+        })
+        .unwrap_or((false, "–".to_string(), 0, "–".to_string(), Vec::new()));
 
     RecorderStatus {
         enabled,
@@ -1038,8 +768,13 @@ fn build_recorder_status(
     }
 }
 
-fn graph_ringbuffer_id(config: &Config) -> Option<&str> {
-    config.ringbuffers.keys().next().map(|id| id.as_str())
+fn graph_ringbuffer_id(config: &Config) -> &str {
+    config
+        .ringbuffers
+        .keys()
+        .next()
+        .map(|id| id.as_str())
+        .expect("graph ringbuffer id")
 }
 
 fn static_snapshot(enabled: bool, running: bool) -> ModuleSnapshot {
