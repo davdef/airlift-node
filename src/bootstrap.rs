@@ -642,19 +642,19 @@ fn start_graph_services(
                     service.retention_days.unwrap_or(0),
                 )?;
             }
-            "monitor" => {
-                let mut reader = context.agent.ring.subscribe();
-                let running = running.clone();
-                std::thread::spawn(move || {
-                    while running.load(std::sync::atomic::Ordering::Relaxed) {
-                        match reader.poll() {
-                            RingRead::Chunk(_) => {}
-                            RingRead::Gap { .. } => {}
-                            RingRead::Empty => std::thread::sleep(Duration::from_millis(10)),
-                        }
-                    }
-                });
+
+"monitor" => {
+    let mut reader = context.agent.ring.subscribe();
+    std::thread::spawn(move || {
+        loop {
+            match reader.poll() {
+                RingRead::Chunk(_) => {}
+                RingRead::Gap { .. } => {}
+                RingRead::Empty => std::thread::sleep(Duration::from_millis(10)),
             }
+        }
+    });
+}
             _ => {}
         }
     }
