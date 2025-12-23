@@ -35,6 +35,14 @@
                     <div class="setup-subtitle">Bitte API starten und Konfiguration prüfen.</div>
                 </div>
             </div>
+            <div class="setup-issues">
+                <h3>API aktivieren</h3>
+                <ul>
+                    <li>In <code>config.toml</code> <code>api.enabled = true</code> setzen.</li>
+                    <li>Standard-Bind: <code>api.bind = "0.0.0.0:3008"</code>.</li>
+                    <li>Service neu starten, damit die API lauscht.</li>
+                </ul>
+            </div>
             <div class="setup-actions">
                 <a class="btn primary" href="../config.sample.toml" target="_blank" rel="noopener">Setup-Leitfaden öffnen</a>
             </div>
@@ -54,9 +62,14 @@
                 </div>
             </div>
             <ol class="setup-steps" id="setupSteps"></ol>
-            <div class="setup-issues hidden" id="setupIssues"></div>
+            <div class="setup-section hidden" id="setupIssuesSection">
+                <div class="setup-section-header">Setup-Checks</div>
+                <div class="setup-section-subtitle">Offene Konfigurationspunkte mit minimalen Beispielen.</div>
+                <div class="setup-issues-list" id="setupIssues"></div>
+            </div>
             <div class="setup-actions">
                 <a class="btn primary" href="../config.sample.toml" target="_blank" rel="noopener">Beispiel-Konfig öffnen</a>
+                <button class="btn" id="generateMinimalConfig" type="button">Generate minimal config</button>
             </div>
         </div>
     </section>
