@@ -1,8 +1,0 @@
-[ring]
-slots = 6000
-prealloc_samples = 48000
-
-[monitoring]
-http_port = 9090
-
-
