@@ -5,6 +5,12 @@ let websocket = null;
 const rateHistory = new Map();
 let wsMessageCount = 0;
 let autoRefreshInterval = null;
+const inputDeviceState = {
+    available: false,
+    devices: [],
+    loaded: false,
+    error: null
+};
 const panelIds = [
     'mainContent',
     'pipelinePanel',
@@ -30,7 +36,7 @@ const pipelineCatalog = [
                 consumesSignal: null,
                 configSchema: {
                     fields: [
-                        { key: 'device', label: 'Device', type: 'text', placeholder: 'default' }
+                        { key: 'device', label: 'Device', type: 'select', placeholder: 'default', options: [] }
                     ]
                 }
             },
@@ -211,6 +217,8 @@ async function initializeAll() {
 
         initPipelineBuilder();
         
+        await fetchDeviceList();
+
         // Load initial status
         await fetchAllData();
         
@@ -445,7 +453,9 @@ function renderPipelineInspector() {
             inspector.appendChild(fieldLabel);
 
             let input;
-            if (field.type === 'select') {
+            const isDeviceField = field.key === 'device';
+            const hasDeviceOptions = isDeviceField && Array.isArray(field.options) && field.options.length > 0;
+            if (field.type === 'select' && (hasDeviceOptions || !isDeviceField)) {
                 input = document.createElement('select');
                 input.className = 'pipeline-inspector-input';
                 field.options?.forEach(option => {
@@ -460,11 +470,27 @@ function renderPipelineInspector() {
                 input.type = field.type === 'number' ? 'number' : 'text';
                 input.placeholder = field.placeholder || '';
             }
+            if (isDeviceField && hasDeviceOptions && (node.config[field.key] === undefined || node.config[field.key] === '')) {
+                node.config[field.key] = field.options[0]?.value || '';
+            }
             input.value = node.config[field.key] ?? '';
             input.addEventListener('input', event => {
                 node.config[field.key] = event.target.value;
             });
             inspector.appendChild(input);
+
+            if (isDeviceField && !hasDeviceOptions) {
+                const fallback = document.createElement('div');
+                fallback.className = 'pipeline-inspector-hint';
+                if (!inputDeviceState.loaded) {
+                    fallback.textContent = 'ALSA-Geräte werden geladen …';
+                } else if (inputDeviceState.error) {
+                    fallback.textContent = 'Geräte nicht verfügbar. Bitte Device manuell eintragen.';
+                } else {
+                    fallback.textContent = 'Keine Geräte gefunden. Bitte Device manuell eintragen.';
+                }
+                inspector.appendChild(fallback);
+            }
         });
     }
 
@@ -537,6 +563,42 @@ function calculateRate(moduleId, currentCounters, timestamp) {
 }
 
 // API Calls
+async function fetchDeviceList() {
+    try {
+        const response = await fetch('/api/devices');
+        if (!response.ok) {
+            throw new Error('Device API nicht erreichbar');
+        }
+        const data = await response.json();
+        inputDeviceState.available = Boolean(data.available);
+        inputDeviceState.devices = Array.isArray(data.devices) ? data.devices : [];
+        inputDeviceState.loaded = true;
+        inputDeviceState.error = null;
+    } catch (error) {
+        inputDeviceState.available = false;
+        inputDeviceState.devices = [];
+        inputDeviceState.loaded = true;
+        inputDeviceState.error = error;
+    }
+    updateDeviceCatalogOptions();
+    renderPipelineInspector();
+}
+
+function updateDeviceCatalogOptions() {
+    const micItem = findCatalogItem('input-mic');
+    if (!micItem?.configSchema?.fields) {
+        return;
+    }
+    const deviceField = micItem.configSchema.fields.find(field => field.key === 'device');
+    if (!deviceField) {
+        return;
+    }
+    deviceField.options = inputDeviceState.devices.map(device => ({
+        value: device.id,
+        label: device.label
+    }));
+}
+
 async function fetchAllData() {
     try {
         const [statusResponse, codecsResponse] = await Promise.all([

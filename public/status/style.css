@@ -567,6 +567,12 @@ main {
     color: #d2dae6;
 }
 
+.pipeline-inspector-hint {
+    font-size: 11px;
+    color: #9aa8bd;
+    line-height: 1.4;
+}
+
 .pipeline-edge {
     stroke: rgba(137, 191, 242, 0.7);
     stroke-width: 2;
