@@ -1,5 +1,7 @@
+use log::warn;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::convert::TryInto;
 
 use crate::codecs::{CodecInfo, CodecKind, ContainerKind};
 
@@ -61,7 +63,7 @@ pub struct SrtOutConfig {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct RecorderConfigToml {
+pub struct FileOutConfigToml {
     pub enabled: bool,
     pub wav_dir: String,
     pub retention_days: u64,
@@ -334,7 +336,7 @@ pub struct Config {
     pub icecast_out: Option<IcecastOutConfig>,
     pub srt_in: Option<SrtInConfig>,
     pub srt_out: Option<SrtOutConfig>,
-    pub recorder: Option<RecorderConfigToml>,
+    pub file_out: Option<FileOutConfigToml>,
     #[serde(default)]
     pub monitoring: MonitoringConfig,
     #[serde(default)]
@@ -370,7 +372,16 @@ pub struct SrtInConfig {
 // ---------- Loader ----------
 pub fn load(path: &str) -> anyhow::Result<Config> {
     let txt = std::fs::read_to_string(path)?;
-    Ok(toml::from_str(&txt)?)
+    let mut value: toml::Value = toml::from_str(&txt)?;
+    if let Some(table) = value.as_table_mut() {
+        if let Some(recorder_value) = table.remove("recorder") {
+            warn!("Config key 'recorder' is deprecated; use 'file_out' instead.");
+            if !table.contains_key("file_out") {
+                table.insert("file_out".to_string(), recorder_value);
+            }
+        }
+    }
+    Ok(value.try_into()?)
 }
 
 #[derive(Debug, Clone)]

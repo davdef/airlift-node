@@ -74,9 +74,9 @@ description = "Live-Stream aus dem Ringbuffer"
 genre = "news"
 public = false
 
-[outputs.recorder]
-# Recorder schreibt den Encoded-Stream direkt (z. B. WAV oder OGG)
-type = "recorder"
+[outputs.file_out]
+# File-Out schreibt den Encoded-Stream direkt (z. B. WAV oder OGG)
+type = "file_out"
 enabled = true
 input = "source"
 buffer = "main"
