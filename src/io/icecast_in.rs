@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use log::{error, info, warn};
 use opus::{Channels as OpusChannels, Decoder as OpusDecoder};
 use std::io::{BufReader, Read};
