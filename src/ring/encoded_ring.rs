@@ -1,8 +1,8 @@
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use crate::codecs::EncodedFrame;
-use crate::ring::RingStats;
+use crate::ring::{EncodedFramePacket, EncodedSink, EncodedSource, RingStats};
 
 #[derive(Clone)]
 pub struct EncodedSlot {
@@ -119,6 +119,13 @@ impl EncodedRing {
     }
 }
 
+impl EncodedSink for EncodedRing {
+    fn push(&self, frame: EncodedFramePacket) -> anyhow::Result<()> {
+        self.writer_push(frame.utc_ns, frame.frame);
+        Ok(())
+    }
+}
+
 impl EncodedRingReader {
     pub fn poll(&mut self) -> EncodedRingRead {
         let head = self.ring.head_seq();
@@ -149,5 +156,11 @@ impl EncodedRingReader {
     pub fn fill(&self) -> u64 {
         let head = self.ring.head_seq();
         head.saturating_sub(self.last_seq)
+    }
+}
+
+impl EncodedSource for EncodedRingReader {
+    fn poll(&mut self) -> EncodedRingRead {
+        EncodedRingReader::poll(self)
     }
 }

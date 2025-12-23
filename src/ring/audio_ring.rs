@@ -4,6 +4,8 @@
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::ring::{PcmFrame, PcmSink};
+
 #[derive(Clone)]
 pub struct AudioSlot {
     pub seq: u64,
@@ -118,6 +120,13 @@ impl AudioRing {
             head_seq: g.head_seq,
             next_seq: self.next_seq.load(Ordering::Relaxed),
         }
+    }
+}
+
+impl PcmSink for AudioRing {
+    fn push(&self, frame: PcmFrame) -> anyhow::Result<()> {
+        self.writer_push(frame.utc_ns, frame.pcm);
+        Ok(())
     }
 }
 

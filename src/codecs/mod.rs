@@ -1,11 +1,11 @@
 use serde::Serialize;
 
+#[cfg(feature = "mp3")]
+pub mod mp3;
 pub mod opus;
 pub mod pcm;
 pub mod registry;
 pub mod vorbis;
-#[cfg(feature = "mp3")]
-pub mod mp3;
 
 pub const PCM_SAMPLE_RATE: u32 = 48_000;
 pub const PCM_CHANNELS: u8 = 2;

@@ -6,7 +6,9 @@ mod audio;
 mod bootstrap;
 mod codecs;
 mod config;
+mod container;
 mod control;
+mod decoder;
 mod io;
 mod monitoring;
 mod recorder;
@@ -95,7 +97,13 @@ fn main() -> anyhow::Result<()> {
     let audio_bind = "0.0.0.0:3011";
 
     if let Some(graph) = &graph {
-        register_graph_services(&registry, api_bind, audio_bind, cfg.monitoring.http_port, graph);
+        register_graph_services(
+            &registry,
+            api_bind,
+            audio_bind,
+            cfg.monitoring.http_port,
+            graph,
+        );
     } else {
         register_services(&registry, api_bind, audio_bind, cfg.monitoring.http_port);
     }
