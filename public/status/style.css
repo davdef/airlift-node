@@ -570,10 +570,30 @@ main {
 .pipeline-edge {
     stroke: rgba(137, 191, 242, 0.7);
     stroke-width: 2;
+    fill: none;
 }
 
 .pipeline-edge.temp {
     stroke-dasharray: 4 4;
+}
+
+.pipeline-edge.signal-raw_pcm {
+    stroke: rgba(52, 152, 219, 0.85);
+}
+
+.pipeline-edge.signal-encoded_ogg {
+    stroke: rgba(46, 204, 113, 0.85);
+}
+
+.pipeline-edge.signal-peak_event {
+    stroke: rgba(155, 89, 182, 0.9);
+    stroke-dasharray: 6 4;
+}
+
+.pipeline-edge.invalid {
+    stroke: rgba(231, 76, 60, 0.95);
+    stroke-width: 2.5;
+    stroke-dasharray: 3 3;
 }
 
 /* MODULE CARDS -------------------------------------------- */

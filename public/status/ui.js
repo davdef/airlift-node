@@ -19,6 +19,21 @@ const pipelinePaletteDefinitions = [
     { kind: 'output', label: 'Output' }
 ];
 
+const pipelineSignalTypes = {
+    raw_pcm: {
+        key: 'raw_pcm',
+        label: 'Raw PCM'
+    },
+    encoded_ogg: {
+        key: 'encoded_ogg',
+        label: 'Encoded OGG'
+    },
+    peak_event: {
+        key: 'peak_event',
+        label: 'Peak Event'
+    }
+};
+
 function renderAudioPipeline(status) {
     renderPipelineEditor(status);
 }
@@ -118,13 +133,37 @@ function renderEdges(svg) {
     svg.setAttribute('width', canvasRect.width);
     svg.setAttribute('height', canvasRect.height);
 
+    const nodesById = new Map(pipelineEditorState.nodes.map(node => [node.id, node]));
+    const outgoing = pipelineEditorState.edges.reduce((map, edge) => {
+        if (!map.has(edge.from)) {
+            map.set(edge.from, []);
+        }
+        map.get(edge.from).push(edge);
+        return map;
+    }, new Map());
+
     const lines = pipelineEditorState.edges.map(edge => {
         const from = getNodeAnchor(edge.from, 'output', canvasRect);
         const to = getNodeAnchor(edge.to, 'input', canvasRect);
         if (!from || !to) {
             return '';
         }
-        return `<line class="pipeline-edge" x1="${from.x}" y1="${from.y}" x2="${to.x}" y2="${to.y}" />`;
+        const signalType = getEdgeSignalType(edge, nodesById);
+        const isCompatible = isEdgeCompatible(edge, nodesById);
+        const signalClass = signalType ? `signal-${signalType}` : '';
+        const invalidClass = isCompatible ? '' : 'invalid';
+        const siblingEdges = outgoing.get(edge.from) || [];
+        const needsBranching = siblingEdges.length > 1;
+        const branchOffset = 40;
+        let path = '';
+        if (needsBranching) {
+            const branchX = from.x + branchOffset;
+            path = `M ${from.x} ${from.y} L ${branchX} ${from.y} L ${branchX} ${to.y} L ${to.x} ${to.y}`;
+        } else {
+            const midX = (from.x + to.x) / 2;
+            path = `M ${from.x} ${from.y} C ${midX} ${from.y} ${midX} ${to.y} ${to.x} ${to.y}`;
+        }
+        return `<path class="pipeline-edge ${signalClass} ${invalidClass}" d="${path}" />`;
     }).join('');
 
     const tempLine = pipelineEditorState.tempEdgeId
@@ -146,6 +185,55 @@ function getNodeAnchor(nodeId, handleType, canvasRect) {
         x: x - canvasRect.left,
         y: y - canvasRect.top
     };
+}
+
+function getNodeOutputSignalType(node) {
+    if (!node) {
+        return null;
+    }
+    switch (node.kind) {
+        case 'input':
+        case 'buffer':
+            return pipelineSignalTypes.raw_pcm.key;
+        case 'processing':
+            return pipelineSignalTypes.encoded_ogg.key;
+        case 'service':
+            return pipelineSignalTypes.peak_event.key;
+        default:
+            return pipelineSignalTypes.raw_pcm.key;
+    }
+}
+
+function getNodeInputSignalTypes(node) {
+    if (!node) {
+        return [];
+    }
+    switch (node.kind) {
+        case 'buffer':
+        case 'processing':
+            return [pipelineSignalTypes.raw_pcm.key];
+        case 'service':
+            return [pipelineSignalTypes.raw_pcm.key, pipelineSignalTypes.encoded_ogg.key];
+        case 'output':
+            return [pipelineSignalTypes.encoded_ogg.key];
+        default:
+            return [];
+    }
+}
+
+function getEdgeSignalType(edge, nodesById) {
+    const fromNode = nodesById.get(edge.from);
+    return getNodeOutputSignalType(fromNode);
+}
+
+function isEdgeCompatible(edge, nodesById) {
+    const toNode = nodesById.get(edge.to);
+    const expectedSignals = getNodeInputSignalTypes(toNode);
+    if (!toNode || expectedSignals.length === 0) {
+        return true;
+    }
+    const signalType = getEdgeSignalType(edge, nodesById);
+    return expectedSignals.includes(signalType);
 }
 
 function attachPipelineEvents() {
@@ -400,6 +488,22 @@ function buildPipelineGraphConfig(model) {
         }
         incoming.get(edge.to).push(edge.from);
         outgoing.get(edge.from).push(edge.to);
+    });
+
+    edges.forEach(edge => {
+        const fromNode = nodesById.get(edge.from);
+        const toNode = nodesById.get(edge.to);
+        if (!fromNode || !toNode) {
+            return;
+        }
+        const signalType = getEdgeSignalType(edge, nodesById);
+        const isCompatible = isEdgeCompatible(edge, nodesById);
+        if (!isCompatible) {
+            issues.push({
+                type: 'signal-compat',
+                message: `Signal "${signalType}" passt nicht zu "${toNode.label}".`
+            });
+        }
     });
 
     const inputNodes = nodes.filter(node => node.kind === 'input');
