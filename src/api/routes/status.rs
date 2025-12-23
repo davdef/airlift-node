@@ -113,6 +113,7 @@ pub struct FileOutStatus {
 pub struct StatusResponse {
     pub timestamp_ms: u64,
     pub ring: RingStatus,
+    pub monitoring_available: bool,
     pub configuration_required: bool,
     pub configuration_issues: Vec<ConfigRequirement>,
     pub modules: Vec<ModuleInfo>,
@@ -395,6 +396,10 @@ fn build_status(
 
     let file_out_spec = find_file_out_signal(config);
     let file_out_status = build_file_out_status(file_out_spec, file_out_controls, codec_registry);
+    let monitoring_available = config
+        .services
+        .values()
+        .any(|service| service.enabled && service.service_type == "monitor");
 
     StatusResponse {
         timestamp_ms: now_ms(),
@@ -408,6 +413,7 @@ fn build_status(
             fill_ratio,
             arc_replacements: ring_stats.arc_replacements,
         },
+        monitoring_available,
         configuration_required: !configuration_issues.is_empty(),
         configuration_issues,
         modules,
@@ -592,6 +598,7 @@ fn service_consumes_ring(service: &ServiceDescriptor) -> bool {
     matches!(
         service.service_type.as_str(),
         "audio_http"
+            | "monitor"
             | "monitoring"
             | "peak_analyzer"
             | "influx_out"
@@ -603,6 +610,7 @@ fn service_consumes_ring(service: &ServiceDescriptor) -> bool {
 fn humanize_service_label(service: &ServiceDescriptor) -> String {
     match service.service_type.as_str() {
         "audio_http" => "Audio HTTP".to_string(),
+        "monitor" => "Monitor".to_string(),
         "monitoring" => "Monitoring".to_string(),
         "file_out" => "File-Out".to_string(),
         _ => service.service_type.replace('_', " ").to_string(),
