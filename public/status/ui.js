@@ -348,24 +348,430 @@ function updatePipelineInspector() {
 }
 
 function updatePipelinePreview() {
+    renderPipelineConfigPreview();
+}
+
+function renderPipelineConfigPreview() {
     const preview = document.getElementById('setupPreview');
     if (!preview) {
-        return;
+        return null;
     }
-    const model = {
+    const validation = document.getElementById('setupPreviewValidation');
+    const model = getPipelineGraphModel();
+    const { config, issues } = buildPipelineGraphConfig(model);
+    preview.textContent = formatConfigOutput(config);
+    renderPipelineValidation(validation, issues);
+    return { config, issues };
+}
+
+function getPipelineGraphModel() {
+    return {
         nodes: pipelineEditorState.nodes.map(node => ({
             id: node.id,
             label: node.label,
-            kind: node.kind,
-            position: { x: Math.round(node.x), y: Math.round(node.y) }
+            kind: node.kind
         })),
         edges: pipelineEditorState.edges.map(edge => ({
             from: edge.from,
             to: edge.to
         }))
     };
-    preview.textContent = JSON.stringify(model, null, 2);
 }
+
+function buildPipelineGraphConfig(model) {
+    const nodes = model?.nodes || [];
+    const edges = model?.edges || [];
+    const issues = [];
+    const nodesById = new Map(nodes.map(node => [node.id, node]));
+    const incoming = new Map();
+    const outgoing = new Map();
+
+    nodes.forEach(node => {
+        incoming.set(node.id, []);
+        outgoing.set(node.id, []);
+    });
+
+    edges.forEach(edge => {
+        if (!incoming.has(edge.to)) {
+            incoming.set(edge.to, []);
+        }
+        if (!outgoing.has(edge.from)) {
+            outgoing.set(edge.from, []);
+        }
+        incoming.get(edge.to).push(edge.from);
+        outgoing.get(edge.from).push(edge.to);
+    });
+
+    const inputNodes = nodes.filter(node => node.kind === 'input');
+    const bufferNodes = nodes.filter(node => node.kind === 'buffer');
+    const outputNodes = nodes.filter(node => node.kind === 'output');
+    const serviceNodes = nodes.filter(node => node.kind === 'service');
+    const codecNodes = nodes.filter(node => node.kind === 'processing');
+
+    if (inputNodes.length === 0) {
+        issues.push({ type: 'input', message: 'Keine Input-Nodes vorhanden.' });
+    }
+
+    inputNodes.forEach(node => {
+        if ((incoming.get(node.id) || []).length > 0) {
+            issues.push({
+                type: 'input-start',
+                message: `Input "${node.label}" hat eingehende Verbindungen. Die Pipeline muss mit Input starten.`
+            });
+        }
+    });
+
+    nodes.forEach(node => {
+        const inEdges = incoming.get(node.id) || [];
+        const outEdges = outgoing.get(node.id) || [];
+        if (inEdges.length === 0 && outEdges.length === 0) {
+            issues.push({
+                type: 'unconnected',
+                message: `Node "${node.label}" ist nicht verbunden.`
+            });
+        }
+    });
+
+    const ringbufferDefaults = {
+        slots: 6000,
+        chunk_ms: 100,
+        prealloc_samples: 9600
+    };
+    const ringbufferIdMap = allocateNodeIds(bufferNodes, 'buffer');
+    const ringbufferEntries = {};
+    bufferNodes.forEach(node => {
+        ringbufferEntries[ringbufferIdMap.get(node.id)] = { ...ringbufferDefaults };
+    });
+    if (bufferNodes.length === 0) {
+        ringbufferEntries.main = { ...ringbufferDefaults };
+    }
+    const primaryRingbufferId = bufferNodes.length > 0
+        ? ringbufferIdMap.get(bufferNodes[0].id)
+        : 'main';
+
+    const inputIdMap = allocateNodeIds(inputNodes, 'input');
+    const outputIdMap = allocateNodeIds(outputNodes, 'output');
+    const serviceIdMap = allocateNodeIds(serviceNodes, 'service');
+    const codecIdMap = allocateNodeIds(codecNodes, 'codec');
+
+    const codecEntries = {};
+    codecNodes.forEach(node => {
+        const codecId = codecIdMap.get(node.id);
+        const codecType = inferCodecType(node.label);
+        codecEntries[codecId] = buildCodecDefaults(codecType);
+    });
+
+    const inputs = {};
+    inputNodes.forEach(node => {
+        const inputId = inputIdMap.get(node.id);
+        const inputType = inferInputType(node.label);
+        const bufferNode = findDownstreamNode(node.id, incoming, outgoing, nodesById, candidate => candidate.kind === 'buffer');
+        const bufferId = bufferNode ? ringbufferIdMap.get(bufferNode.id) : primaryRingbufferId;
+        inputs[inputId] = buildInputConfig(inputType, bufferId);
+    });
+
+    const outputs = {};
+    outputNodes.forEach(node => {
+        const outputId = outputIdMap.get(node.id);
+        const outputType = inferOutputType(node.label);
+        const upstreamInput = findUpstreamNode(node.id, incoming, nodesById, candidate => candidate.kind === 'input');
+        const upstreamBuffer = findUpstreamNode(node.id, incoming, nodesById, candidate => candidate.kind === 'buffer');
+        const upstreamCodec = findUpstreamNode(node.id, incoming, nodesById, candidate => candidate.kind === 'processing');
+        const bufferId = upstreamBuffer ? ringbufferIdMap.get(upstreamBuffer.id) : primaryRingbufferId;
+        if (!upstreamInput && !upstreamBuffer) {
+            issues.push({
+                type: 'output-connection',
+                message: `Output "${node.label}" ist nicht mit Input oder Buffer verbunden.`
+            });
+        }
+        if (!upstreamCodec) {
+            issues.push({
+                type: 'codec-missing',
+                message: `Output "${node.label}" hat keine Codec-Zuweisung.`
+            });
+        }
+        outputs[outputId] = buildOutputConfig({
+            outputType,
+            bufferId,
+            inputId: upstreamInput ? inputIdMap.get(upstreamInput.id) : null,
+            codecId: upstreamCodec ? codecIdMap.get(upstreamCodec.id) : null
+        });
+    });
+
+    const services = {};
+    serviceNodes.forEach(node => {
+        const serviceId = serviceIdMap.get(node.id);
+        const serviceType = inferServiceType(node.label);
+        const upstreamInput = findUpstreamNode(node.id, incoming, nodesById, candidate => candidate.kind === 'input');
+        const upstreamBuffer = findUpstreamNode(node.id, incoming, nodesById, candidate => candidate.kind === 'buffer');
+        const upstreamCodec = findUpstreamNode(node.id, incoming, nodesById, candidate => candidate.kind === 'processing');
+        if (!upstreamInput && !upstreamBuffer) {
+            issues.push({
+                type: 'service-connection',
+                message: `Service "${node.label}" ist nicht mit Input oder Buffer verbunden.`
+            });
+        }
+        if (!upstreamCodec) {
+            issues.push({
+                type: 'codec-missing',
+                message: `Service "${node.label}" hat keine Codec-Zuweisung.`
+            });
+        }
+        services[serviceId] = buildServiceConfig({
+            serviceType,
+            bufferId: upstreamBuffer ? ringbufferIdMap.get(upstreamBuffer.id) : primaryRingbufferId,
+            inputId: upstreamInput ? inputIdMap.get(upstreamInput.id) : null,
+            codecId: upstreamCodec ? codecIdMap.get(upstreamCodec.id) : null
+        });
+    });
+
+    const config = {
+        ringbuffers: ringbufferEntries,
+        inputs,
+        outputs,
+        services,
+        codecs: codecEntries
+    };
+
+    return { config, issues };
+}
+
+function allocateNodeIds(nodes, fallbackPrefix) {
+    const used = new Set();
+    const map = new Map();
+    nodes.forEach((node, index) => {
+        const base = slugify(node.label || node.id) || `${fallbackPrefix}_${index + 1}`;
+        let candidate = base;
+        let counter = 2;
+        while (used.has(candidate)) {
+            candidate = `${base}_${counter++}`;
+        }
+        used.add(candidate);
+        map.set(node.id, candidate);
+    });
+    return map;
+}
+
+function slugify(value) {
+    return (value || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_+|_+$/g, '');
+}
+
+function findUpstreamNode(startId, incoming, nodesById, predicate) {
+    const visited = new Set();
+    const queue = [...(incoming.get(startId) || [])];
+    while (queue.length > 0) {
+        const current = queue.shift();
+        if (visited.has(current)) {
+            continue;
+        }
+        visited.add(current);
+        const node = nodesById.get(current);
+        if (node && predicate(node)) {
+            return node;
+        }
+        (incoming.get(current) || []).forEach(next => queue.push(next));
+    }
+    return null;
+}
+
+function findDownstreamNode(startId, incoming, outgoing, nodesById, predicate) {
+    const visited = new Set();
+    const queue = [...(outgoing.get(startId) || [])];
+    while (queue.length > 0) {
+        const current = queue.shift();
+        if (visited.has(current)) {
+            continue;
+        }
+        visited.add(current);
+        const node = nodesById.get(current);
+        if (node && predicate(node)) {
+            return node;
+        }
+        (outgoing.get(current) || []).forEach(next => queue.push(next));
+    }
+    return null;
+}
+
+function inferInputType(label) {
+    const lower = (label || '').toLowerCase();
+    if (lower.includes('icecast')) return 'icecast';
+    if (lower.includes('http')) return 'http_stream';
+    if (lower.includes('file')) return 'file';
+    return 'srt';
+}
+
+function inferOutputType(label) {
+    const lower = (label || '').toLowerCase();
+    if (lower.includes('icecast')) return 'icecast_out';
+    if (lower.includes('file')) return 'file_out';
+    if (lower.includes('udp')) return 'udp_out';
+    return 'srt_out';
+}
+
+function inferServiceType(label) {
+    const lower = (label || '').toLowerCase();
+    if (lower.includes('monitor')) return 'monitoring';
+    if (lower.includes('metadata')) return 'metadata';
+    return 'audio_http';
+}
+
+function inferCodecType(label) {
+    const lower = (label || '').toLowerCase();
+    if (lower.includes('opus')) return 'opus_ogg';
+    if (lower.includes('mp3')) return 'mp3';
+    if (lower.includes('aac')) return 'aac_lc';
+    if (lower.includes('flac')) return 'flac';
+    if (lower.includes('vorbis')) return 'vorbis';
+    return 'pcm';
+}
+
+function buildInputConfig(inputType, bufferId) {
+    const config = {
+        type: inputType,
+        enabled: true,
+        buffer: bufferId
+    };
+    if (inputType === 'srt') {
+        config.listen = '0.0.0.0:9000';
+        config.latency_ms = 200;
+        config.streamid = 'airlift';
+    } else if (inputType === 'http_stream' || inputType === 'icecast') {
+        config.url = 'https://example.com/stream.ogg';
+    } else if (inputType === 'file') {
+        config.path = '/path/to/audio.wav';
+    }
+    return config;
+}
+
+function buildOutputConfig({ outputType, bufferId, inputId, codecId }) {
+    const config = {
+        type: outputType,
+        enabled: true,
+        buffer: bufferId
+    };
+    if (inputId) {
+        config.input = inputId;
+    }
+    if (codecId) {
+        config.codec_id = codecId;
+    }
+    if (outputType === 'srt_out') {
+        config.target = 'example.com:9000';
+        config.latency_ms = 200;
+    } else if (outputType === 'icecast_out') {
+        config.host = 'icecast.local';
+        config.port = 8000;
+        config.mount = '/airlift';
+        config.user = 'source';
+        config.password = 'hackme';
+        config.bitrate = 128000;
+        config.name = 'Airlift Node';
+        config.description = 'Live-Stream aus dem Ringbuffer';
+        config.genre = 'news';
+        config.public = false;
+    } else if (outputType === 'file_out') {
+        config.wav_dir = '/opt/rfm/airlift-node/aircheck/wav';
+        config.retention_days = 7;
+    }
+    return config;
+}
+
+function buildServiceConfig({ serviceType, bufferId, inputId, codecId }) {
+    const config = {
+        type: serviceType,
+        enabled: true
+    };
+    if (bufferId) {
+        config.buffer = bufferId;
+    }
+    if (inputId) {
+        config.input = inputId;
+    }
+    if (codecId) {
+        config.codec_id = codecId;
+    }
+    if (serviceType === 'monitoring') {
+        config.interval_ms = 30000;
+    } else if (serviceType === 'metadata') {
+        config.url = 'https://api.example';
+    }
+    return config;
+}
+
+function buildCodecDefaults(codecType) {
+    const config = {
+        type: codecType,
+        sample_rate: 48000,
+        channels: 2
+    };
+    if (codecType === 'opus_ogg') {
+        config.frame_size_ms = 20;
+        config.bitrate = 128000;
+        config.application = 'audio';
+    }
+    return config;
+}
+
+function formatConfigOutput(config) {
+    const json = JSON.stringify(config, null, 2);
+    const toml = formatConfigAsToml(config);
+    return `JSON\n${json}\n\nTOML\n${toml}`;
+}
+
+function formatConfigAsToml(config) {
+    const sections = [];
+    const addSection = (title, entries) => {
+        Object.entries(entries || {}).forEach(([key, values]) => {
+            sections.push(`[${title}.${key}]`);
+            Object.entries(values).forEach(([field, value]) => {
+                if (value === undefined || value === null) {
+                    return;
+                }
+                sections.push(`${field} = ${tomlValue(value)}`);
+            });
+            sections.push('');
+        });
+    };
+
+    addSection('ringbuffers', config.ringbuffers);
+    addSection('inputs', config.inputs);
+    addSection('outputs', config.outputs);
+    addSection('services', config.services);
+    addSection('codecs', config.codecs);
+
+    return sections.join('\n').trim();
+}
+
+function tomlValue(value) {
+    if (typeof value === 'string') {
+        return `"${value.replace(/"/g, '\\"')}"`;
+    }
+    if (typeof value === 'boolean' || typeof value === 'number') {
+        return String(value);
+    }
+    if (Array.isArray(value)) {
+        return `[${value.map(item => tomlValue(item)).join(', ')}]`;
+    }
+    return `"${String(value)}"`;
+}
+
+function renderPipelineValidation(container, issues) {
+    if (!container) {
+        return;
+    }
+    if (!issues || issues.length === 0) {
+        container.innerHTML = '<div class="validation-item ok">✅ Keine Validierungsfehler gefunden.</div>';
+        return;
+    }
+    container.innerHTML = issues.map(issue => `
+        <div class="validation-item error">⚠️ ${issue.message}</div>
+    `).join('');
+}
+
+window.renderPipelineConfigPreview = renderPipelineConfigPreview;
 
 function renderPipelineNode(node, modulesById, showStats = true) {
     const moduleSnapshot = modulesById.get(node.id);
