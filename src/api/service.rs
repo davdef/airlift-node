@@ -58,6 +58,7 @@ async fn run_api_server(bind_addr: SocketAddr, state: ApiState) -> anyhow::Resul
         .route("/api/history", get(routes::peaks::get_history))
         .route("/api/status", get(routes::status::get_status))
         .route("/api/codecs", get(routes::codecs::get_codecs))
+        .route("/api/devices", get(routes::devices::get_devices))
         .route(
             "/api/control",
             axum::routing::post(routes::control::post_control),
