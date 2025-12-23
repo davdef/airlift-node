@@ -5,6 +5,9 @@ let websocket = null;
 const rateHistory = new Map();
 let wsMessageCount = 0;
 let autoRefreshInterval = null;
+let moduleDisplayFilter = 'all';
+let currentViewState = 'normal';
+const MODULE_FILTER_STORAGE_KEY = 'moduleDisplayFilter';
 const panelIds = [
     'mainContent',
     'pipelinePanel',
@@ -89,6 +92,55 @@ function formatDuration(ms) {
     if (seconds < 60) return `${seconds}s`;
     const minutes = Math.floor(seconds / 60);
     return `${minutes}m ${seconds % 60}s`;
+}
+
+function loadModuleFilterState() {
+    const stored = localStorage.getItem(MODULE_FILTER_STORAGE_KEY);
+    if (stored === 'active' || stored === 'configured' || stored === 'all') {
+        moduleDisplayFilter = stored;
+    }
+}
+
+function saveModuleFilterState() {
+    localStorage.setItem(MODULE_FILTER_STORAGE_KEY, moduleDisplayFilter);
+}
+
+function updateModuleFilterUI() {
+    document.querySelectorAll('[data-module-filter]').forEach(button => {
+        const isActive = button.dataset.moduleFilter === moduleDisplayFilter;
+        button.classList.toggle('active', isActive);
+    });
+}
+
+function applyModuleFilterVisibility() {
+    if (currentViewState === 'offline') {
+        return;
+    }
+    const activePanel = document.getElementById('activeModulesPanel');
+    const inactivePanel = document.getElementById('inactiveModulesPanel');
+    const showActive = moduleDisplayFilter !== 'configured';
+    const showInactive = moduleDisplayFilter !== 'active';
+
+    if (activePanel) {
+        activePanel.classList.toggle('hidden', !showActive);
+    }
+    if (inactivePanel) {
+        inactivePanel.classList.toggle('hidden', !showInactive);
+    }
+}
+
+function initializeModuleFilterControls() {
+    loadModuleFilterState();
+    updateModuleFilterUI();
+    applyModuleFilterVisibility();
+    document.querySelectorAll('[data-module-filter]').forEach(button => {
+        button.addEventListener('click', () => {
+            moduleDisplayFilter = button.dataset.moduleFilter;
+            saveModuleFilterState();
+            updateModuleFilterUI();
+            applyModuleFilterVisibility();
+        });
+    });
 }
 
 function showMessage(text, type = 'info') {
@@ -177,7 +229,9 @@ function updateUI(status, codecs = []) {
     document.getElementById('updateTime').textContent = formatTime(Date.now());
     
     const viewState = determineViewState(status);
+    currentViewState = viewState;
     applyViewState(viewState, status);
+    applyModuleFilterVisibility();
     updateConnectionState(true);
     
     if (viewState !== 'normal') {
@@ -340,6 +394,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
+    initializeModuleFilterControls();
     initializeAll();
 });
 
@@ -446,6 +501,7 @@ function applyViewState(viewState, status) {
 }
 
 function showOfflineView() {
+    currentViewState = 'offline';
     togglePanels(false);
     const offlinePanel = document.getElementById('offlinePanel');
     const setupPanel = document.getElementById('setupPanel');
@@ -454,6 +510,7 @@ function showOfflineView() {
 }
 
 function showSetupView(status) {
+    currentViewState = 'setup';
     document.getElementById('offlinePanel').classList.add('hidden');
     const setupPanel = document.getElementById('setupPanel');
     togglePanels(true);
@@ -464,6 +521,7 @@ function showSetupView(status) {
 }
 
 function showFullView() {
+    currentViewState = 'normal';
     togglePanels(true);
     document.getElementById('offlinePanel').classList.add('hidden');
     document.getElementById('setupPanel').classList.add('hidden');
@@ -1942,8 +2000,23 @@ function renderModulesTable(status) {
     const countElement = document.getElementById('activeModulesCount');
     
     const modules = status.modules || [];
+    const inactiveModules = status.inactive_modules || [];
+    const hasNoDefinitions = modules.length === 0 && inactiveModules.length === 0;
     countElement.textContent = modules.length;
     
+    if (hasNoDefinitions) {
+        table.innerHTML = `
+            <tbody>
+                <tr>
+                    <td colspan="4" class="empty-state">
+                        <div class="icon">🧩</div>
+                        <div class="message">Keine Module definiert</div>
+                    </td>
+                </tr>
+            </tbody>`;
+        return;
+    }
+
     if (modules.length === 0) {
         table.innerHTML = `
             <tbody>
@@ -2000,8 +2073,23 @@ function renderInactiveModules(status) {
     const countElement = document.getElementById('inactiveModulesCount');
     
     const inactive = status.inactive_modules || [];
+    const activeModules = status.modules || [];
+    const hasNoDefinitions = inactive.length === 0 && activeModules.length === 0;
     countElement.textContent = inactive.length;
     
+    if (hasNoDefinitions) {
+        table.innerHTML = `
+            <tbody>
+                <tr>
+                    <td colspan="4" class="empty-state">
+                        <div class="icon">🧩</div>
+                        <div class="message">Keine Module definiert</div>
+                    </td>
+                </tr>
+            </tbody>`;
+        return;
+    }
+
     if (inactive.length === 0) {
         table.innerHTML = `
             <tbody>

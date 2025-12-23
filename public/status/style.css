@@ -127,6 +127,43 @@ main {
     justify-content: space-between;
 }
 
+.panel-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.module-filter {
+    display: flex;
+    gap: 6px;
+    background: rgba(255, 255, 255, 0.04);
+    padding: 4px;
+    border-radius: 999px;
+}
+
+.filter-btn {
+    border: 1px solid transparent;
+    background: transparent;
+    color: #9fb4c8;
+    font-size: 10px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.filter-btn:hover {
+    color: var(--blue-light);
+}
+
+.filter-btn.active {
+    background: rgba(90, 160, 255, 0.2);
+    border-color: rgba(90, 160, 255, 0.35);
+    color: var(--blue-light);
+}
+
 .panel-title {
     margin: 0;
     font-size: 14px;

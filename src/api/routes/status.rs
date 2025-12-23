@@ -78,6 +78,7 @@ pub struct InactiveModule {
     pub reason: String,
     pub can_activate: bool,
     pub activate_action: Option<String>,
+    pub configured: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -459,6 +460,7 @@ fn add_inactive_module(
     if snapshot.enabled && snapshot.running {
         return;
     }
+    let configured = config_enabled.is_some();
     let reason = match config_enabled {
         None => "Nicht konfiguriert".to_string(),
         Some(false) => "Deaktiviert in Konfiguration".to_string(),
@@ -480,6 +482,7 @@ fn add_inactive_module(
         reason,
         can_activate: false,
         activate_action: None,
+        configured,
     });
 }
 
