@@ -49,6 +49,11 @@ fn main() -> anyhow::Result<()> {
     info!("[airlift] loaded {}", cfg_path);
 
     let graph = cfg.validate_graph()?;
+    let needs_agent = graph.is_some()
+        || cfg.legacy_ring_needed()
+        || cfg.api.enabled
+        || cfg.monitoring.enabled
+        || cfg.audio_http.enabled;
 
     // ------------------------------------------------------------
     // Graceful shutdown
@@ -60,6 +65,15 @@ fn main() -> anyhow::Result<()> {
             info!("\n[airlift] shutdown requested");
             r.store(false, Ordering::SeqCst);
         })?;
+    }
+
+    if !needs_agent {
+        info!("[airlift] no components enabled; idle mode");
+        while running.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        info!("[airlift] shutdown complete");
+        return Ok(());
     }
 
     // ------------------------------------------------------------
@@ -136,8 +150,18 @@ fn main() -> anyhow::Result<()> {
         api_service.start(api_state);
     }
 
+    let mut monitoring_started = false;
+    let graph_monitoring_enabled = graph.as_ref().is_some_and(|graph| {
+        graph
+            .services
+            .iter()
+            .find(|(_, svc)| svc.service_type == "monitoring")
+            .is_some_and(|(_, svc)| svc.enabled)
+    });
+
     if let Some(graph) = &graph {
         start_graph_workers(&cfg, graph, &context, running.clone())?;
+        monitoring_started = cfg.monitoring.enabled && graph_monitoring_enabled;
     } else {
         if cfg.monitoring.enabled {
             MonitoringService::start(
@@ -146,6 +170,7 @@ fn main() -> anyhow::Result<()> {
                 context.metrics.clone(),
                 running.clone(),
             )?;
+            monitoring_started = true;
         }
 
         if cfg.audio_http.enabled {
@@ -192,7 +217,9 @@ fn main() -> anyhow::Result<()> {
     // ------------------------------------------------------------
     info!("[airlift] shutting down…");
     std::thread::sleep(Duration::from_secs(1));
-    MonitoringService::mark_shutdown()?;
+    if monitoring_started {
+        MonitoringService::mark_shutdown()?;
+    }
     info!("[airlift] shutdown complete");
 
     Ok(())

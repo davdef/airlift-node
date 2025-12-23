@@ -382,6 +382,15 @@ pub struct ValidatedGraphConfig {
 }
 
 impl Config {
+    pub fn legacy_ring_needed(&self) -> bool {
+        self.srt_in.as_ref().is_some_and(|cfg| cfg.enabled)
+            || self.alsa_in.as_ref().is_some_and(|cfg| cfg.enabled)
+            || self.srt_out.as_ref().is_some_and(|cfg| cfg.enabled)
+            || self.icecast_out.as_ref().is_some_and(|cfg| cfg.enabled)
+            || self.recorder.as_ref().is_some_and(|cfg| cfg.enabled)
+            || self.peak_storage_enabled
+    }
+
     pub fn codec_instances(&self) -> Vec<CodecInstanceConfig> {
         match &self.codecs {
             CodecConfigs::List(list) => list.clone(),
