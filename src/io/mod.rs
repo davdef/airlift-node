@@ -1,6 +1,8 @@
 #[cfg(feature = "alsa")]
 pub mod alsa_in;
 pub mod broadcast_http;
+pub mod file_in;
+pub mod file_out;
 pub mod icecast_meta_out;
 pub mod icecast_out;
 pub mod icecast_in;

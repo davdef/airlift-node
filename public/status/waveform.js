@@ -4,8 +4,8 @@ let bufferCapacity = 6000;
 let bufferHeadIndex = 0;
 let bufferTailIndex = 0;
 
-let recorderData = [];
-let recorderFiles = [];
+let fileOutData = [];
+let fileOutFiles = [];
 
 // Animation state
 let animationFrameId = null;
@@ -98,8 +98,8 @@ async function initializeRingbuffer(status) {
     }
 }
 
-// Recorder Initialization (bleibt gleich)
-async function initializeRecorder(status) {
+// File-Out Initialization (bleibt gleich)
+async function initializeFileOut(status) {
     try {
         // Aktuelle Stunde berechnen
         const currentHour = Math.floor(Date.now() / 1000 / 3600);
@@ -110,15 +110,15 @@ async function initializeRecorder(status) {
         const response = await fetch(`/api/history?from=${hourStart}&to=${Math.min(latestStudioTime || Date.now(), hourEnd)}`);
         if (response.ok) {
             const data = await response.json();
-            recorderData = Array.isArray(data) 
+            fileOutData = Array.isArray(data) 
                 ? data.map(normalizeHistoryPoint).filter(Boolean)
                 : [];
         }
         
-        // Recorder files vom Status
-        if (status.recorder && status.recorder.current_files) {
-            recorderFiles = status.recorder.current_files;
-            updateRecorderFiles();
+        // File-Out files vom Status
+        if (status.file_out && status.file_out.current_files) {
+            fileOutFiles = status.file_out.current_files;
+            updateFileOutFiles();
         }
         
     } catch (error) {
@@ -126,10 +126,10 @@ async function initializeRecorder(status) {
     }
 }
 
-function updateRecorderFiles() {
+function updateFileOutFiles() {
     const filesContainer = document.getElementById('recorderFiles');
     
-    if (recorderFiles.length === 0) {
+    if (fileOutFiles.length === 0) {
         filesContainer.innerHTML = `
             <div class="empty-state">
                 <div class="icon">📁</div>
@@ -138,7 +138,7 @@ function updateRecorderFiles() {
         return;
     }
     
-    filesContainer.innerHTML = recorderFiles.map(file => {
+    filesContainer.innerHTML = fileOutFiles.map(file => {
         const fileName = file.split('/').pop();
         
         return `
@@ -162,7 +162,7 @@ function startDrawLoop() {
         const now = Date.now();
         if (now - lastDrawTime >= DRAW_INTERVAL) {
             drawRingbuffer();
-            drawRecorder();
+            drawFileOut();
             lastDrawTime = now;
         }
         animationFrameId = requestAnimationFrame(drawLoop);
@@ -345,10 +345,10 @@ function updateRingbufferPoint(timestamp, peaks, silence) {
     ringbufferData[bufferTailIndex].silence = false;
 }
 
-// Update Recorder with new peak
-function updateRecorderPoint(timestamp, peaks, silence) {
-    // Add to recorder data
-    recorderData.push({
+// Update File-Out with new peak
+function updateFileOutPoint(timestamp, peaks, silence) {
+    // Add to file-out data
+    fileOutData.push({
         ts: timestamp,
         peaks: peaks || [0, 0],
         silence: silence
@@ -356,11 +356,11 @@ function updateRecorderPoint(timestamp, peaks, silence) {
     
     // Keep only last hour
     const hourAgo = timestamp - 3600000;
-    recorderData = recorderData.filter(p => p.ts >= hourAgo);
+    fileOutData = fileOutData.filter(p => p.ts >= hourAgo);
 }
 
-// Draw Recorder - auch mit zwei Balken
-function drawRecorder() {
+// Draw File-Out - auch mit zwei Balken
+function drawFileOut() {
     if (!recorderCtx) return;
     
     const width = recorderCanvas.width;
@@ -391,10 +391,10 @@ function drawRecorder() {
     document.getElementById('recorderProgress').textContent = `${progressPercent}%`;
     
     // Zeichne Wellenform wenn Daten vorhanden
-    if (recorderData.length > 0) {
+    if (fileOutData.length > 0) {
         const barWidth = 2; // Feste Balkenbreite
         
-        recorderData.forEach(point => {
+        fileOutData.forEach(point => {
             const pointProgress = (point.ts - hourStart) / 3600000;
             if (pointProgress < 0 || pointProgress > progress) return;
             

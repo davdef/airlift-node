@@ -145,7 +145,8 @@ pub struct ControlState {
     pub alsa_in: Arc<ModuleState>,
     pub icecast_in: Arc<ModuleState>,
     pub icecast_out: Arc<ModuleState>,
-    pub recorder: Arc<ModuleState>,
+    pub file_in: Arc<ModuleState>,
+    pub file_out: Arc<ModuleState>,
     pub ring: Arc<ModuleState>,
 }
 
@@ -157,7 +158,8 @@ impl ControlState {
             alsa_in: Arc::new(ModuleState::default()),
             icecast_in: Arc::new(ModuleState::default()),
             icecast_out: Arc::new(ModuleState::default()),
-            recorder: Arc::new(ModuleState::default()),
+            file_in: Arc::new(ModuleState::default()),
+            file_out: Arc::new(ModuleState::default()),
             ring: Arc::new(ModuleState::default()),
         }
     }
@@ -168,7 +170,8 @@ impl ControlState {
         self.alsa_in.reset_counters();
         self.icecast_in.reset_counters();
         self.icecast_out.reset_counters();
-        self.recorder.reset_counters();
+        self.file_in.reset_counters();
+        self.file_out.reset_counters();
         self.ring.reset_counters();
     }
 }

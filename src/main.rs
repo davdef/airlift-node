@@ -11,7 +11,6 @@ mod control;
 mod decoder;
 mod io;
 mod monitoring;
-mod recorder;
 mod ring;
 mod services;
 mod web;
