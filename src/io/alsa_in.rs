@@ -7,18 +7,18 @@ use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::ring::AudioRing;
-use crate::monitoring::Metrics;
+use crate::codecs::pcm::PcmPassthroughDecoder;
 use crate::control::ModuleState;
+use crate::decoder::AudioDecoder;
+use crate::monitoring::Metrics;
+use crate::ring::{AudioRing, PcmSink};
 
 const RATE: usize = 48_000;
 const CHANNELS: usize = 2;
 const TARGET_FRAMES: usize = 4_800; // 100 ms
 
 fn utc_ns_now() -> u64 {
-    let d = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap();
+    let d = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
     d.as_secs() * 1_000_000_000 + d.subsec_nanos() as u64
 }
 
@@ -57,10 +57,7 @@ pub fn run_alsa_in(
 
         pcm.hw_params(&hwp)?;
 
-        println!(
-            "[alsa] rate={} period={} buffer={}",
-            RATE, period, buffer
-        );
+        println!("[alsa] rate={} period={} buffer={}", RATE, period, buffer);
 
         period_frames = period as usize;
     }
@@ -70,6 +67,7 @@ pub fn run_alsa_in(
 
     let mut fifo: Vec<i16> = Vec::with_capacity(TARGET_FRAMES * CHANNELS * 2);
     let mut period_buf = vec![0i16; period_frames * CHANNELS];
+    let mut decoder = PcmPassthroughDecoder::new(utc_ns_now());
 
     loop {
         match io.readi(&mut period_buf) {
@@ -83,21 +81,29 @@ pub fn run_alsa_in(
                         fifo.clear();
                     }
 
-                    let pcm_chunk: Vec<i16> =
-                        fifo.drain(..TARGET_FRAMES * CHANNELS).collect();
+                    let pcm_chunk: Vec<i16> = fifo.drain(..TARGET_FRAMES * CHANNELS).collect();
 
                     let utc = utc_ns_now() - 100_000_000;
-                    let seq = ring.writer_push(utc, pcm_chunk);
+                    decoder.set_next_timestamp(utc);
+                    match decode_pcm_chunk(&mut decoder, &pcm_chunk) {
+                        Ok(Some(frame)) => {
+                            let seq = ring.push(frame)?;
 
-                    metrics.alsa_samples.fetch_add(
-                        TARGET_FRAMES as u64 * CHANNELS as u64,
-                        Ordering::Relaxed,
-                    );
-                    state.mark_rx(TARGET_FRAMES as u64);
-                    ring_state.mark_rx(1);
+                            metrics.alsa_samples.fetch_add(
+                                TARGET_FRAMES as u64 * CHANNELS as u64,
+                                Ordering::Relaxed,
+                            );
+                            state.mark_rx(TARGET_FRAMES as u64);
+                            ring_state.mark_rx(1);
 
-                    if seq % 10 == 0 {
-                        println!("[alsa] pushed seq={}", seq);
+                            if seq % 10 == 0 {
+                                println!("[alsa] pushed seq={}", seq);
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            eprintln!("[alsa] decode error: {}", e);
+                        }
                     }
                 }
             }
@@ -108,6 +114,17 @@ pub fn run_alsa_in(
             }
         }
     }
+}
+
+fn decode_pcm_chunk(
+    decoder: &mut PcmPassthroughDecoder,
+    pcm_chunk: &[i16],
+) -> anyhow::Result<Option<crate::ring::PcmFrame>> {
+    let mut payload = Vec::with_capacity(pcm_chunk.len() * 2);
+    for sample in pcm_chunk {
+        payload.extend_from_slice(&sample.to_le_bytes());
+    }
+    decoder.decode(&payload)
 }
 
 // ============================================================

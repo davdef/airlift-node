@@ -1,9 +1,10 @@
+use crate::codecs::pcm::PcmPassthroughDecoder;
 use crate::config::SrtInConfig;
-use crate::ring::AudioRing;
-use anyhow::{Result, anyhow};
+use crate::container::parse_packet as parse_rfma_packet;
+use crate::decoder::AudioDecoder;
+use crate::ring::{AudioRing, PcmFrame, PcmSink};
+use anyhow::Result;
 
-use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
-use std::io::{Cursor, Read};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,14 +17,13 @@ use tokio::time::{sleep, timeout};
 
 use crate::control::{ModuleState, SrtInState};
 
-const MAGIC: &[u8; 4] = b"RFMA";
 const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(5);
 const SHUTDOWN_POLL_MS: u64 = 100;
 const STATS_INTERVAL: Duration = Duration::from_secs(60);
 
 /* =========================
-   ENTRY
-   ========================= */
+ENTRY
+========================= */
 
 pub fn run_srt_in(
     ring: AudioRing,
@@ -59,6 +59,7 @@ async fn async_run(
 
     let mut last_stats = Instant::now();
     let mut frames_minute: u64 = 0;
+    let mut decoder = PcmPassthroughDecoder::new(0);
 
     while running.load(Ordering::Relaxed) {
         if state.force_disconnect.swap(false, Ordering::Relaxed) {
@@ -71,13 +72,31 @@ async fn async_run(
             Ok(Ok(Some((_inst, msg)))) => {
                 state.module.set_connected(true);
 
-                if let Err(e) = handle_rfma(&ring, msg.as_ref()) {
-                    eprintln!("[srt_in] frame error: {e}");
-                    state.module.mark_drop(1);
-                } else {
-                    state.module.mark_rx(1);
-                    ring_state.mark_rx(1);
-                    frames_minute += 1;
+                match parse_rfma_packet(msg.as_ref()) {
+                    Ok(packet) => {
+                        decoder.set_next_timestamp(packet.utc_ns);
+                        match decoder.decode(&packet.payload) {
+                            Ok(Some(frame)) => {
+                                if let Err(e) = handle_pcm_frame(&ring, frame) {
+                                    eprintln!("[srt_in] frame error: {e}");
+                                    state.module.mark_drop(1);
+                                } else {
+                                    state.module.mark_rx(1);
+                                    ring_state.mark_rx(1);
+                                    frames_minute += 1;
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(e) => {
+                                eprintln!("[srt_in] frame error: {e}");
+                                state.module.mark_drop(1);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[srt_in] frame error: {e}");
+                        state.module.mark_drop(1);
+                    }
                 }
             }
 
@@ -123,32 +142,9 @@ async fn async_run(
 }
 
 /* =========================
-   RFMA
-   ========================= */
+RFMA
+========================= */
 
-fn handle_rfma(ring: &AudioRing, buf: &[u8]) -> Result<()> {
-    let mut c = Cursor::new(buf);
-
-    let mut magic = [0u8; 4];
-    c.read_exact(&mut magic)?;
-    if &magic != MAGIC {
-        return Err(anyhow!("invalid RFMA magic"));
-    }
-
-    let _seq = c.read_u64::<BigEndian>()?;
-    let utc_ns = c.read_u64::<BigEndian>()?;
-    let pcm_len = c.read_u32::<BigEndian>()? as usize;
-
-    if pcm_len % 2 != 0 {
-        return Err(anyhow!("invalid pcm_len {}", pcm_len));
-    }
-
-    let samples = pcm_len / 2;
-    let mut pcm = Vec::with_capacity(samples);
-    for _ in 0..samples {
-        pcm.push(c.read_i16::<LittleEndian>()?);
-    }
-
-    ring.writer_push(utc_ns, pcm);
-    Ok(())
+fn handle_pcm_frame<S: PcmSink>(sink: &S, frame: PcmFrame) -> Result<()> {
+    sink.push(frame)
 }
