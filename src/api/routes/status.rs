@@ -215,17 +215,19 @@ fn build_status(
 
     let recorder_controls = build_controls("recorder", &recorder, "Vorbereitet", None);
 
-    add_module_if_active(
-        &mut modules,
-        ring_id,
-        "Ringbuffer",
-        "buffer",
-        ring_module.clone(),
-        build_controls("ring", &ring_module, "Nicht unterstützt", None),
-        None,
-        None,
-        None,
-    );
+    if let Some(ring_id) = ring_id {
+        add_module_if_active(
+            &mut modules,
+            ring_id,
+            "Ringbuffer",
+            "buffer",
+            ring_module.clone(),
+            build_controls("ring", &ring_module, "Nicht unterstützt", None),
+            None,
+            None,
+            None,
+        );
+    }
 
     for (id, input) in config.inputs.iter() {
         let (snapshot, label, details, controls) = match input.input_type.as_str() {
@@ -463,29 +465,31 @@ fn build_graph(
     let mut edges = Vec::new();
     let ring_id = graph_ringbuffer_id(config);
 
-    let ring_active = ring.enabled && ring.running;
-    if ring_active {
-        nodes.push(GraphNode {
-            id: ring_id.to_string(),
-            label: "Ringbuffer".to_string(),
-            kind: "buffer".to_string(),
-        });
-    }
+    let ring_active = ring_id.is_some() && ring.enabled && ring.running;
+    if let Some(ring_id) = ring_id {
+        if ring_active {
+            nodes.push(GraphNode {
+                id: ring_id.to_string(),
+                label: "Ringbuffer".to_string(),
+                kind: "buffer".to_string(),
+            });
+        }
 
-    if ring_active {
-        for service in registry.list_services() {
-            if service_consumes_ring(&service) {
-                let service_id = format!("service:{}", service.id);
-                if !nodes.iter().any(|node| node.id == service_id) {
-                    nodes.push(GraphNode {
-                        id: service_id.clone(),
-                        label: humanize_service_label(&service),
-                        kind: "service".to_string(),
-                    });
-                    edges.push(GraphEdge {
-                        from: ring_id.to_string(),
-                        to: service_id,
-                    });
+        if ring_active {
+            for service in registry.list_services() {
+                if service_consumes_ring(&service) {
+                    let service_id = format!("service:{}", service.id);
+                    if !nodes.iter().any(|node| node.id == service_id) {
+                        nodes.push(GraphNode {
+                            id: service_id.clone(),
+                            label: humanize_service_label(&service),
+                            kind: "service".to_string(),
+                        });
+                        edges.push(GraphEdge {
+                            from: ring_id.to_string(),
+                            to: service_id,
+                        });
+                    }
                 }
             }
         }
@@ -505,10 +509,12 @@ fn build_graph(
                 kind: "input".to_string(),
             });
             if ring_active {
-                edges.push(GraphEdge {
-                    from: id.to_string(),
-                    to: ring_id.to_string(),
-                });
+                if let Some(ring_id) = ring_id {
+                    edges.push(GraphEdge {
+                        from: id.to_string(),
+                        to: ring_id.to_string(),
+                    });
+                }
             }
         }
     }
@@ -570,7 +576,7 @@ fn humanize_service_label(service: &ServiceDescriptor) -> String {
 fn add_output_to_graph(
     nodes: &mut Vec<GraphNode>,
     edges: &mut Vec<GraphEdge>,
-    ring_id: &str,
+    ring_id: Option<&str>,
     id: &str,
     label: &str,
     snapshot: &ModuleSnapshot,
@@ -589,6 +595,9 @@ fn add_output_to_graph(
     });
 
     if ring_active {
+        let Some(ring_id) = ring_id else {
+            return;
+        };
         let Some(codec_id) = codec_id else {
             edges.push(GraphEdge {
                 from: ring_id.to_string(),
@@ -631,7 +640,7 @@ fn add_output_to_graph(
 fn add_output_node(
     nodes: &mut Vec<GraphNode>,
     edges: &mut Vec<GraphEdge>,
-    ring_id: &str,
+    ring_id: Option<&str>,
     id: &str,
     label: &str,
     ring_active: bool,
@@ -645,6 +654,9 @@ fn add_output_node(
     });
 
     if ring_active {
+        let Some(ring_id) = ring_id else {
+            return;
+        };
         let Some(codec_id) = codec_id else {
             edges.push(GraphEdge {
                 from: ring_id.to_string(),
@@ -768,13 +780,8 @@ fn build_recorder_status(
     }
 }
 
-fn graph_ringbuffer_id(config: &Config) -> &str {
-    config
-        .ringbuffers
-        .keys()
-        .next()
-        .map(|id| id.as_str())
-        .expect("graph ringbuffer id")
+fn graph_ringbuffer_id(config: &Config) -> Option<&str> {
+    config.ringbuffers.keys().next().map(|id| id.as_str())
 }
 
 fn static_snapshot(enabled: bool, running: bool) -> ModuleSnapshot {
