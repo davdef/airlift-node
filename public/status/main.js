@@ -728,7 +728,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const minimalConfigButton = document.getElementById('generateMinimalConfig');
     if (minimalConfigButton) {
         minimalConfigButton.addEventListener('click', () => {
-            showMessage('Minimal-Konfig-Generator folgt (UI vorbereitet).', 'info');
+            const result = window.renderPipelineConfigPreview?.();
+            if (result?.issues?.length) {
+                showMessage('Konfiguration generiert (Validierungswarnungen vorhanden).', 'warning');
+            } else {
+                showMessage('Konfiguration generiert.', 'success');
+            }
         });
     }
     initializeAll();
@@ -850,6 +855,7 @@ function showSetupView(status) {
     const setupPanel = document.getElementById('setupPanel');
     setupPanel.classList.remove('hidden');
     renderSetupGuide(status);
+    window.renderPipelineConfigPreview?.();
 }
 
 function showFullView() {
