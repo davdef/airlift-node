@@ -268,7 +268,7 @@ async function loadPipelineCatalog() {
         }
         const catalog = await response.json();
         if (Array.isArray(catalog) && catalog.length > 0) {
-            pipelineCatalog = catalog;
+            pipelineCatalog = normalizePipelineCatalog(catalog);
         }
     } catch (error) {
         // Keep fallback catalog
@@ -808,8 +808,8 @@ const defaultPipelineCatalog = [
         kind: 'buffer',
         items: [
             {
-                type: null,
-                backendType: null,
+                type: 'ringbuffer',
+                backendType: 'ringbuffer',
                 label: 'Ringbuffer',
                 supported: true,
                 configFields: [
@@ -1028,6 +1028,9 @@ const defaultPipelineCatalog = [
 ];
 
 let pipelineCatalog = defaultPipelineCatalog;
+const pipelineDefaultTypes = {
+    buffer: 'ringbuffer'
+};
 
 const pipelineSignalTypes = {
     raw_pcm: {
@@ -1093,6 +1096,10 @@ function ensureNodeMetadata(node, options = {}) {
     }
     if (!node.backendType && node.type) {
         node.backendType = node.type;
+    }
+    if (!node.backendType && !node.type && pipelineDefaultTypes[node.kind]) {
+        node.type = pipelineDefaultTypes[node.kind];
+        node.backendType = pipelineDefaultTypes[node.kind];
     }
     if (allowInference && !node.backendType && !node.type) {
         const inferred = inferModuleType(node.kind, node.label);
@@ -1703,9 +1710,11 @@ function updatePipelineInspector() {
         return;
     }
     const connectedEdges = pipelineEditorState.edges.filter(edge => edge.from === selected.id || edge.to === selected.id);
+    ensureNodeMetadata(selected);
     const resolvedType = selected.type || selected.backendType;
-    const missingBackendType = !selected.type && !selected.backendType;
+    const missingBackendType = !resolvedType && selected.kind !== 'buffer';
     const catalogEntry = findCatalogEntry(selected.kind, resolvedType);
+    const typeOptions = selected.kind === 'buffer' ? getCatalogTypesForKind('buffer') : [];
     const configFields = mergeConfigFields(
         baseConfigFieldsForKind(selected.kind),
         catalogEntry?.configFields ?? []
@@ -1726,10 +1735,21 @@ function updatePipelineInspector() {
                 ⚠️ Dieser Node hat keinen Typ. Bitte wähle einen gültigen Typ in der Pipeline-Konfiguration.
             </div>
         ` : ''}
-        <div>
-            <div class="label">Typ</div>
-            <div class="value">${selected.kind}${resolvedType ? ` · ${resolvedType}` : ''}</div>
-        </div>
+        ${typeOptions.length > 0 ? `
+            <div>
+                <div class="label">Typ</div>
+                <select class="pipeline-inspector-input" id="pipelineInspectorType">
+                    ${typeOptions.map(option => `
+                        <option value="${option.type}">${option.label}</option>
+                    `).join('')}
+                </select>
+            </div>
+        ` : `
+            <div>
+                <div class="label">Typ</div>
+                <div class="value">${selected.kind}${resolvedType ? ` · ${resolvedType}` : ''}</div>
+            </div>
+        `}
         <div>
             <div class="label">Status</div>
             <div class="value pipeline-config-status ${statusClass}">${statusLabel}</div>
@@ -1764,6 +1784,19 @@ function updatePipelineInspector() {
             selected.label = event.target.value;
             renderNodes(document.getElementById('pipelineNodes'));
             updatePipelinePreview();
+        };
+    }
+    const typeSelect = inspector.querySelector('#pipelineInspectorType');
+    if (typeSelect) {
+        typeSelect.value = resolvedType || '';
+        typeSelect.onchange = (event) => {
+            const nextType = event.target.value || null;
+            selected.type = nextType;
+            selected.backendType = nextType;
+            ensureNodeMetadata(selected);
+            renderNodes(document.getElementById('pipelineNodes'));
+            updatePipelinePreview();
+            updatePipelineInspector();
         };
     }
 }
@@ -1829,6 +1862,16 @@ function buildPipelineGraphConfig(model) {
     const nodes = model?.nodes || [];
     const edges = model?.edges || [];
     const issues = [];
+    const formatNodeLabel = (node) => {
+        if (!node) {
+            return 'Node';
+        }
+        const resolved = resolveBackendType(node, null);
+        if (resolved) {
+            return `${node.label} (${resolved})`;
+        }
+        return node.label;
+    };
 
     if (nodes.length === 0) {
         return {
@@ -1878,7 +1921,7 @@ function buildPipelineGraphConfig(model) {
         if (!isCompatible) {
             issues.push({
                 type: 'signal-compat',
-                message: `Signal "${signalType}" passt nicht zu "${toNode.label}".`
+                message: `Signal "${signalType}" passt nicht zu "${formatNodeLabel(toNode)}".`
             });
         }
     });
@@ -1897,7 +1940,7 @@ function buildPipelineGraphConfig(model) {
         if ((incoming.get(node.id) || []).length > 0) {
             issues.push({
                 type: 'input-start',
-                message: `Input "${node.label}" hat eingehende Verbindungen. Die Pipeline muss mit Input starten.`
+                message: `Input "${formatNodeLabel(node)}" hat eingehende Verbindungen. Die Pipeline muss mit Input starten.`
             });
         }
     });
@@ -1908,7 +1951,7 @@ function buildPipelineGraphConfig(model) {
         if (inEdges.length === 0 && outEdges.length === 0) {
             issues.push({
                 type: 'unconnected',
-                message: `Node "${node.label}" ist nicht verbunden.`
+                message: `Node "${formatNodeLabel(node)}" ist nicht verbunden.`
             });
         }
     });
@@ -1961,19 +2004,19 @@ function buildPipelineGraphConfig(model) {
         if (!upstreamInput && !upstreamBuffer) {
             issues.push({
                 type: 'output-connection',
-                message: `Output "${node.label}" ist nicht mit Input oder Buffer verbunden.`
+                message: `Output "${formatNodeLabel(node)}" ist nicht mit Input oder Buffer verbunden.`
             });
         }
         if (!upstreamBuffer) {
             issues.push({
                 type: 'output-buffer-missing',
-                message: `Output "${node.label}" hat keinen Buffer.`
+                message: `Output "${formatNodeLabel(node)}" hat keinen Buffer.`
             });
         }
         if (!upstreamCodec) {
             issues.push({
                 type: 'codec-missing',
-                message: `Output "${node.label}" hat keine Codec-Zuweisung.`
+                message: `Output "${formatNodeLabel(node)}" hat keine Codec-Zuweisung.`
             });
         }
         outputs[outputId] = buildOutputConfig({
@@ -1994,13 +2037,13 @@ function buildPipelineGraphConfig(model) {
         if (!upstreamInput && !upstreamBuffer) {
             issues.push({
                 type: 'service-connection',
-                message: `Service "${node.label}" ist nicht mit Input oder Buffer verbunden.`
+                message: `Service "${formatNodeLabel(node)}" ist nicht mit Input oder Buffer verbunden.`
             });
         }
         if (!upstreamCodec) {
             issues.push({
                 type: 'codec-missing',
-                message: `Service "${node.label}" hat keine Codec-Zuweisung.`
+                message: `Service "${formatNodeLabel(node)}" hat keine Codec-Zuweisung.`
             });
         }
         services[serviceId] = buildServiceConfig({
@@ -2190,6 +2233,44 @@ function buildCodecDefaults(codecType) {
         config.quality = 0.4;
     }
     return config;
+}
+
+function normalizePipelineCatalog(catalog) {
+    return catalog.map(group => {
+        if (group.kind !== 'buffer' || !Array.isArray(group.items)) {
+            return group;
+        }
+        return {
+            ...group,
+            items: group.items.map(item => {
+                const resolvedType = item.type ?? item.backendType ?? pipelineDefaultTypes.buffer;
+                return {
+                    ...item,
+                    type: resolvedType,
+                    backendType: item.backendType ?? resolvedType
+                };
+            })
+        };
+    });
+}
+
+function getCatalogTypesForKind(kind) {
+    const group = pipelineCatalog.find(entry => entry.kind === kind);
+    if (!group || !Array.isArray(group.items)) {
+        return [];
+    }
+    return group.items
+        .map(item => {
+            const type = item.type ?? item.backendType;
+            if (!type) {
+                return null;
+            }
+            return {
+                type,
+                label: item.label || type
+            };
+        })
+        .filter(Boolean);
 }
 
 function inferModuleType(kind, label) {
