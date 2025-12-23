@@ -31,6 +31,7 @@ pub struct ServiceDescriptor {
     pub id: String,
     #[serde(rename = "type")]
     pub service_type: String,
+    pub core: bool,
     pub endpoints: Vec<ServiceEndpoint>,
 }
 
