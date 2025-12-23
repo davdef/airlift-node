@@ -435,7 +435,6 @@ fn validate_outputs(
     inputs: &BTreeMap<String, InputConfig>,
     codec_info: &BTreeMap<String, CodecInfo>,
 ) -> anyhow::Result<()> {
-    let mut seen_types = BTreeMap::new();
     for (id, output) in outputs {
         if output.buffer != ringbuffer_id {
             anyhow::bail!(
@@ -527,9 +526,6 @@ fn validate_outputs(
             }
         }
 
-        if seen_types.insert(output.output_type.clone(), id).is_some() {
-            anyhow::bail!("multiple outputs of type '{}' are not supported", output.output_type);
-        }
     }
     Ok(())
 }

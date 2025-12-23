@@ -56,6 +56,87 @@ Start kann eine alternative Datei als erstes Argument übergeben werden:
 airlift-node ./config.vps.toml
 ```
 
+## Begriffe: Inputs, Outputs, Services
+
+Die Graph-Pipeline beschreibt den Datenfluss über **Inputs**, **Outputs** und
+**Services**. Die IDs der Einträge (`[inputs.<id>]`, `[outputs.<id>]`,
+`[services.<id>]`) sind frei wählbar und werden in Referenzen genutzt.
+
+- **Input**: Quelle, die Audioframes in einen Ringbuffer schreibt.
+  - Beispiel: `type = "srt"` mit `listen` + `latency_ms`, oder
+    `type = "http_stream"` mit `url`.
+- **Output**: Ziel, das Audioframes aus einem Input (und damit aus dem gleichen
+  Ringbuffer) konsumiert und über einen Codec ausgibt.
+  - Beispiel: `type = "icecast_out"` mit `codec_id = "opus_ogg"`.
+- **Service**: Hilfsdienste (Monitoring, Audio-HTTP, Peak-Analyzer), die den
+  Ringbuffer oder den Input lesen, aber keine Audio-Ausgabe erzeugen.
+  - Beispiel: `type = "monitoring"` oder `type = "audio_http"`.
+
+## IO-Typen-Katalog (Inputs/Outputs/Services)
+
+Ableitbar aus `InputConfig`, `OutputConfig`, `ServiceConfig` in
+`src/config.rs`. Pflichtfelder gelten zusätzlich zu `type` und `enabled`.
+
+### Inputs
+
+- **`srt`**: `buffer`, `listen`, `latency_ms` (`streamid` optional)
+- **`icecast` / `http_stream`**: `buffer`, `url`
+- **`alsa`**: `buffer`, `device`
+
+### Outputs
+
+Jeder Output benötigt **immer**: `input`, `buffer`, `codec_id`.
+
+- **`srt_out`**: `target`, `latency_ms`
+- **`icecast_out`**: `host`, `port`, `mount`, `user`, `password`, `name`,
+  `description`, `genre`, `public`, `bitrate`
+- **`udp_out`**: `target`
+- **`recorder`**: `wav_dir`, `retention_days`
+
+### Services
+
+- **`audio_http`**: `buffer`, `codec_id`
+- **`monitoring`**: keine zusätzlichen Pflichtfelder
+- **`peak_analyzer`**: `buffer`, `interval_ms`
+- **`influx_out`**: `url`, `db`, `interval_ms`
+- **`broadcast_http`**: `url`, `interval_ms`
+
+## Verbindliche Strukturregeln
+
+1. **Input → Ringbuffer**: Jeder Input muss einen `buffer` referenzieren.
+2. **Output → Input → Ringbuffer**: Jeder Output muss `input` setzen und
+   denselben `buffer` wie der referenzierte Input nutzen.
+3. **Codec-Pflicht**: Jeder Output benötigt `codec_id`.
+4. **Services**: Services referenzieren entweder `buffer` oder `input`; wenn
+   beides gesetzt ist, müssen Buffer und Input zueinander passen.
+
+## Legacy-Mapping & Übergangsphase
+
+Neben der Graph-Pipeline existieren Legacy-Felder auf Root-Ebene. Sobald
+`ringbuffers`, `inputs`, `outputs` oder `services` gesetzt sind, wird **nur**
+die Graph-Pipeline verwendet (Legacy-Felder werden ignoriert). Für die
+Übergangsphase gilt:
+
+- **`srt_in` → `inputs.*`** mit `type = "srt"`
+- **`alsa_in` → `inputs.*`** mit `type = "alsa"`
+- **`icecast`/`http_stream` Input → `inputs.*`** mit `type = "icecast"` bzw.
+  `type = "http_stream"`
+- **`srt_out` → `outputs.*`** mit `type = "srt_out"`
+- **`icecast_out` → `outputs.*`** mit `type = "icecast_out"`
+- **`udp_out` → `outputs.*`** mit `type = "udp_out"`
+- **`recorder` → `outputs.*`** mit `type = "recorder"`
+- **`audio_http_codec_id` → `services.*`** mit `type = "audio_http"` +
+  `codec_id`
+
+Empfehlung: neue Setups vollständig in der Graph-Pipeline pflegen und Legacy-
+Felder schrittweise entfernen.
+
+## Mehrere Outputs pro Typ (z. B. `icecast_out` mehrfach)
+
+Die Graph-Pipeline erlaubt mehrere Outputs desselben Typs, solange jede
+Konfiguration eine eigene ID besitzt (z. B. `[outputs.icecast_main]` und
+`[outputs.icecast_backup]`).
+
 ### Beispielkonfiguration
 
 Die Datei `config.sample.toml` ist eine kommentierte Referenz für die aktuelle
