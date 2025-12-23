@@ -22,6 +22,17 @@ const panelIds = [
     'codecsPanel',
     'systemStatusPanel'
 ];
+const auxiliaryPanelIds = [
+    'ringbufferPanel',
+    'activeModulesPanel',
+    'inactiveModulesPanel',
+    'fileOutPanel',
+    'controlsPanel',
+    'codecsPanel',
+    'systemStatusPanel'
+];
+
+let pipelineValidationOk = false;
 
 const pipelineCatalog = [
     {
@@ -912,12 +923,13 @@ function showOfflineView() {
 }
 
 function showSetupView(status) {
-    togglePanels(false);
     document.getElementById('offlinePanel').classList.add('hidden');
     const setupPanel = document.getElementById('setupPanel');
+    togglePanels(true);
     setupPanel.classList.remove('hidden');
     renderSetupGuide(status);
-    window.renderPipelineConfigPreview?.();
+    const validation = window.renderPipelineConfigPreview?.();
+    updatePipelineValidationState(validation?.issues || []);
 }
 
 function showFullView() {
@@ -936,7 +948,8 @@ function togglePanels(show) {
 }
 
 function renderSetupGuide(status) {
-    const stepsElement = document.getElementById('setupSteps');
+    const contextStepsElement = document.getElementById('pipelineContextHints');
+    const contextNextStep = document.getElementById('pipelineContextNextStep');
     const issuesElement = document.getElementById('setupIssues');
     const issuesSection = document.getElementById('setupIssuesSection');
     const nextStepElement = document.getElementById('setupNextStep');
@@ -954,6 +967,9 @@ function renderSetupGuide(status) {
     }
     
     nextStepElement.textContent = nextStep;
+    if (contextNextStep) {
+        contextNextStep.textContent = nextStep;
+    }
     
     const steps = [];
     if (!hasInputs) {
@@ -969,7 +985,9 @@ function renderSetupGuide(status) {
         steps.push('Konfiguration speichern und die API neu laden.');
     }
     
-    stepsElement.innerHTML = steps.map(step => `<li>${step}</li>`).join('');
+    if (contextStepsElement) {
+        contextStepsElement.innerHTML = steps.map(step => `<li>${step}</li>`).join('');
+    }
     
     if (configurationIssues.length > 0) {
         issuesSection.classList.remove('hidden');
@@ -988,3 +1006,17 @@ function renderSetupGuide(status) {
         issuesElement.innerHTML = '';
     }
 }
+
+function updatePipelineValidationState(issues) {
+    const isValid = !issues || issues.length === 0;
+    pipelineValidationOk = isValid;
+    auxiliaryPanelIds.forEach(id => {
+        const panel = document.getElementById(id);
+        if (!panel) {
+            return;
+        }
+        panel.classList.toggle('disabled', !isValid);
+    });
+}
+
+window.updatePipelineValidationState = updatePipelineValidationState;
