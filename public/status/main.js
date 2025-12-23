@@ -110,6 +110,10 @@ function updateModuleFilterUI() {
         const isActive = button.dataset.moduleFilter === moduleDisplayFilter;
         button.classList.toggle('active', isActive);
     });
+    const configuredBadge = document.getElementById('configuredFilterBadge');
+    if (configuredBadge) {
+        configuredBadge.classList.toggle('hidden', moduleDisplayFilter !== 'configured');
+    }
 }
 
 function applyModuleFilterVisibility() {
@@ -141,6 +145,36 @@ function initializeModuleFilterControls() {
             applyModuleFilterVisibility();
         });
     });
+}
+
+function updateModuleFilterAvailability(status, localState) {
+    const modules = status?.modules || [];
+    const inactive = status?.inactive_modules || [];
+    const hasModuleDefinitions = modules.length > 0 || inactive.length > 0;
+    const resolvedState = localState || getLocalPipelineState(status);
+    const hasPipeline = resolvedState.nodesCount > 0;
+    const enableAllFilters = hasPipeline;
+    const shouldDefaultToConfigured = !hasModuleDefinitions;
+
+    if (shouldDefaultToConfigured && moduleDisplayFilter !== 'configured') {
+        moduleDisplayFilter = 'configured';
+        saveModuleFilterState();
+    }
+
+    if (!enableAllFilters && moduleDisplayFilter !== 'configured') {
+        moduleDisplayFilter = 'configured';
+        saveModuleFilterState();
+    }
+
+    document.querySelectorAll('[data-module-filter]').forEach(button => {
+        const filter = button.dataset.moduleFilter;
+        const shouldDisable = !enableAllFilters && (filter === 'active' || filter === 'all');
+        button.disabled = shouldDisable;
+        button.classList.toggle('disabled', shouldDisable);
+    });
+
+    updateModuleFilterUI();
+    applyModuleFilterVisibility();
 }
 
 function showMessage(text, type = 'info') {
@@ -250,6 +284,7 @@ function updateUI(status, codecs = []) {
     const viewState = determineViewState(status, localState);
     currentViewState = viewState;
     applyViewState(viewState, status, localState);
+    updateModuleFilterAvailability(status, localState);
     applyModuleFilterVisibility();
     updateConnectionState(true);
 
