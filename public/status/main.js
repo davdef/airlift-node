@@ -17,6 +17,183 @@ const panelIds = [
     'systemStatusPanel'
 ];
 
+const pipelineCatalog = [
+    {
+        group: 'Inputs',
+        items: [
+            {
+                id: 'input-mic',
+                label: 'Microphone Input',
+                type: 'input',
+                requiresCodec: false,
+                producesSignal: 'audio',
+                consumesSignal: null,
+                configSchema: {
+                    fields: [
+                        { key: 'device', label: 'Device', type: 'text', placeholder: 'default' }
+                    ]
+                }
+            },
+            {
+                id: 'input-srt',
+                label: 'SRT Receiver',
+                type: 'input',
+                requiresCodec: true,
+                producesSignal: 'encoded',
+                consumesSignal: null,
+                configSchema: {
+                    fields: [
+                        { key: 'listen', label: 'Listen URI', type: 'text', placeholder: 'srt://:9000' }
+                    ]
+                }
+            },
+            {
+                id: 'input-file',
+                label: 'File Input',
+                type: 'input',
+                requiresCodec: true,
+                producesSignal: 'encoded',
+                consumesSignal: null,
+                configSchema: {
+                    fields: [
+                        { key: 'path', label: 'File Path', type: 'text', placeholder: '/path/to/audio.mp3' }
+                    ]
+                }
+            }
+        ]
+    },
+    {
+        group: 'Processors',
+        items: [
+            {
+                id: 'proc-mixer',
+                label: 'Mixer',
+                type: 'processor',
+                requiresCodec: false,
+                producesSignal: 'audio',
+                consumesSignal: 'audio',
+                configSchema: {
+                    fields: [
+                        { key: 'channels', label: 'Channels', type: 'number', placeholder: '2' }
+                    ]
+                }
+            },
+            {
+                id: 'proc-resampler',
+                label: 'Resampler',
+                type: 'processor',
+                requiresCodec: false,
+                producesSignal: 'audio',
+                consumesSignal: 'audio',
+                configSchema: {
+                    fields: [
+                        { key: 'rate', label: 'Sample Rate', type: 'number', placeholder: '48000' }
+                    ]
+                }
+            }
+        ]
+    },
+    {
+        group: 'Outputs',
+        items: [
+            {
+                id: 'output-stream',
+                label: 'Stream Output',
+                type: 'output',
+                requiresCodec: true,
+                producesSignal: null,
+                consumesSignal: 'encoded',
+                configSchema: {
+                    fields: [
+                        { key: 'target', label: 'Target URI', type: 'text', placeholder: 'srt://target' }
+                    ]
+                }
+            },
+            {
+                id: 'output-file',
+                label: 'File Output',
+                type: 'output',
+                requiresCodec: true,
+                producesSignal: null,
+                consumesSignal: 'encoded',
+                configSchema: {
+                    fields: [
+                        { key: 'path', label: 'File Path', type: 'text', placeholder: '/path/to/output.mp3' }
+                    ]
+                }
+            }
+        ]
+    },
+    {
+        group: 'Services',
+        items: [
+            {
+                id: 'service-health',
+                label: 'Health Reporter',
+                type: 'service',
+                requiresCodec: false,
+                producesSignal: null,
+                consumesSignal: null,
+                configSchema: {
+                    fields: [
+                        { key: 'interval', label: 'Interval (s)', type: 'number', placeholder: '30' }
+                    ]
+                }
+            },
+            {
+                id: 'service-metadata',
+                label: 'Metadata Sync',
+                type: 'service',
+                requiresCodec: false,
+                producesSignal: null,
+                consumesSignal: null,
+                configSchema: {
+                    fields: [
+                        { key: 'endpoint', label: 'Endpoint', type: 'text', placeholder: 'https://api.example' }
+                    ]
+                }
+            }
+        ]
+    },
+    {
+        group: 'Codecs',
+        items: [
+            {
+                id: 'codec-decoder-aac',
+                label: 'AAC Decoder',
+                type: 'decoder',
+                requiresCodec: false,
+                producesSignal: 'audio',
+                consumesSignal: 'encoded',
+                configSchema: {
+                    fields: [
+                        { key: 'profile', label: 'Profile', type: 'text', placeholder: 'LC' }
+                    ]
+                }
+            },
+            {
+                id: 'codec-encoder-aac',
+                label: 'AAC Encoder',
+                type: 'encoder',
+                requiresCodec: false,
+                producesSignal: 'encoded',
+                consumesSignal: 'audio',
+                configSchema: {
+                    fields: [
+                        { key: 'bitrate', label: 'Bitrate (kbps)', type: 'number', placeholder: '192' }
+                    ]
+                }
+            }
+        ]
+    }
+];
+
+const pipelineState = {
+    nodes: [],
+    selectedNodeId: null,
+    nodeCounter: 0
+};
+
 // Canvas-State (wird von waveform.js verwaltet)
 let ringbufferCanvas, ringbufferCtx, recorderCanvas, recorderCtx;
 
@@ -31,6 +208,8 @@ async function initializeAll() {
         
         // Initialize canvases
         initCanvases();
+
+        initPipelineBuilder();
         
         // Load initial status
         await fetchAllData();
@@ -70,6 +249,234 @@ function formatTime(ms) {
         minute: '2-digit',
         second: '2-digit'
     });
+}
+
+function initPipelineBuilder() {
+    renderPipelinePalette();
+    setupPipelineCanvas();
+    renderPipelineNodes();
+    renderPipelineInspector();
+}
+
+function renderPipelinePalette() {
+    const palette = document.getElementById('pipelinePalette');
+    if (!palette) {
+        return;
+    }
+    palette.innerHTML = '';
+    pipelineCatalog.forEach(group => {
+        const groupWrapper = document.createElement('div');
+        groupWrapper.className = 'pipeline-palette-group';
+
+        const groupTitle = document.createElement('div');
+        groupTitle.className = 'pipeline-palette-group-title';
+        groupTitle.textContent = group.group;
+        groupWrapper.appendChild(groupTitle);
+
+        group.items.forEach(item => {
+            const entry = document.createElement('div');
+            entry.className = 'pipeline-palette-item';
+            entry.draggable = true;
+            entry.dataset.paletteId = item.id;
+            entry.dataset.type = item.type;
+            entry.dataset.requiresCodec = item.requiresCodec;
+            entry.dataset.producesSignal = item.producesSignal || '';
+            entry.dataset.consumesSignal = item.consumesSignal || '';
+            entry.innerHTML = `
+                <span>${item.label}</span>
+                <span class="palette-badge">${item.type}</span>
+            `;
+            entry.addEventListener('dragstart', event => {
+                event.dataTransfer.setData('text/plain', item.id);
+                event.dataTransfer.effectAllowed = 'copy';
+            });
+            groupWrapper.appendChild(entry);
+        });
+
+        palette.appendChild(groupWrapper);
+    });
+}
+
+function setupPipelineCanvas() {
+    const canvas = document.getElementById('pipelineCanvas');
+    if (!canvas) {
+        return;
+    }
+    canvas.addEventListener('dragover', event => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'copy';
+    });
+    canvas.addEventListener('drop', event => {
+        event.preventDefault();
+        const paletteId = event.dataTransfer.getData('text/plain');
+        const item = findCatalogItem(paletteId);
+        if (!item) {
+            return;
+        }
+        const rect = canvas.getBoundingClientRect();
+        const position = {
+            x: event.clientX - rect.left - 75,
+            y: event.clientY - rect.top - 25
+        };
+        addPipelineNodeFromItem(item, position);
+    });
+    canvas.addEventListener('click', event => {
+        if (event.target.closest('.pipeline-node')) {
+            return;
+        }
+        pipelineState.selectedNodeId = null;
+        renderPipelineNodes();
+        renderPipelineInspector();
+    });
+}
+
+function findCatalogItem(id) {
+    for (const group of pipelineCatalog) {
+        const match = group.items.find(item => item.id === id);
+        if (match) {
+            return match;
+        }
+    }
+    return null;
+}
+
+function addPipelineNodeFromItem(item, position) {
+    const nodeId = `node-${Date.now()}-${pipelineState.nodeCounter++}`;
+    const canvas = document.getElementById('pipelineCanvas');
+    const bounds = canvas ? canvas.getBoundingClientRect() : { width: 500, height: 300 };
+    const clampedPosition = {
+        x: Math.max(10, Math.min(position.x, bounds.width - 170)),
+        y: Math.max(10, Math.min(position.y, bounds.height - 80))
+    };
+    const node = {
+        id: nodeId,
+        label: item.label,
+        type: item.type,
+        metadata: {
+            requiresCodec: item.requiresCodec,
+            producesSignal: item.producesSignal,
+            consumesSignal: item.consumesSignal
+        },
+        configSchema: item.configSchema,
+        config: {},
+        position: clampedPosition
+    };
+    pipelineState.nodes.push(node);
+    pipelineState.selectedNodeId = nodeId;
+    renderPipelineNodes();
+    renderPipelineInspector();
+}
+
+function renderPipelineNodes() {
+    const container = document.getElementById('pipelineNodes');
+    const hint = document.getElementById('pipelineCanvasHint');
+    if (!container) {
+        return;
+    }
+    container.innerHTML = '';
+    pipelineState.nodes.forEach(node => {
+        const nodeElement = document.createElement('div');
+        nodeElement.className = 'pipeline-node';
+        if (pipelineState.selectedNodeId === node.id) {
+            nodeElement.classList.add('selected');
+        }
+        nodeElement.style.left = `${node.position.x}px`;
+        nodeElement.style.top = `${node.position.y}px`;
+
+        const metaText = `${node.type}${node.metadata.requiresCodec ? ' · codec' : ''}`;
+        nodeElement.innerHTML = `
+            <div class="pipeline-node-title">${node.label}</div>
+            <div class="pipeline-node-meta">${metaText}</div>
+            <div class="pipeline-node-handles">
+                ${node.metadata.consumesSignal ? '<div class="node-handle input"></div>' : '<div></div>'}
+                ${node.metadata.producesSignal ? '<div class="node-handle output"></div>' : '<div></div>'}
+            </div>
+        `;
+        nodeElement.addEventListener('click', event => {
+            event.stopPropagation();
+            pipelineState.selectedNodeId = node.id;
+            renderPipelineNodes();
+            renderPipelineInspector();
+        });
+        container.appendChild(nodeElement);
+    });
+    if (hint) {
+        hint.classList.toggle('hidden', pipelineState.nodes.length > 0);
+    }
+}
+
+function renderPipelineInspector() {
+    const inspector = document.getElementById('pipelineInspector');
+    if (!inspector) {
+        return;
+    }
+    const node = pipelineState.nodes.find(entry => entry.id === pipelineState.selectedNodeId);
+    if (!node) {
+        inspector.innerHTML = `
+            <div class="empty-state">
+                <div class="icon">🧩</div>
+                <div class="message">Wähle ein Modul aus.</div>
+            </div>
+        `;
+        return;
+    }
+    inspector.innerHTML = '';
+
+    const nameLabel = document.createElement('div');
+    nameLabel.className = 'label';
+    nameLabel.textContent = 'Name';
+    inspector.appendChild(nameLabel);
+
+    const nameInput = document.createElement('input');
+    nameInput.className = 'pipeline-inspector-input';
+    nameInput.type = 'text';
+    nameInput.value = node.label;
+    nameInput.addEventListener('input', event => {
+        node.label = event.target.value;
+        renderPipelineNodes();
+    });
+    inspector.appendChild(nameInput);
+
+    if (node.configSchema?.fields?.length) {
+        node.configSchema.fields.forEach(field => {
+            const fieldLabel = document.createElement('div');
+            fieldLabel.className = 'label';
+            fieldLabel.textContent = field.label;
+            inspector.appendChild(fieldLabel);
+
+            let input;
+            if (field.type === 'select') {
+                input = document.createElement('select');
+                input.className = 'pipeline-inspector-input';
+                field.options?.forEach(option => {
+                    const optionEl = document.createElement('option');
+                    optionEl.value = option.value;
+                    optionEl.textContent = option.label;
+                    input.appendChild(optionEl);
+                });
+            } else {
+                input = document.createElement('input');
+                input.className = 'pipeline-inspector-input';
+                input.type = field.type === 'number' ? 'number' : 'text';
+                input.placeholder = field.placeholder || '';
+            }
+            input.value = node.config[field.key] ?? '';
+            input.addEventListener('input', event => {
+                node.config[field.key] = event.target.value;
+            });
+            inspector.appendChild(input);
+        });
+    }
+
+    const metaLabel = document.createElement('div');
+    metaLabel.className = 'label';
+    metaLabel.textContent = 'Meta';
+    inspector.appendChild(metaLabel);
+
+    const metaValue = document.createElement('div');
+    metaValue.className = 'value';
+    metaValue.textContent = `type=${node.type}, requiresCodec=${node.metadata.requiresCodec}`;
+    inspector.appendChild(metaValue);
 }
 
 function formatDuration(ms) {

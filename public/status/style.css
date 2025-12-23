@@ -382,6 +382,20 @@ main {
     gap: 8px;
 }
 
+.pipeline-palette-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.pipeline-palette-group-title {
+    font-size: 10px;
+    color: #6f7c90;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-top: 4px;
+}
+
 .pipeline-palette-item {
     display: flex;
     align-items: center;
@@ -501,6 +515,16 @@ main {
     display: flex;
     flex-direction: column;
     gap: 10px;
+    font-size: 12px;
+}
+
+.pipeline-inspector-input {
+    width: 100%;
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: 1px solid rgba(45, 54, 66, 0.8);
+    background: rgba(18, 21, 27, 0.9);
+    color: #e3e9f2;
     font-size: 12px;
 }
 
