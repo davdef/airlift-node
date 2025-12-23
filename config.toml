@@ -1,24 +1,2 @@
 api.enabled = true
 api.bind = "0.0.0.0:3008"
-
-[ringbuffers.main]
-slots = 6000
-prealloc_samples = 9600
-
-[inputs.srt_input]
-type = "srt"
-enabled = true
-buffer = "main"
-listen = "0.0.0.0:9000"
-latency_ms = 200
-codec_id = "pcm"
-
-[services.mon]
-type = "monitor"
-enabled = true
-buffer = "main"
-
-[codecs.pcm]
-type = "pcm"
-sample_rate = 48000
-channels = 2
