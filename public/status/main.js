@@ -564,12 +564,251 @@ const pipelineEditorState = {
     eventsBound: false
 };
 
-const pipelinePaletteDefinitions = [
-    { kind: 'input', label: 'Input' },
-    { kind: 'buffer', label: 'Buffer' },
-    { kind: 'processing', label: 'Codec' },
-    { kind: 'service', label: 'Service' },
-    { kind: 'output', label: 'Output' }
+const pipelineCatalog = [
+    {
+        title: 'Inputs',
+        kind: 'input',
+        items: [
+            {
+                type: 'srt',
+                label: 'SRT Input',
+                supported: true,
+                configFields: [
+                    { key: 'listen', required: true, example: '0.0.0.0:9000' },
+                    { key: 'latency_ms', required: true, example: '200' },
+                    { key: 'streamid', required: false, example: 'airlift' }
+                ]
+            },
+            {
+                type: 'icecast',
+                label: 'Icecast Input',
+                supported: true,
+                configFields: [{ key: 'url', required: true, example: 'https://example.com/stream.ogg' }]
+            },
+            {
+                type: 'http_stream',
+                label: 'HTTP Stream Input',
+                supported: true,
+                configFields: [{ key: 'url', required: true, example: 'https://example.com/stream.ogg' }]
+            },
+            {
+                type: 'alsa',
+                label: 'ALSA Input',
+                supported: true,
+                configFields: [{ key: 'device', required: true, example: 'hw:0,0' }]
+            },
+            {
+                type: 'file_in',
+                label: 'File Input',
+                supported: true,
+                configFields: [{ key: 'path', required: true, example: '/path/to/audio.wav' }]
+            }
+        ]
+    },
+    {
+        title: 'Buffers',
+        kind: 'buffer',
+        items: [
+            {
+                type: null,
+                label: 'Ringbuffer',
+                supported: true,
+                configFields: [
+                    { key: 'slots', required: true, example: '6000' },
+                    { key: 'chunk_ms', required: true, example: '100' },
+                    { key: 'prealloc_samples', required: true, example: '9600' }
+                ]
+            }
+        ]
+    },
+    {
+        title: 'Codecs',
+        kind: 'processing',
+        items: [
+            {
+                type: 'pcm',
+                label: 'PCM',
+                supported: true,
+                configFields: [
+                    { key: 'sample_rate', required: false, example: '48000' },
+                    { key: 'channels', required: false, example: '2' }
+                ]
+            },
+            {
+                type: 'opus_ogg',
+                label: 'Opus OGG',
+                supported: true,
+                configFields: [
+                    { key: 'sample_rate', required: false, example: '48000' },
+                    { key: 'channels', required: false, example: '2' },
+                    { key: 'frame_size_ms', required: false, example: '20' },
+                    { key: 'bitrate', required: false, example: '128000' },
+                    { key: 'application', required: false, example: 'audio' }
+                ]
+            },
+            {
+                type: 'opus_webrtc',
+                label: 'Opus WebRTC',
+                supported: true,
+                configFields: [
+                    { key: 'sample_rate', required: false, example: '48000' },
+                    { key: 'channels', required: false, example: '2' },
+                    { key: 'bitrate', required: false, example: '128000' },
+                    { key: 'application', required: false, example: 'audio' }
+                ]
+            },
+            {
+                type: 'mp3',
+                label: 'MP3',
+                supported: true,
+                configFields: [
+                    { key: 'sample_rate', required: false, example: '48000' },
+                    { key: 'channels', required: false, example: '2' },
+                    { key: 'bitrate', required: false, example: '128000' }
+                ]
+            },
+            {
+                type: 'vorbis',
+                label: 'Vorbis',
+                supported: true,
+                configFields: [
+                    { key: 'sample_rate', required: false, example: '48000' },
+                    { key: 'channels', required: false, example: '2' },
+                    { key: 'quality', required: false, example: '0.4' }
+                ]
+            },
+            {
+                type: 'aac_lc',
+                label: 'AAC-LC',
+                supported: false,
+                configFields: []
+            },
+            {
+                type: 'flac',
+                label: 'FLAC',
+                supported: false,
+                configFields: []
+            }
+        ]
+    },
+    {
+        title: 'Services',
+        kind: 'service',
+        items: [
+            {
+                type: 'audio_http',
+                label: 'Audio HTTP',
+                supported: true,
+                configFields: [
+                    { key: 'buffer', required: true, example: 'main' },
+                    { key: 'codec_id', required: true, example: 'codec_opus_ogg' }
+                ]
+            },
+            {
+                type: 'monitor',
+                label: 'Monitor',
+                supported: true,
+                configFields: []
+            },
+            {
+                type: 'monitoring',
+                label: 'Monitoring',
+                supported: true,
+                configFields: []
+            },
+            {
+                type: 'peak_analyzer',
+                label: 'Peak Analyzer',
+                supported: true,
+                configFields: [
+                    { key: 'buffer', required: true, example: 'main' },
+                    { key: 'interval_ms', required: true, example: '30000' }
+                ]
+            },
+            {
+                type: 'influx_out',
+                label: 'InfluxDB',
+                supported: true,
+                configFields: [
+                    { key: 'url', required: true, example: 'https://influx.example' },
+                    { key: 'db', required: true, example: 'airlift' },
+                    { key: 'interval_ms', required: true, example: '30000' }
+                ]
+            },
+            {
+                type: 'broadcast_http',
+                label: 'Broadcast HTTP',
+                supported: true,
+                configFields: [
+                    { key: 'url', required: true, example: 'https://example.com/notify' },
+                    { key: 'interval_ms', required: true, example: '30000' }
+                ]
+            },
+            {
+                type: 'file_out',
+                label: 'File-Out Service',
+                supported: true,
+                configFields: [
+                    { key: 'codec_id', required: true, example: 'codec_opus_ogg' },
+                    { key: 'wav_dir', required: true, example: '/opt/rfm/airlift-node/aircheck/wav' },
+                    { key: 'retention_days', required: true, example: '7' }
+                ]
+            }
+        ]
+    },
+    {
+        title: 'Outputs',
+        kind: 'output',
+        items: [
+            {
+                type: 'srt_out',
+                label: 'SRT Output',
+                supported: true,
+                configFields: [
+                    { key: 'target', required: true, example: 'example.com:9000' },
+                    { key: 'latency_ms', required: true, example: '200' },
+                    { key: 'codec_id', required: true, example: 'codec_opus_ogg' }
+                ]
+            },
+            {
+                type: 'icecast_out',
+                label: 'Icecast Output',
+                supported: true,
+                configFields: [
+                    { key: 'host', required: true, example: 'icecast.local' },
+                    { key: 'port', required: true, example: '8000' },
+                    { key: 'mount', required: true, example: '/airlift' },
+                    { key: 'user', required: true, example: 'source' },
+                    { key: 'password', required: true, example: 'hackme' },
+                    { key: 'bitrate', required: true, example: '128000' },
+                    { key: 'name', required: true, example: 'Airlift Node' },
+                    { key: 'description', required: true, example: 'Live-Stream' },
+                    { key: 'genre', required: true, example: 'news' },
+                    { key: 'public', required: true, example: 'false' },
+                    { key: 'codec_id', required: true, example: 'codec_opus_ogg' }
+                ]
+            },
+            {
+                type: 'udp_out',
+                label: 'UDP Output',
+                supported: true,
+                configFields: [
+                    { key: 'target', required: true, example: '239.0.0.1:1234' },
+                    { key: 'codec_id', required: true, example: 'codec_opus_webrtc' }
+                ]
+            },
+            {
+                type: 'file_out',
+                label: 'File Output',
+                supported: true,
+                configFields: [
+                    { key: 'wav_dir', required: true, example: '/opt/rfm/airlift-node/aircheck/wav' },
+                    { key: 'retention_days', required: true, example: '7' },
+                    { key: 'codec_id', required: true, example: 'codec_opus_ogg' }
+                ]
+            }
+        ]
+    }
 ];
 
 const pipelineSignalTypes = {
@@ -647,6 +886,7 @@ function seedPipelineModel(status) {
             id: node.id,
             label: node.label || node.id,
             kind: node.kind,
+            moduleType: inferModuleType(node.kind, node.label),
             x: columnX[node.kind] ?? 40,
             y: 40 + row * 120
         };
@@ -661,12 +901,30 @@ function seedPipelineModel(status) {
 }
 
 function renderPalette(container) {
-    container.innerHTML = pipelinePaletteDefinitions.map(item => `
-        <div class="pipeline-palette-item" draggable="true" data-kind="${item.kind}" data-label="${item.label}">
-            <span class="palette-badge">${item.kind}</span>
-            <span>${item.label}</span>
-        </div>
-    `).join('');
+    container.innerHTML = pipelineCatalog.map(group => {
+        const items = group.items.map(item => {
+            const planned = item.supported === false;
+            const plannedBadge = planned ? '<span class="palette-badge planned">Planned</span>' : '';
+            return `
+                <div class="pipeline-palette-item ${planned ? 'planned' : ''}"
+                     draggable="${planned ? 'false' : 'true'}"
+                     data-kind="${group.kind}"
+                     data-type="${item.type ?? ''}"
+                     data-label="${item.label}"
+                     data-planned="${planned}">
+                    <span class="palette-badge">${item.type ?? group.kind}</span>
+                    ${plannedBadge}
+                    <span>${item.label}</span>
+                </div>
+            `;
+        }).join('');
+        return `
+            <div class="pipeline-palette-group">
+                <div class="pipeline-palette-group-title">${group.title}</div>
+                ${items}
+            </div>
+        `;
+    }).join('');
 }
 
 function renderNodes(container) {
@@ -675,7 +933,7 @@ function renderNodes(container) {
              data-node-id="${node.id}"
              style="left:${node.x}px; top:${node.y}px;">
             <div class="pipeline-node-title">${node.label}</div>
-            <div class="pipeline-node-meta">${node.kind}</div>
+            <div class="pipeline-node-meta">${node.kind}${node.moduleType ? ` · ${node.moduleType}` : ''}</div>
             <div class="pipeline-node-handles">
                 <div class="node-handle input" data-handle="input" data-node-id="${node.id}"></div>
                 <div class="node-handle output" data-handle="output" data-node-id="${node.id}"></div>
@@ -804,9 +1062,14 @@ function attachPipelineEvents() {
 
     paletteItems.forEach(item => {
         item.addEventListener('dragstart', (event) => {
+            if (item.dataset.planned === 'true') {
+                event.preventDefault();
+                return;
+            }
             event.dataTransfer.setData('text/plain', JSON.stringify({
                 kind: item.dataset.kind,
-                label: item.dataset.label
+                label: item.dataset.label,
+                moduleType: item.dataset.type || null
             }));
         });
     });
@@ -823,11 +1086,12 @@ function attachPipelineEvents() {
                 if (!payload) {
                     return;
                 }
-                const { kind, label } = JSON.parse(payload);
+                const { kind, label, moduleType } = JSON.parse(payload);
                 const rect = canvas.getBoundingClientRect();
                 addPipelineNode({
                     kind,
                     label: `Neues ${label}`,
+                    moduleType,
                     x: event.clientX - rect.left - 60,
                     y: event.clientY - rect.top - 20
                 });
@@ -926,12 +1190,13 @@ function handlePointerUp() {
     }
 }
 
-function addPipelineNode({ kind, label, x, y }) {
+function addPipelineNode({ kind, label, moduleType, x, y }) {
     const id = `local-${pipelineEditorState.nextNodeId++}`;
     pipelineEditorState.nodes.push({
         id,
         kind,
         label,
+        moduleType,
         x: Math.max(20, x),
         y: Math.max(20, y)
     });
@@ -976,6 +1241,18 @@ function updatePipelineInspector() {
         return;
     }
     const connectedEdges = pipelineEditorState.edges.filter(edge => edge.from === selected.id || edge.to === selected.id);
+    const resolvedType = selected.moduleType || inferModuleType(selected.kind, selected.label);
+    const catalogEntry = findCatalogEntry(selected.kind, resolvedType);
+    const configFields = mergeConfigFields(
+        baseConfigFieldsForKind(selected.kind),
+        catalogEntry?.configFields ?? []
+    );
+    const statusLabel = !catalogEntry
+        ? 'Unbekannt'
+        : (catalogEntry.supported === false ? 'Planned' : 'Supported');
+    const statusClass = !catalogEntry
+        ? ''
+        : (catalogEntry.supported === false ? 'planned' : 'supported');
     inspector.innerHTML = `
         <div>
             <div class="label">Modul</div>
@@ -983,7 +1260,11 @@ function updatePipelineInspector() {
         </div>
         <div>
             <div class="label">Typ</div>
-            <div class="value">${selected.kind}</div>
+            <div class="value">${selected.kind}${resolvedType ? ` · ${resolvedType}` : ''}</div>
+        </div>
+        <div>
+            <div class="label">Status</div>
+            <div class="value pipeline-config-status ${statusClass}">${statusLabel}</div>
         </div>
         <div>
             <div class="label">Node-ID</div>
@@ -992,6 +1273,20 @@ function updatePipelineInspector() {
         <div>
             <div class="label">Verbindungen</div>
             <div class="value">${connectedEdges.length}</div>
+        </div>
+        <div>
+            <div class="label">Konfiguration</div>
+            ${configFields.length === 0 ? '<div class="pipeline-inspector-hint">Keine spezifischen Felder.</div>' : `
+                <div class="pipeline-config-fields">
+                    ${configFields.map(field => `
+                        <div class="pipeline-config-field">
+                            <span class="pipeline-config-key">${field.key}</span>
+                            <span class="pipeline-config-value">${field.example ?? '—'}</span>
+                            ${field.required ? '<span class="pipeline-config-required">required</span>' : ''}
+                        </div>
+                    `).join('')}
+                </div>
+            `}
         </div>
     `;
 }
@@ -1019,7 +1314,8 @@ function getPipelineGraphModel() {
         nodes: pipelineEditorState.nodes.map(node => ({
             id: node.id,
             label: node.label,
-            kind: node.kind
+            kind: node.kind,
+            moduleType: node.moduleType
         })),
         edges: pipelineEditorState.edges.map(edge => ({
             from: edge.from,
@@ -1123,14 +1419,14 @@ function buildPipelineGraphConfig(model) {
     const codecEntries = {};
     codecNodes.forEach(node => {
         const codecId = codecIdMap.get(node.id);
-        const codecType = inferCodecType(node.label);
+        const codecType = node.moduleType || inferCodecType(node.label);
         codecEntries[codecId] = buildCodecDefaults(codecType);
     });
 
     const inputs = {};
     inputNodes.forEach(node => {
         const inputId = inputIdMap.get(node.id);
-        const inputType = inferInputType(node.label);
+        const inputType = node.moduleType || inferInputType(node.label);
         const bufferNode = findDownstreamNode(node.id, incoming, outgoing, nodesById, candidate => candidate.kind === 'buffer');
         const bufferId = bufferNode ? ringbufferIdMap.get(bufferNode.id) : primaryRingbufferId;
         inputs[inputId] = buildInputConfig(inputType, bufferId);
@@ -1139,7 +1435,7 @@ function buildPipelineGraphConfig(model) {
     const outputs = {};
     outputNodes.forEach(node => {
         const outputId = outputIdMap.get(node.id);
-        const outputType = inferOutputType(node.label);
+        const outputType = node.moduleType || inferOutputType(node.label);
         const upstreamInput = findUpstreamNode(node.id, incoming, nodesById, candidate => candidate.kind === 'input');
         const upstreamBuffer = findUpstreamNode(node.id, incoming, nodesById, candidate => candidate.kind === 'buffer');
         const upstreamCodec = findUpstreamNode(node.id, incoming, nodesById, candidate => candidate.kind === 'processing');
@@ -1167,7 +1463,7 @@ function buildPipelineGraphConfig(model) {
     const services = {};
     serviceNodes.forEach(node => {
         const serviceId = serviceIdMap.get(node.id);
-        const serviceType = inferServiceType(node.label);
+        const serviceType = node.moduleType || inferServiceType(node.label);
         const upstreamInput = findUpstreamNode(node.id, incoming, nodesById, candidate => candidate.kind === 'input');
         const upstreamBuffer = findUpstreamNode(node.id, incoming, nodesById, candidate => candidate.kind === 'buffer');
         const upstreamCodec = findUpstreamNode(node.id, incoming, nodesById, candidate => candidate.kind === 'processing');
@@ -1262,36 +1558,19 @@ function findDownstreamNode(startId, incoming, outgoing, nodesById, predicate) {
 }
 
 function inferInputType(label) {
-    const lower = (label || '').toLowerCase();
-    if (lower.includes('icecast')) return 'icecast';
-    if (lower.includes('http')) return 'http_stream';
-    if (lower.includes('file')) return 'file';
-    return 'srt';
+    return inferModuleType('input', label) || 'srt';
 }
 
 function inferOutputType(label) {
-    const lower = (label || '').toLowerCase();
-    if (lower.includes('icecast')) return 'icecast_out';
-    if (lower.includes('file')) return 'file_out';
-    if (lower.includes('udp')) return 'udp_out';
-    return 'srt_out';
+    return inferModuleType('output', label) || 'srt_out';
 }
 
 function inferServiceType(label) {
-    const lower = (label || '').toLowerCase();
-    if (lower.includes('monitor')) return 'monitoring';
-    if (lower.includes('metadata')) return 'metadata';
-    return 'audio_http';
+    return inferModuleType('service', label) || 'audio_http';
 }
 
 function inferCodecType(label) {
-    const lower = (label || '').toLowerCase();
-    if (lower.includes('opus')) return 'opus_ogg';
-    if (lower.includes('mp3')) return 'mp3';
-    if (lower.includes('aac')) return 'aac_lc';
-    if (lower.includes('flac')) return 'flac';
-    if (lower.includes('vorbis')) return 'vorbis';
-    return 'pcm';
+    return inferModuleType('processing', label) || 'pcm';
 }
 
 function buildInputConfig(inputType, bufferId) {
@@ -1306,7 +1585,9 @@ function buildInputConfig(inputType, bufferId) {
         config.streamid = 'airlift';
     } else if (inputType === 'http_stream' || inputType === 'icecast') {
         config.url = 'https://example.com/stream.ogg';
-    } else if (inputType === 'file') {
+    } else if (inputType === 'alsa') {
+        config.device = 'hw:0,0';
+    } else if (inputType === 'file_in') {
         config.path = '/path/to/audio.wav';
     }
     return config;
@@ -1359,10 +1640,25 @@ function buildServiceConfig({ serviceType, bufferId, inputId, codecId }) {
     if (codecId) {
         config.codec_id = codecId;
     }
-    if (serviceType === 'monitoring') {
+    if (serviceType === 'audio_http') {
+        config.buffer = bufferId;
+        config.codec_id = codecId;
+    } else if (serviceType === 'monitor' || serviceType === 'monitoring') {
+        // no additional fields
+    } else if (serviceType === 'peak_analyzer') {
+        config.buffer = bufferId;
         config.interval_ms = 30000;
-    } else if (serviceType === 'metadata') {
-        config.url = 'https://api.example';
+    } else if (serviceType === 'influx_out') {
+        config.url = 'https://influx.example';
+        config.db = 'airlift';
+        config.interval_ms = 30000;
+    } else if (serviceType === 'broadcast_http') {
+        config.url = 'https://example.com/notify';
+        config.interval_ms = 30000;
+    } else if (serviceType === 'file_out') {
+        config.codec_id = codecId;
+        config.wav_dir = '/opt/rfm/airlift-node/aircheck/wav';
+        config.retention_days = 7;
     }
     return config;
 }
@@ -1377,8 +1673,122 @@ function buildCodecDefaults(codecType) {
         config.frame_size_ms = 20;
         config.bitrate = 128000;
         config.application = 'audio';
+    } else if (codecType === 'opus_webrtc') {
+        config.bitrate = 128000;
+        config.application = 'audio';
+    } else if (codecType === 'mp3') {
+        config.bitrate = 128000;
+    } else if (codecType === 'vorbis') {
+        config.quality = 0.4;
     }
     return config;
+}
+
+function inferModuleType(kind, label) {
+    const lower = (label || '').toLowerCase();
+    if (kind === 'input') {
+        if (lower.includes('srt')) return 'srt';
+        if (lower.includes('icecast')) return 'icecast';
+        if (lower.includes('http')) return 'http_stream';
+        if (lower.includes('alsa')) return 'alsa';
+        if (lower.includes('file')) return 'file_in';
+    }
+    if (kind === 'output') {
+        if (lower.includes('srt')) return 'srt_out';
+        if (lower.includes('icecast')) return 'icecast_out';
+        if (lower.includes('udp')) return 'udp_out';
+        if (lower.includes('file')) return 'file_out';
+    }
+    if (kind === 'service') {
+        if (lower.includes('audio')) return 'audio_http';
+        if (lower.includes('monitoring')) return 'monitoring';
+        if (lower.includes('monitor')) return 'monitor';
+        if (lower.includes('peak')) return 'peak_analyzer';
+        if (lower.includes('influx')) return 'influx_out';
+        if (lower.includes('broadcast')) return 'broadcast_http';
+        if (lower.includes('file')) return 'file_out';
+    }
+    if (kind === 'processing') {
+        if (lower.includes('webrtc')) return 'opus_webrtc';
+        if (lower.includes('opus')) return 'opus_ogg';
+        if (lower.includes('mp3')) return 'mp3';
+        if (lower.includes('vorbis')) return 'vorbis';
+        if (lower.includes('aac')) return 'aac_lc';
+        if (lower.includes('flac')) return 'flac';
+        if (lower.includes('pcm')) return 'pcm';
+    }
+    return null;
+}
+
+function findCatalogEntry(kind, moduleType) {
+    if (kind === 'buffer') {
+        return pipelineCatalog
+            .find(group => group.kind === 'buffer')
+            ?.items[0] ?? null;
+    }
+    return pipelineCatalog
+        .flatMap(group => group.items.map(item => ({ ...item, kind: group.kind })))
+        .find(item => item.kind === kind && item.type === moduleType) || null;
+}
+
+function baseConfigFieldsForKind(kind) {
+    if (kind === 'input') {
+        return [
+            { key: 'type', required: true, example: 'srt' },
+            { key: 'enabled', required: true, example: 'true' },
+            { key: 'buffer', required: true, example: 'main' }
+        ];
+    }
+    if (kind === 'output') {
+        return [
+            { key: 'type', required: true, example: 'srt_out' },
+            { key: 'enabled', required: true, example: 'true' },
+            { key: 'input', required: true, example: 'input_main' },
+            { key: 'buffer', required: true, example: 'main' },
+            { key: 'codec_id', required: true, example: 'codec_opus_ogg' }
+        ];
+    }
+    if (kind === 'service') {
+        return [
+            { key: 'type', required: true, example: 'audio_http' },
+            { key: 'enabled', required: true, example: 'true' },
+            { key: 'input', required: false, example: 'input_main' },
+            { key: 'buffer', required: false, example: 'main' },
+            { key: 'codec_id', required: false, example: 'codec_opus_ogg' }
+        ];
+    }
+    if (kind === 'processing') {
+        return [
+            { key: 'type', required: true, example: 'opus_ogg' },
+            { key: 'sample_rate', required: false, example: '48000' },
+            { key: 'channels', required: false, example: '2' }
+        ];
+    }
+    if (kind === 'buffer') {
+        return [
+            { key: 'slots', required: true, example: '6000' },
+            { key: 'chunk_ms', required: true, example: '100' },
+            { key: 'prealloc_samples', required: true, example: '9600' }
+        ];
+    }
+    return [];
+}
+
+function mergeConfigFields(baseFields, specificFields) {
+    const merged = [];
+    const seen = new Set();
+    const addFields = (fields) => {
+        fields.forEach(field => {
+            if (seen.has(field.key)) {
+                return;
+            }
+            seen.add(field.key);
+            merged.push(field);
+        });
+    };
+    addFields(baseFields);
+    addFields(specificFields);
+    return merged;
 }
 
 function formatConfigOutput(config) {
