@@ -1174,6 +1174,7 @@ class AircheckPlayer {
         // Initialisierung
         this.initWebSocket();
         this.initInteraction();
+        this.fetchPipelineState();
         this.fetchBufferInfo();
         this.startRenderLoop();
         
