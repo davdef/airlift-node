@@ -1001,13 +1001,17 @@ class UIManager {
     }
     
     init() {
+        const idleOverlay = this.createIdleOverlay();
         this.elements = {
             canvas: document.getElementById('waveform'),
             liveBtn: document.getElementById('liveBtn'),
             playBtn: document.getElementById('playBtn'),
             status: document.getElementById('status'),
             debugPanel: document.querySelector('.debug-panel'),
-            errorOverlay: this.createErrorOverlay()
+            errorOverlay: this.createErrorOverlay(),
+            idleOverlay: idleOverlay.overlay,
+            idleTitle: idleOverlay.title,
+            idleSubtitle: idleOverlay.subtitle
         };
         
         this.attachEvents();
@@ -1031,6 +1035,53 @@ class UIManager {
         `;
         document.body.appendChild(overlay);
         return overlay;
+    }
+
+    createIdleOverlay() {
+        const overlay = document.createElement('div');
+        overlay.className = 'idle-overlay';
+        overlay.style.cssText = `
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.75);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 900;
+            text-align: center;
+            color: #fff;
+            padding: 24px;
+        `;
+
+        const content = document.createElement('div');
+        content.style.cssText = `
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 12px;
+            max-width: 420px;
+        `;
+
+        const logo = document.createElement('img');
+        logo.src = 'rfm-logo.png';
+        logo.alt = 'RFM Logo';
+        logo.style.cssText = 'width: 96px; opacity: 0.9;';
+
+        const title = document.createElement('div');
+        title.style.cssText = 'font-size: 18px; font-weight: 600;';
+        title.textContent = 'Kein Kontakt zur API';
+
+        const subtitle = document.createElement('div');
+        subtitle.style.cssText = 'font-size: 14px; color: #cbd5e1;';
+        subtitle.textContent = 'Bitte API starten und Pipeline prüfen.';
+
+        content.appendChild(logo);
+        content.appendChild(title);
+        content.appendChild(subtitle);
+        overlay.appendChild(content);
+        document.body.appendChild(overlay);
+
+        return { overlay, title, subtitle };
     }
     
     attachEvents() {
@@ -1065,6 +1116,19 @@ class UIManager {
         
         this.elements.status.textContent = text;
         this.elements.status.className = `status status-${type}`;
+    }
+
+    setIdleState({ active, title, subtitle } = {}) {
+        if (!this.elements.idleOverlay) {
+            return;
+        }
+        this.elements.idleOverlay.style.display = active ? 'flex' : 'none';
+        if (title && this.elements.idleTitle) {
+            this.elements.idleTitle.textContent = title;
+        }
+        if (subtitle && this.elements.idleSubtitle) {
+            this.elements.idleSubtitle.textContent = subtitle;
+        }
     }
     
     toggleDebug(show) {
@@ -1110,6 +1174,7 @@ class AircheckPlayer {
         // Initialisierung
         this.initWebSocket();
         this.initInteraction();
+        this.fetchPipelineState();
         this.fetchBufferInfo();
         this.startRenderLoop();
         
@@ -1135,11 +1200,48 @@ class AircheckPlayer {
                     this.viewport.right
                 );
                 
+                this.ui.setIdleState({ active: false });
                 this.ui.updateStatus(`Buffer geladen (${this.formatDuration(data.end - data.start)})`, 'success');
+                await this.fetchPipelineState();
+            } else {
+                throw new Error('Buffer-API liefert keine Daten');
             }
         } catch (error) {
             console.error('Buffer-Info Fehler:', error);
-            this.ui.updateStatus('Buffer-Info fehlgeschlagen', 'error');
+            this.ui.setIdleState({
+                active: true,
+                title: 'Kein Kontakt zur API',
+                subtitle: 'Bitte API starten und Netzwerk prüfen.'
+            });
+            this.ui.updateStatus('Kein Kontakt zur API', 'error');
+        }
+    }
+
+    async fetchPipelineState() {
+        try {
+            const response = await fetch('/api/status');
+            if (!response.ok) {
+                throw new Error('Status API nicht erreichbar');
+            }
+            const status = await response.json();
+            const hasGraph = (status?.graph?.nodes || []).length > 0;
+            if (!hasGraph) {
+                this.ui.setIdleState({
+                    active: true,
+                    title: 'Keine Pipeline vorhanden',
+                    subtitle: 'Bitte config.toml anlegen oder Pipeline konfigurieren.'
+                });
+                this.ui.updateStatus('Keine Pipeline vorhanden', 'warning');
+                return;
+            }
+            this.ui.setIdleState({ active: false });
+        } catch (error) {
+            this.ui.setIdleState({
+                active: true,
+                title: 'Kein Kontakt zur API',
+                subtitle: 'Bitte API starten und Netzwerk prüfen.'
+            });
+            this.ui.updateStatus('Kein Kontakt zur API', 'error');
         }
     }
     

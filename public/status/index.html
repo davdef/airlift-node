@@ -31,7 +31,7 @@
             <div class="setup-message">
                 <div class="setup-icon">⚠️</div>
                 <div>
-                    <div class="setup-title">Die Status-API ist derzeit nicht erreichbar.</div>
+                    <div class="setup-title">Kein Kontakt zur API.</div>
                     <div class="setup-subtitle">Bitte API starten und Konfiguration prüfen.</div>
                 </div>
             </div>
@@ -45,6 +45,28 @@
             </div>
             <div class="setup-actions">
                 <a class="btn primary" href="../config.sample.toml" target="_blank" rel="noopener">Setup-Leitfaden öffnen</a>
+            </div>
+        </div>
+    </section>
+
+    <section class="panel hidden" id="idlePanel">
+        <div class="panel-header">
+            <h2 class="panel-title">Idle</h2>
+        </div>
+        <div class="panel-content">
+            <div class="setup-message">
+                <div class="setup-icon">🪶</div>
+                <div>
+                    <div class="setup-title">Keine Pipeline vorhanden.</div>
+                    <div class="setup-subtitle">Bitte config.toml anlegen oder Pipeline im Editor konfigurieren.</div>
+                </div>
+            </div>
+            <div class="setup-issues">
+                <h3>Pipeline starten</h3>
+                <ul>
+                    <li>Input, Buffer und Output im Graphen anlegen.</li>
+                    <li>Konfiguration speichern und API neu laden.</li>
+                </ul>
             </div>
         </div>
     </section>

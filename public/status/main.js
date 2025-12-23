@@ -117,7 +117,7 @@ function updateModuleFilterUI() {
 }
 
 function applyModuleFilterVisibility() {
-    if (currentViewState === 'offline') {
+    if (currentViewState === 'offline' || currentViewState === 'idle') {
         return;
     }
     const activePanel = document.getElementById('activeModulesPanel');
@@ -279,14 +279,18 @@ function updateUI(status, codecs = []) {
     // Update timestamp
     document.getElementById('updateTime').textContent = formatTime(Date.now());
 
-    renderAudioPipeline(status);
     const localState = getLocalPipelineState(status);
     const viewState = determineViewState(status, localState);
-    currentViewState = viewState;
-    applyViewState(viewState, status, localState);
+    setViewState(viewState, status, localState);
     updateModuleFilterAvailability(status, localState);
     applyModuleFilterVisibility();
     updateConnectionState(true);
+
+    if (viewState === 'offline') {
+        return;
+    }
+
+    renderAudioPipeline(status);
 
     if (viewState !== 'normal') {
         return;
@@ -457,13 +461,18 @@ function determineViewState(status, localState) {
     }
     const resolvedState = localState || getLocalPipelineState(status);
     const hasLocalIssues = (resolvedState.issues || []).length > 0;
-    const isEmptyConfig = resolvedState.nodesCount === 0;
+    const isEmptyConfig = resolvedState.isEmptyGraph;
 
-    if (hasLocalIssues || isEmptyConfig) {
+    if (isEmptyConfig || hasLocalIssues) {
         return 'setup';
     }
 
     return 'normal';
+}
+
+function setViewState(viewState, status, localState) {
+    currentViewState = viewState;
+    applyViewState(viewState, status, localState);
 }
 
 function getLocalPipelineState(status) {
@@ -472,9 +481,11 @@ function getLocalPipelineState(status) {
     }
     const model = getPipelineGraphModel();
     const { issues } = buildPipelineGraphConfig(model);
+    const isEmptyGraph = model.nodes.length === 0;
     return {
         nodesCount: model.nodes.length,
         issues,
+        isEmptyGraph,
         hasInputs: model.nodes.some(node => node.kind === 'input'),
         hasOutputs: model.nodes.some(node => node.kind === 'output'),
         hasBuffers: model.nodes.some(node => node.kind === 'buffer'),
@@ -556,6 +567,11 @@ function applyViewState(viewState, status, localState) {
         showOfflineView();
         return;
     }
+
+    if (viewState === 'idle') {
+        showIdleView(status, localState);
+        return;
+    }
     
     if (viewState === 'setup') {
         showSetupView(status, localState);
@@ -570,13 +586,38 @@ function showOfflineView() {
     togglePanels(false);
     const offlinePanel = document.getElementById('offlinePanel');
     const setupPanel = document.getElementById('setupPanel');
+    const idlePanel = document.getElementById('idlePanel');
     offlinePanel.classList.remove('hidden');
     setupPanel.classList.add('hidden');
+    if (idlePanel) {
+        idlePanel.classList.add('hidden');
+    }
+}
+
+function showIdleView(status, localState) {
+    currentViewState = 'idle';
+    togglePanels(false);
+    const offlinePanel = document.getElementById('offlinePanel');
+    const setupPanel = document.getElementById('setupPanel');
+    const idlePanel = document.getElementById('idlePanel');
+    if (offlinePanel) {
+        offlinePanel.classList.add('hidden');
+    }
+    if (setupPanel) {
+        setupPanel.classList.add('hidden');
+    }
+    if (idlePanel) {
+        idlePanel.classList.remove('hidden');
+    }
 }
 
 function showSetupView(status, localState) {
     currentViewState = 'setup';
     document.getElementById('offlinePanel').classList.add('hidden');
+    const idlePanel = document.getElementById('idlePanel');
+    if (idlePanel) {
+        idlePanel.classList.add('hidden');
+    }
     const setupPanel = document.getElementById('setupPanel');
     togglePanels(true);
     setupPanel.classList.remove('hidden');
@@ -589,6 +630,10 @@ function showFullView() {
     currentViewState = 'normal';
     togglePanels(true);
     document.getElementById('offlinePanel').classList.add('hidden');
+    const idlePanel = document.getElementById('idlePanel');
+    if (idlePanel) {
+        idlePanel.classList.add('hidden');
+    }
     document.getElementById('setupPanel').classList.add('hidden');
 }
 
@@ -1522,7 +1567,7 @@ function refreshSetupFlowFromLocalState() {
     const localState = getLocalPipelineState(currentStatus);
     const viewState = determineViewState(currentStatus, localState);
     if (viewState !== currentViewState) {
-        applyViewState(viewState, currentStatus, localState);
+        setViewState(viewState, currentStatus, localState);
         return;
     }
     if (viewState === 'setup') {
@@ -1571,6 +1616,24 @@ function buildPipelineGraphConfig(model) {
     const nodes = model?.nodes || [];
     const edges = model?.edges || [];
     const issues = [];
+
+    if (nodes.length === 0) {
+        return {
+            config: {
+                ringbuffers: {
+                    main: {
+                        slots: 6000,
+                        prealloc_samples: 9600
+                    }
+                },
+                inputs: {},
+                outputs: {},
+                services: {},
+                codecs: {}
+            },
+            issues: [{ type: 'graph-empty', message: 'Keine Pipeline definiert.' }]
+        };
+    }
     const nodesById = new Map(nodes.map(node => [node.id, node]));
     const incoming = new Map();
     const outgoing = new Map();
