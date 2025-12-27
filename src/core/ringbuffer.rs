@@ -1,4 +1,5 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
@@ -9,59 +10,61 @@ pub struct PcmFrame {
     pub channels: u8,
 }
 
-struct RingBufferInner {
-    buffer: VecDeque<PcmFrame>,
-    start_index: u64,
-    next_index: u64,
-    read_positions: HashMap<String, u64>,
+#[derive(Debug)]
+struct RingSlot {
+    seq: AtomicU64,
+    frame: Mutex<Option<PcmFrame>>,
 }
 
 pub struct AudioRingBuffer {
-    inner: Arc<Mutex<RingBufferInner>>,
+    slots: Arc<Vec<RingSlot>>,
     capacity: usize,
-    dropped_frames: Arc<Mutex<u64>>,
+    next_seq: AtomicU64,
+    head_seq: AtomicU64,
+    read_positions: Mutex<HashMap<String, u64>>,
+    dropped_frames: AtomicU64,
 }
 
 impl AudioRingBuffer {
     pub fn new(capacity: usize) -> Self {
+        let mut slots = Vec::with_capacity(capacity);
+        for _ in 0..capacity {
+            slots.push(RingSlot {
+                seq: AtomicU64::new(0),
+                frame: Mutex::new(None),
+            });
+        }
+
         Self {
-            inner: Arc::new(Mutex::new(RingBufferInner {
-                buffer: VecDeque::with_capacity(capacity),
-                start_index: 0,
-                next_index: 0,
-                read_positions: HashMap::new(),
-            })),
+            slots: Arc::new(slots),
             capacity,
-            dropped_frames: Arc::new(Mutex::new(0)),
+            next_seq: AtomicU64::new(1),
+            head_seq: AtomicU64::new(0),
+            read_positions: Mutex::new(HashMap::new()),
+            dropped_frames: AtomicU64::new(0),
         }
     }
 
     /// Push a frame into the ring.
     /// Returns the current number of frames in the buffer.
     pub fn push(&self, frame: PcmFrame) -> u64 {
-        let mut inner = self.inner.lock().unwrap();
+        let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
+        let idx = (seq as usize) % self.capacity;
+        let slot = &self.slots[idx];
 
-        // Platz schaffen, wenn voll
-        if inner.buffer.len() >= self.capacity {
-            inner.buffer.pop_front();
-            inner.start_index += 1;
-            let mut dropped = self.dropped_frames.lock().unwrap();
-            *dropped += 1;
+        {
+            let mut guard = slot.frame.lock().unwrap();
+            *guard = Some(frame);
         }
 
-        inner.buffer.push_back(frame);
-        inner.next_index += 1;
+        slot.seq.store(seq, Ordering::Release);
+        self.head_seq.store(seq, Ordering::Release);
 
-        // Reader-Positionen auf den neuen gültigen Bereich clampen,
-        // aber ohne inner während des Iterierens nochmal immutable zu leihen.
-        let start_index = inner.start_index;
-        for position in inner.read_positions.values_mut() {
-            if *position < start_index {
-                *position = start_index;
-            }
+        if seq > self.capacity as u64 {
+            self.dropped_frames.fetch_add(1, Ordering::Relaxed);
         }
 
-        inner.buffer.len() as u64
+        self.len() as u64
     }
 
     pub fn pop(&self) -> Option<PcmFrame> {
@@ -69,102 +72,140 @@ impl AudioRingBuffer {
     }
 
     /// Leser-spezifisches Pop, mit Reader-ID (Multi-Reader).
-pub fn pop_for_reader(&self, reader_id: &str) -> Option<PcmFrame> {
-    let mut inner = self.inner.lock().unwrap();
-
-    let start_index = inner.start_index;
-    let next_index  = inner.next_index;
-
-    // 1) Position aus HashMap holen → direkt kopieren → Borrow ist danach weg
-    let pos = inner.read_positions
-        .entry(reader_id.to_string())
-        .or_insert(start_index);
-
-    let mut position = *pos;
-
-    if position < start_index {
-        position = start_index;
-    }
-    if position >= next_index {
-        return None;
-    }
-
-    // 2) Jetzt dürfen wir ohne Borrow-Probleme lesen
-//    let offset = (position - start_index) as usize;
-//    let frame_opt = inner.buffer.get(offset).cloned();
-
-    // 3) Erst *jetzt* zurückschreiben → Borrow erst am Ende
-//    if frame_opt.is_some() {
-//        *inner.read_positions.get_mut(reader_id).unwrap() = position + 1;
-//    }
-
-let offset = (position - start_index) as usize;
-
-// Borrow vermeiden: Frame erst holen, danach Position setzen
-let frame_opt = {
-    let frame = inner.buffer.get(offset).cloned();
-    frame
-};
-
-if frame_opt.is_some() {
-    *inner.read_positions.get_mut(reader_id).unwrap() = position + 1;
-}
-
-    // 4) Aufräumen alter Frames anhand minimaler Leser-Position
-    let min_pos = inner.read_positions.values().copied().min().unwrap_or(next_index);
-    while inner.start_index < min_pos {
-        if inner.buffer.pop_front().is_some() {
-            inner.start_index += 1;
-        } else {
-            break;
+    pub fn pop_for_reader(&self, reader_id: &str) -> Option<PcmFrame> {
+        let head = self.head_seq.load(Ordering::Acquire);
+        if head == 0 {
+            return None;
         }
-    }
 
-    frame_opt
-}
+        let oldest = self.oldest_seq(head);
+        let target_seq = {
+            let mut read_positions = self.read_positions.lock().unwrap();
+            let position = read_positions.entry(reader_id.to_string()).or_insert(oldest);
+            if *position < oldest {
+                *position = oldest;
+            }
+            if *position > head {
+                return None;
+            }
+            *position
+        };
+
+        let slot = &self.slots[(target_seq as usize) % self.capacity];
+        let slot_seq = slot.seq.load(Ordering::Acquire);
+        if slot_seq != target_seq {
+            self.dropped_frames.fetch_add(1, Ordering::Relaxed);
+            let mut read_positions = self.read_positions.lock().unwrap();
+            if let Some(pos) = read_positions.get_mut(reader_id) {
+                *pos = oldest;
+            }
+            return None;
+        }
+
+        let frame = slot.frame.lock().unwrap().clone();
+        if frame.is_some() {
+            let mut read_positions = self.read_positions.lock().unwrap();
+            if let Some(pos) = read_positions.get_mut(reader_id) {
+                *pos = target_seq + 1;
+            }
+        }
+
+        frame
+    }
 
     pub fn clear(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.buffer.clear();
-        inner.start_index = inner.next_index;
-
-        let start_index = inner.start_index;
-        for position in inner.read_positions.values_mut() {
-            *position = start_index;
+        for slot in self.slots.iter() {
+            let mut guard = slot.frame.lock().unwrap();
+            *guard = None;
+            slot.seq.store(0, Ordering::Release);
         }
+
+        self.head_seq.store(0, Ordering::Release);
+        self.next_seq.store(1, Ordering::Release);
+        self.dropped_frames.store(0, Ordering::Relaxed);
+
+        let mut read_positions = self.read_positions.lock().unwrap();
+        read_positions.clear();
     }
 
     pub fn len(&self) -> usize {
-        let inner = self.inner.lock().unwrap();
-        inner.buffer.len()
+        let head = self.head_seq.load(Ordering::Acquire);
+        if head == 0 {
+            return 0;
+        }
+        let oldest = self.oldest_seq(head);
+        (head - oldest + 1) as usize
     }
 
     pub fn is_empty(&self) -> bool {
-        let inner = self.inner.lock().unwrap();
-        inner.buffer.is_empty()
+        self.len() == 0
     }
 
     pub fn stats(&self) -> RingBufferStats {
-        let inner = self.inner.lock().unwrap();
-        let dropped = *self.dropped_frames.lock().unwrap();
+        let head = self.head_seq.load(Ordering::Acquire);
+        if head == 0 {
+            return RingBufferStats {
+                capacity: self.capacity,
+                current_frames: 0,
+                dropped_frames: self.dropped_frames.load(Ordering::Relaxed),
+                latest_timestamp: None,
+                oldest_timestamp: None,
+            };
+        }
+
+        let oldest = self.oldest_seq(head);
+        let latest_timestamp = self.slot_timestamp(head);
+        let oldest_timestamp = self.slot_timestamp(oldest);
 
         RingBufferStats {
             capacity: self.capacity,
-            current_frames: inner.buffer.len(),
-            dropped_frames: dropped,
-            latest_timestamp: inner.buffer.back().map(|f| f.utc_ns),
-            oldest_timestamp: inner.buffer.front().map(|f| f.utc_ns),
+            current_frames: self.len(),
+            dropped_frames: self.dropped_frames.load(Ordering::Relaxed),
+            latest_timestamp,
+            oldest_timestamp,
         }
     }
 
     /// Snapshot-Iterator über den aktuellen Inhalt (keine Live-Änderungen).
     pub fn iter(&self) -> RingBufferIter {
-        let inner = self.inner.lock().unwrap();
-        let snapshot: Vec<PcmFrame> = inner.buffer.iter().cloned().collect();
-        RingBufferIter {
-            buffer: snapshot,
-            index: 0,
+        let head = self.head_seq.load(Ordering::Acquire);
+        if head == 0 {
+            return RingBufferIter {
+                buffer: Vec::new(),
+                index: 0,
+            };
         }
+
+        let oldest = self.oldest_seq(head);
+        let mut snapshot = Vec::with_capacity(self.len());
+        for seq in oldest..=head {
+            if let Some(frame) = self.read_by_seq(seq) {
+                snapshot.push(frame);
+            }
+        }
+
+        RingBufferIter { buffer: snapshot, index: 0 }
+    }
+
+    fn oldest_seq(&self, head: u64) -> u64 {
+        if head >= self.capacity as u64 {
+            head - self.capacity as u64 + 1
+        } else {
+            1
+        }
+    }
+
+    fn read_by_seq(&self, seq: u64) -> Option<PcmFrame> {
+        let slot = &self.slots[(seq as usize) % self.capacity];
+        if slot.seq.load(Ordering::Acquire) == seq {
+            slot.frame.lock().unwrap().clone()
+        } else {
+            None
+        }
+    }
+
+    fn slot_timestamp(&self, seq: u64) -> Option<u64> {
+        self.read_by_seq(seq).map(|frame| frame.utc_ns)
     }
 }
 
