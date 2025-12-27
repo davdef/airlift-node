@@ -1,24 +1,19 @@
-node_name = "test-node"
-
-[producers.test]
-type = "file"
+[producers.sinetest]
+type = "sine"
 enabled = true
-path = "background.wav"
-loop_audio = true
-channels = 2
 sample_rate = 48000
+channels = 2
 
 [processors.pass]
 type = "passthrough"
-enabled = true
-
-[consumers.record]
-type = "file"
-enabled = true
-path = "simple_test.wav"
 
 [flows.simple]
 enabled = true
-inputs = ["test"]
+inputs = ["sinetest"]
 processors = ["pass"]
-outputs = ["record"]
+outputs = ["wavout"]
+
+[consumers.wavout]
+type = "file"
+enabled = true
+path = "out.wav"

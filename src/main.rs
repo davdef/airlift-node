@@ -166,6 +166,13 @@ fn run_normal_mode() -> anyhow::Result<()> {
                     }
                 }
             }
+"sine" => {
+    let freq: f32 = 440.0;
+    let rate = producer_cfg.sample_rate.unwrap_or(48000);
+    let producer = producers::sine::SineProducer::new(name, freq, rate);
+    node.add_producer(Box::new(producer));
+    log::info!("Added sine producer: {}", name);
+}
             _ => log::error!("Unknown producer type: {}", producer_cfg.producer_type),
         }
     }

@@ -1,0 +1,93 @@
+use std::sync::{Arc, atomic::{AtomicBool, AtomicU64, Ordering}};
+use std::thread;
+use std::time::Duration;
+
+use crate::core::{Producer, ProducerStatus, AudioRingBuffer, PcmFrame};
+
+pub struct SineProducer {
+    name: String,
+    running: Arc<AtomicBool>,
+    samples_processed: Arc<AtomicU64>,
+    ring: Option<Arc<AudioRingBuffer>>,
+    freq: f32,
+    sample_rate: u32,
+}
+
+impl SineProducer {
+    pub fn new(name: &str, freq: f32, sample_rate: u32) -> Self {
+        Self {
+            name: name.to_string(),
+            running: Arc::new(AtomicBool::new(false)),
+            samples_processed: Arc::new(AtomicU64::new(0)),
+            ring: None,
+            freq,
+            sample_rate,
+        }
+    }
+}
+
+impl Producer for SineProducer {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn start(&mut self) -> anyhow::Result<()> {
+        if self.running.load(Ordering::Relaxed) { return Ok(()); }
+        let ring = self.ring.clone();
+        let running = self.running.clone();
+        let samples_processed = self.samples_processed.clone();
+
+        let freq = self.freq;
+        let rate = self.sample_rate;
+
+        thread::spawn(move || {
+            let mut phase: f32 = 0.0;
+            let step = 2.0 * std::f32::consts::PI * freq / rate as f32;
+
+            while running.load(Ordering::Relaxed) {
+                let mut samples = Vec::with_capacity(480 * 2);
+                for _ in 0..480 {
+                    let v = (phase.sin() * 0.2 * i16::MAX as f32) as i16;
+                    samples.push(v);
+                    samples.push(v);
+                    phase += step;
+                }
+
+                samples_processed.fetch_add(samples.len() as u64, Ordering::Relaxed);
+
+                if let Some(rb) = &ring {
+                    rb.push(PcmFrame {
+                        utc_ns: crate::core::timestamp::utc_ns_now(),
+                        samples,
+                        sample_rate: rate,
+                        channels: 2,
+                    });
+                }
+
+                thread::sleep(Duration::from_millis(10)); // 100 Hz
+            }
+        });
+
+        self.running.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn stop(&mut self) -> anyhow::Result<()> {
+        self.running.store(false, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn status(&self) -> ProducerStatus {
+        ProducerStatus {
+            running: self.running.load(Ordering::Relaxed),
+            connected: true,
+            samples_processed: self.samples_processed.load(Ordering::Relaxed),
+            errors: 0,
+            buffer_stats: self.ring.as_ref().map(|r| r.stats()),
+        }
+    }
+
+    fn attach_ring_buffer(&mut self, buffer: Arc<AudioRingBuffer>) {
+        self.ring = Some(buffer);
+    }
+}
