@@ -44,7 +44,8 @@ impl Mixer {
         
         // Für jeden Input: nehme ein Frame wenn verfügbar
         for (input_name, buffer) in &self.input_buffers {
-            if let Some(frame) = buffer.pop() {
+            let reader_id = format!("mixer:{}:{}", self.name, input_name);
+            if let Some(frame) = buffer.pop_for_reader(&reader_id) {
                 let gain = self.input_gains.get(input_name).copied().unwrap_or(1.0);
                 
                 // Einfaches Mixing (ohne Resampling)
