@@ -66,6 +66,12 @@ async fn run_api_server(bind_addr: SocketAddr, state: ApiState) -> anyhow::Resul
         )
         .route("/api/events", get(routes::status::events))
         .route("/api/config", get(routes::config::get_config))
+        .route(
+            "/api/config",
+            axum::routing::post(routes::config::post_config),
+        )
+        .route("/api/module", get(routes::config::get_module))
+        .route("/api/service", get(routes::config::get_service))
         .route("/ws", get(routes::websocket::websocket_handler))
         .nest_service(
             "/",

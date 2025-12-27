@@ -1,0 +1,229 @@
+#!/bin/bash
+
+# Main korrigieren - ALSA Producer Result behandeln
+cat > src/main.rs << 'EOF'
+mod core;
+mod config;
+mod producers;
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+fn main() -> anyhow::Result<()> {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format_timestamp_millis()
+        .init();
+    
+    log::info!("=== Airlift Node v0.2.0 ===");
+    
+    // Einfacher Modus: Discovery oder normal
+    let args: Vec<String> = std::env::args().collect();
+    
+    if args.len() > 1 && args[1] == "--discover" {
+        return run_discovery();
+    }
+    
+    // Normaler Modus
+    let config = config::Config::load("config.toml")
+        .unwrap_or_else(|e| {
+            log::warn!("Config error: {}, using defaults", e);
+            config::Config::default()
+        });
+    
+    log::info!("Node: {}", config.node_name);
+    
+    let mut node = core::AirliftNode::new();
+    
+    // Producer aus Config
+    for (name, producer_cfg) in &config.producers {
+        if !producer_cfg.enabled {
+            continue;
+        }
+        
+        match producer_cfg.producer_type.as_str() {
+            "file" => {
+                let producer = producers::file::FileProducer::new(name, producer_cfg);
+                node.add_producer(Box::new(producer));
+                log::info!("Added file producer: {}", name);
+            }
+            "alsa" => {
+                match producers::alsa::AlsaProducer::new(name, producer_cfg) {
+                    Ok(producer) => {
+                        node.add_producer(Box::new(producer));
+                        log::info!("Added ALSA producer: {}", name);
+                    }
+                    Err(e) => {
+                        log::error!("Failed to create ALSA producer {}: {}", name, e);
+                    }
+                }
+            }
+            _ => log::error!("Unknown producer type: {}", producer_cfg.producer_type),
+        }
+    }
+    
+    // Falls keine Producer: Demo
+    if node.status().producers == 0 {
+        log::info!("No producers configured, adding demo");
+        let demo_cfg = config::ProducerConfig {
+            producer_type: "file".to_string(),
+            enabled: true,
+            device: None,
+            path: Some("demo.wav".to_string()),
+            channels: Some(2),
+            sample_rate: Some(48000),
+            loop_audio: Some(true),
+        };
+        let demo_producer = producers::file::FileProducer::new("demo", &demo_cfg);
+        node.add_producer(Box::new(demo_producer));
+    }
+    
+    // Graceful shutdown
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_clone = shutdown.clone();
+    
+    ctrlc::set_handler(move || {
+        log::info!("\nShutdown requested (Ctrl+C)");
+        shutdown_clone.store(true, Ordering::SeqCst);
+    })?;
+    
+    node.start()?;
+    log::info!("Node started with {} producers. Press Ctrl+C to stop.", 
+               node.status().producers);
+    
+    let mut tick = 0;
+    while !shutdown.load(Ordering::Relaxed) && node.is_running() {
+        std::thread::sleep(Duration::from_millis(100));
+        
+        tick += 1;
+        if tick % 50 == 0 {
+            let status = node.status();
+            log::info!("Status: running={}, uptime={}s, producers={}", 
+                status.running, status.uptime_seconds, status.producers);
+        }
+    }
+    
+    node.stop()?;
+    log::info!("Node stopped");
+    
+    Ok(())
+}
+
+fn run_discovery() -> anyhow::Result<()> {
+    log::info!("Device discovery not yet implemented");
+    log::info!("Run 'cargo run' for normal mode");
+    Ok(())
+}
+EOF
+
+# Ringbuffer import entfernen (unused)
+cat > src/core/mod.rs << 'EOF'
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
+use anyhow::Result;
+use log::{info, error, warn};
+
+// ============================================================================
+// DEVICE SCANNER
+// ============================================================================
+
+pub mod device_scanner;
+pub use device_scanner::*;
+
+// ============================================================================
+// PRODUCER TRAIT
+// ============================================================================
+
+pub trait Producer: Send + Sync {
+    fn name(&self) -> &str;
+    fn start(&mut self) -> Result<()>;
+    fn stop(&mut self) -> Result<()>;
+    fn status(&self) -> ProducerStatus;
+}
+
+#[derive(Debug, Clone)]
+pub struct ProducerStatus {
+    pub running: bool,
+    pub connected: bool,
+    pub samples_processed: u64,
+    pub errors: u64,
+}
+
+// ============================================================================
+// AIRLIFT NODE
+// ============================================================================
+
+#[derive(Debug)]
+pub struct NodeStatus {
+    pub running: bool,
+    pub uptime_seconds: u64,
+    pub producers: usize,
+}
+
+pub struct AirliftNode {
+    running: Arc<AtomicBool>,
+    start_time: Instant,
+    producers: Vec<Box<dyn Producer>>,
+}
+
+impl AirliftNode {
+    pub fn new() -> Self {
+        Self {
+            running: Arc::new(AtomicBool::new(false)),
+            start_time: Instant::now(),
+            producers: Vec::new(),
+        }
+    }
+    
+    pub fn add_producer(&mut self, producer: Box<dyn Producer>) {
+        self.producers.push(producer);
+    }
+    
+    pub fn start(&mut self) -> Result<()> {
+        info!("Node starting...");
+        self.running.store(true, Ordering::SeqCst);
+        
+        for (i, producer) in self.producers.iter_mut().enumerate() {
+            info!("Starting producer {}: {}", i, producer.name());
+            if let Err(e) = producer.start() {
+                error!("Failed to start producer {}: {}", producer.name(), e);
+            }
+        }
+        
+        Ok(())
+    }
+    
+    pub fn stop(&mut self) -> Result<()> {
+        info!("Node stopping...");
+        self.running.store(false, Ordering::SeqCst);
+        
+        for producer in &mut self.producers {
+            info!("Stopping producer: {}", producer.name());
+            if let Err(e) = producer.stop() {
+                warn!("Error stopping producer {}: {}", producer.name(), e);
+            }
+        }
+        
+        Ok(())
+    }
+    
+    pub fn status(&self) -> NodeStatus {
+        NodeStatus {
+            running: self.running.load(Ordering::Relaxed),
+            uptime_seconds: self.start_time.elapsed().as_secs(),
+            producers: self.producers.len(),
+        }
+    }
+    
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::Relaxed)
+    }
+}
+EOF
+
+# Ringbuffer Modul löschen (nicht mehr benötigt)
+rm src/core/ringbuffer.rs
+
+# Builden
+cargo build

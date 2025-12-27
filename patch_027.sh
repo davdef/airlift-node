@@ -1,3 +1,8 @@
+#!/bin/bash
+# fix_consumer_config.sh
+
+# Korrekte main.rs mit Consumer-Unterstützung
+cat > src/main.rs << 'EOF'
 mod core;
 mod config;
 mod producers;
@@ -211,6 +216,18 @@ fn run_normal_mode() -> anyhow::Result<()> {
                             }
                         }
                         
+                        // Input-Gains aus Config
+                        if let Some(gains) = processor_cfg.config.get("gains") {
+                            if let Some(gain_map) = gains.as_object() {
+                                for (input, gain_value) in gain_map {
+                                    if let Some(gain) = gain_value.as_f64() {
+                                        log::info!("Mixer '{}': Input '{}' gain {}", 
+                                            processor_name, input, gain);
+                                    }
+                                }
+                            }
+                        }
+                        
                         flow.add_processor(Box::new(mixer));
                         log::info!("Added mixer processor '{}' to flow '{}'", 
                             processor_name, flow_name);
@@ -221,7 +238,7 @@ fn run_normal_mode() -> anyhow::Result<()> {
             }
         }
         
-        node.flows.push(flow);
+        node.add_flow(flow);
         log::info!("Added flow: {}", flow_name);
     }
     
@@ -231,7 +248,7 @@ fn run_normal_mode() -> anyhow::Result<()> {
             continue;
         }
         
-        for flow in node.flows.iter_mut() {
+        for (flow_index, flow) in node.flows_mut().iter_mut().enumerate() {
             if flow.name == *flow_name {
                 for output_name in &flow_cfg.outputs {
                     // Finde Consumer mit diesem Namen
@@ -262,15 +279,13 @@ fn run_normal_mode() -> anyhow::Result<()> {
     }
     
     // Producer mit Flows verbinden (basierend auf Flow inputs)
-    // UND: Mixer-Inputs verbinden (special case)
     for (flow_name, flow_cfg) in &config.flows {
         if !flow_cfg.enabled {
             continue;
         }
         
-        for (flow_index, flow) in node.flows.iter().enumerate() {
+        for (flow_index, flow) in node.flows().iter().enumerate() {
             if flow.name == *flow_name {
-                // Normale Producer-Verbindungen
                 for input_name in &flow_cfg.inputs {
                     // Finde Producer mit diesem Namen
                     for (producer_index, producer) in node.producers().iter().enumerate() {
@@ -283,52 +298,8 @@ fn run_normal_mode() -> anyhow::Result<()> {
                         }
                     }
                 }
-                
-                // Mixer-Inputs konfigurieren
-                for processor_name in &flow_cfg.processors {
-                    if let Some(processor_cfg) = config.processors.get(processor_name) {
-                        if processor_cfg.processor_type == "mixer" {
-                            // Finde den Mixer in diesem Flow
-                            let processor_index = flow_cfg.processors.iter()
-                                .position(|p| p == processor_name)
-                                .unwrap_or(0);
-                            
-                            // Jetzt müssen wir die Mixer-Inputs verbinden
-                            // Dafür brauchen wir den Mixer aus dem Flow
-                            // Das ist tricky, weil wir mutable access brauchen...
-                            // Einfacher: Mixer-Inputs direkt beim Erstellen verbinden
-                            // ODER: Eine neue Methode in Flow hinzufügen
-                        }
-                    }
-                }
                 break;
             }
-        }
-    }
-    
-    // Einfacher Test: Direkter Producer->Consumer ohne Processing
-    log::info!("Setting up direct test connection for FileConsumer...");
-    
-    // Test: Erstelle einen simplen Test-Flow mit nur einem Passthrough
-    // und verbinde einen Producer direkt
-    if let Some(first_producer) = node.producers().first() {
-        log::info!("Found producer: {}, setting up test...", first_producer.name());
-        
-        // Erstelle einfachen Test-Flow
-        let mut test_flow = core::Flow::new("test_recording");
-        test_flow.add_processor(Box::new(core::processor::basic::PassThrough::new("test_passthrough")));
-        
-        // FileConsumer hinzufügen
-        let file_consumer = Box::new(core::consumer::file_writer::FileConsumer::new(
-            "test_recorder", "test_output.wav"
-        ));
-        test_flow.add_consumer(file_consumer);
-        
-        node.flows.push(test_flow);
-        
-        // Verbinde ersten Producer zum Test-Flow
-        if let Err(e) = node.connect_producer_to_flow(0, node.flows.len() - 1) {
-            log::error!("Failed to connect test: {}", e);
         }
     }
     
@@ -357,7 +328,7 @@ fn run_normal_mode() -> anyhow::Result<()> {
         ));
         demo_flow.add_consumer(file_consumer);
         
-        node.flows.push(demo_flow);
+        node.add_flow(demo_flow);
         if let Err(e) = node.connect_producer_to_flow(0, 0) {
             log::error!("Failed to connect demo: {}", e);
         }
@@ -392,7 +363,7 @@ fn run_normal_mode() -> anyhow::Result<()> {
             }
             
             for (i, f_status) in status.flow_status.iter().enumerate() {
-                if let Some(flow) = node.flows.get(i) {
+                if let Some(flow) = node.flows().get(i) {
                     log::info!("  Flow {} ('{}'): running={}, input_buffers={}, processor_buffers={}, output={}", 
                         i, flow.name, f_status.running, 
                         f_status.input_buffer_levels.len(),
@@ -408,3 +379,18 @@ fn run_normal_mode() -> anyhow::Result<()> {
     
     Ok(())
 }
+
+// Hilfsfunktion um mutable flows zu bekommen
+trait FlowsMut {
+    fn flows_mut(&mut self) -> &mut Vec<core::Flow>;
+}
+
+impl FlowsMut for core::AirliftNode {
+    fn flows_mut(&mut self) -> &mut Vec<core::Flow> {
+        &mut self.flows
+    }
+}
+EOF
+
+echo "main.rs mit Consumer-Unterstützung aktualisiert. Teste..."
+cargo run

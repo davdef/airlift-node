@@ -1,0 +1,112 @@
+use anyhow::Result;
+use crate::core::ringbuffer::AudioRingBuffer;
+
+pub trait Processor: Send + Sync {
+    fn name(&self) -> &str;
+    
+    fn process(&mut self, input_buffer: &AudioRingBuffer, output_buffer: &AudioRingBuffer) -> Result<()>;
+    
+    fn status(&self) -> ProcessorStatus;
+    
+    fn update_config(&mut self, config: serde_json::Value) -> Result<()>;
+}
+
+#[derive(Debug, Clone)]
+pub struct ProcessorStatus {
+    pub running: bool,
+    pub processing_rate_hz: f32,
+    pub latency_ms: f32,
+    pub errors: u64,
+}
+
+// Basis-Processors (können hier bleiben oder in processors/ verschoben werden)
+pub mod basic {
+    use super::*;
+    
+    pub struct PassThrough {
+        name: String,
+    }
+    
+    impl PassThrough {
+        pub fn new(name: &str) -> Self {
+            Self { name: name.to_string() }
+        }
+    }
+    
+    impl Processor for PassThrough {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        
+        fn process(&mut self, input_buffer: &AudioRingBuffer, output_buffer: &AudioRingBuffer) -> Result<()> {
+            let mut frames = 0;
+            while let Some(frame) = input_buffer.pop() {
+                log::debug!("Passthrough '{}': Lese Frame {} ({} samples)", 
+                    self.name, frames + 1, frame.samples.len());
+                output_buffer.push(frame);
+                frames += 1;
+            }
+            if frames > 0 {
+                log::debug!("Passthrough '{}': Verarbeitete {} Frames", self.name, frames);
+            }
+            Ok(())
+        }
+        
+        fn status(&self) -> ProcessorStatus {
+            ProcessorStatus {
+                running: true,
+                processing_rate_hz: 0.0,
+                latency_ms: 0.0,
+                errors: 0,
+            }
+        }
+        
+        fn update_config(&mut self, _config: serde_json::Value) -> Result<()> {
+            Ok(())
+        }
+    }
+    
+    pub struct Gain {
+        name: String,
+        gain: f32,
+    }
+    
+    impl Gain {
+        pub fn new(name: &str, gain: f32) -> Self {
+            Self { name: name.to_string(), gain }
+        }
+    }
+    
+    impl Processor for Gain {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        
+        fn process(&mut self, input_buffer: &AudioRingBuffer, output_buffer: &AudioRingBuffer) -> Result<()> {
+            while let Some(mut frame) = input_buffer.pop() {
+                for sample in frame.samples.iter_mut() {
+                    *sample = (*sample as f32 * self.gain).clamp(-32768.0, 32767.0) as i16;
+                }
+                output_buffer.push(frame);
+            }
+            Ok(())
+        }
+        
+        fn status(&self) -> ProcessorStatus {
+            ProcessorStatus {
+                running: true,
+                processing_rate_hz: 0.0,
+                latency_ms: 0.0,
+                errors: 0,
+            }
+        }
+        
+        fn update_config(&mut self, config: serde_json::Value) -> Result<()> {
+            if let Some(gain) = config.get("gain").and_then(|v| v.as_f64()) {
+                self.gain = gain as f32;
+                log::info!("Processor '{}' gain updated to {}", self.name, self.gain);
+            }
+            Ok(())
+        }
+    }
+}

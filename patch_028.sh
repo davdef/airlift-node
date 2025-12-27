@@ -1,3 +1,4 @@
+cat > src/main.rs << 'EOF'
 mod core;
 mod config;
 mod producers;
@@ -408,3 +409,7 @@ fn run_normal_mode() -> anyhow::Result<()> {
     
     Ok(())
 }
+EOF
+
+echo "main.rs aktualisiert mit Test-Flow. Teste..."
+cargo run

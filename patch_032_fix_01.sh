@@ -1,0 +1,348 @@
+#!/bin/bash
+# patch_032_fix.sh
+
+echo "=== Debug Buffer-Verbindung - Korrigierte Version ==="
+
+# Backup der Originaldateien
+cp src/core/node.rs src/core/node.rs.backup
+
+# 1. Ersetze connect_producer_to_flow manuell
+cat > /tmp/new_node_rs << 'EOF'
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
+use anyhow::Result;
+use log::{info, error, warn};
+
+use super::ringbuffer::AudioRingBuffer;
+use super::processor::{Processor, ProcessorStatus};
+use super::consumer::{Consumer, ConsumerStatus};
+
+pub struct Flow {
+    pub name: String,
+    pub input_buffers: Vec<Arc<AudioRingBuffer>>,
+    pub processor_buffers: Vec<Arc<AudioRingBuffer>>,
+    pub output_buffer: Arc<AudioRingBuffer>,
+    processors: Vec<Box<dyn Processor>>,
+    consumers: Vec<Box<dyn Consumer>>,
+    running: Arc<AtomicBool>,
+    thread_handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Flow {
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            input_buffers: Vec::new(),
+            processor_buffers: Vec::new(),
+            output_buffer: Arc::new(AudioRingBuffer::new(100)),
+            processors: Vec::new(),
+            consumers: Vec::new(),
+            running: Arc::new(AtomicBool::new(false)),
+            thread_handle: None,
+        }
+    }
+    
+    pub fn add_input_buffer(&mut self, buffer: Arc<AudioRingBuffer>) {
+        log::debug!("Flow '{}': add_input_buffer mit Buffer addr: {:?}", 
+            self.name, Arc::as_ptr(&buffer));
+        self.input_buffers.push(buffer);
+    }
+    
+    pub fn add_processor(&mut self, processor: Box<dyn Processor>) {
+        let buffer = Arc::new(AudioRingBuffer::new(100));
+        self.processor_buffers.push(buffer);
+        self.processors.push(processor);
+    }
+    
+    pub fn add_consumer(&mut self, mut consumer: Box<dyn Consumer>) {
+        let consumer_name = consumer.name().to_string();
+        consumer.attach_input_buffer(self.output_buffer.clone());
+        self.consumers.push(consumer);
+        info!("Flow '{}': Added consumer '{}'", self.name, consumer_name);
+    }
+    
+    pub fn start(&mut self) -> Result<()> {
+        info!("Flow '{}' starting...", self.name);
+        self.running.store(true, Ordering::SeqCst);
+        
+        // Starte Processing-Thread
+        let running = self.running.clone();
+        let input_buffers = self.input_buffers.clone();
+        let processor_buffers = self.processor_buffers.clone();
+        let output_buffer = self.output_buffer.clone();
+        let flow_name = self.name.clone();
+        
+        // Prozessoren für Thread vorbereiten (vereinfacht)
+        let mut thread_processors: Vec<Box<dyn Processor>> = Vec::new();
+        for processor in &self.processors {
+            // Einfache PassThrough als Platzhalter (später echte Cloning-Logik)
+            thread_processors.push(Box::new(super::processor::basic::PassThrough::new(processor.name())));
+        }
+        
+        let handle = std::thread::spawn(move || {
+            Self::processing_loop(
+                running,
+                input_buffers,
+                processor_buffers,
+                output_buffer,
+                thread_processors,
+                &flow_name,
+            );
+        });
+        
+        self.thread_handle = Some(handle);
+        
+        // Consumer starten
+        for consumer in &mut self.consumers {
+            if let Err(e) = consumer.start() {
+                warn!("Failed to start consumer '{}': {}", consumer.name(), e);
+            }
+        }
+        
+        Ok(())
+    }
+    
+    fn processing_loop(
+        running: Arc<AtomicBool>,
+        input_buffers: Vec<Arc<AudioRingBuffer>>,
+        processor_buffers: Vec<Arc<AudioRingBuffer>>,
+        output_buffer: Arc<AudioRingBuffer>,
+        mut processors: Vec<Box<dyn Processor>>,
+        flow_name: &str,
+    ) {
+        info!("Flow '{}' processing thread started", flow_name);
+        
+        let mut iteration = 0;
+        while running.load(Ordering::Relaxed) {
+            iteration += 1;
+            
+            if input_buffers.is_empty() {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
+            }
+            
+            // Einfacher Debug: Zeige Buffer-Status alle 20 Iterationen
+            if iteration % 20 == 0 {
+                let total_frames: usize = input_buffers.iter().map(|b| b.len()).sum();
+                log::debug!("Flow '{}': Input buffers haben {} Frames", flow_name, total_frames);
+                
+                for (i, buf) in input_buffers.iter().enumerate() {
+                    if buf.len() > 0 {
+                        log::debug!("  Buffer {}: {} Frames (addr: {:?})", i, buf.len(), Arc::as_ptr(buf));
+                    }
+                }
+            }
+            
+            // Einfache Pipeline-Verarbeitung
+            for (i, processor) in processors.iter_mut().enumerate() {
+                let input = if i == 0 {
+                    &input_buffers[0]
+                } else {
+                    &processor_buffers[i - 1]
+                };
+                
+                let output = if i < processor_buffers.len() {
+                    &processor_buffers[i]
+                } else {
+                    &output_buffer
+                };
+                
+                if let Err(e) = processor.process(input, output) {
+                    log::error!("Processor '{}' error: {}", processor.name(), e);
+                }
+            }
+            
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        
+        info!("Flow '{}' processing thread stopped", flow_name);
+    }
+    
+    pub fn stop(&mut self) -> Result<()> {
+        info!("Flow '{}' stopping...", self.name);
+        self.running.store(false, Ordering::SeqCst);
+        
+        // Consumer stoppen
+        for consumer in &mut self.consumers {
+            if let Err(e) = consumer.stop() {
+                warn!("Error stopping consumer '{}': {}", consumer.name(), e);
+            }
+        }
+        
+        if let Some(handle) = self.thread_handle.take() {
+            if let Err(e) = handle.join() {
+                log::error!("Failed to join flow thread: {:?}", e);
+            }
+        }
+        
+        Ok(())
+    }
+    
+    pub fn status(&self) -> FlowStatus {
+        let processor_status: Vec<ProcessorStatus> = 
+            self.processors.iter().map(|p| p.status()).collect();
+        
+        let consumer_status: Vec<ConsumerStatus> = 
+            self.consumers.iter().map(|c| c.status()).collect();
+        
+        let input_buffer_levels: Vec<usize> = 
+            self.input_buffers.iter().map(|b| b.len()).collect();
+        
+        let processor_buffer_levels: Vec<usize> = 
+            self.processor_buffers.iter().map(|b| b.len()).collect();
+        
+        FlowStatus {
+            running: self.running.load(Ordering::Relaxed),
+            processor_status,
+            consumer_status,
+            input_buffer_levels,
+            processor_buffer_levels,
+            output_buffer_level: self.output_buffer.len(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct FlowStatus {
+    pub running: bool,
+    pub processor_status: Vec<ProcessorStatus>,
+    pub consumer_status: Vec<ConsumerStatus>,
+    pub input_buffer_levels: Vec<usize>,
+    pub processor_buffer_levels: Vec<usize>,
+    pub output_buffer_level: usize,
+}
+
+pub struct AirliftNode {
+    running: Arc<AtomicBool>,
+    start_time: Instant,
+    producers: Vec<Box<dyn super::Producer>>,
+    producer_buffers: Vec<Arc<AudioRingBuffer>>,
+    pub flows: Vec<Flow>,
+}
+
+impl AirliftNode {
+    pub fn new() -> Self {
+        Self {
+            running: Arc::new(AtomicBool::new(false)),
+            start_time: Instant::now(),
+            producers: Vec::new(),
+            producer_buffers: Vec::new(),
+            flows: Vec::new(),
+        }
+    }
+    
+    pub fn add_producer(&mut self, producer: Box<dyn super::Producer>) {
+        let buffer = Arc::new(AudioRingBuffer::new(100));
+        
+        let mut producer = producer;
+        producer.attach_ring_buffer(buffer.clone());
+        
+        self.producer_buffers.push(buffer);
+        self.producers.push(producer);
+    }
+    
+    pub fn add_flow(&mut self, flow: Flow) {
+        self.flows.push(flow);
+    }
+    
+    pub fn connect_producer_to_flow(&mut self, producer_index: usize, flow_index: usize) -> Result<()> {
+        if producer_index < self.producer_buffers.len() && flow_index < self.flows.len() {
+            let buffer = self.producer_buffers[producer_index].clone();
+            log::debug!("connect_producer_to_flow: Producer buffer addr: {:?}, Flow bekommt clone", 
+                Arc::as_ptr(&self.producer_buffers[producer_index]));
+            self.flows[flow_index].add_input_buffer(buffer);
+            info!("Connected producer {} to flow {}", producer_index, flow_index);
+            Ok(())
+        } else {
+            anyhow::bail!("Invalid producer or flow index");
+        }
+    }
+    
+    pub fn start(&mut self) -> Result<()> {
+        info!("Node starting...");
+        self.running.store(true, Ordering::SeqCst);
+        
+        for (i, producer) in self.producers.iter_mut().enumerate() {
+            info!("Starting producer {}: {}", i, producer.name());
+            if let Err(e) = producer.start() {
+                error!("Failed to start producer {}: {}", producer.name(), e);
+            }
+        }
+        
+        for flow in &mut self.flows {
+            if let Err(e) = flow.start() {
+                warn!("Failed to start flow {}: {}", flow.name, e);
+            }
+        }
+        
+        Ok(())
+    }
+    
+    pub fn stop(&mut self) -> Result<()> {
+        info!("Node stopping...");
+        self.running.store(false, Ordering::SeqCst);
+        
+        for flow in &mut self.flows {
+            if let Err(e) = flow.stop() {
+                warn!("Error stopping flow {}: {}", flow.name, e);
+            }
+        }
+        
+        for producer in &mut self.producers {
+            info!("Stopping producer: {}", producer.name());
+            if let Err(e) = producer.stop() {
+                warn!("Error stopping producer {}: {}", producer.name(), e);
+            }
+        }
+        
+        Ok(())
+    }
+    
+    pub fn status(&self) -> NodeStatus {
+        let producer_status: Vec<super::ProducerStatus> = 
+            self.producers.iter().map(|p| p.status()).collect();
+        
+        let flow_status: Vec<FlowStatus> = 
+            self.flows.iter().map(|f| f.status()).collect();
+        
+        NodeStatus {
+            running: self.running.load(Ordering::Relaxed),
+            uptime_seconds: self.start_time.elapsed().as_secs(),
+            producers: self.producers.len(),
+            flows: self.flows.len(),
+            producer_status,
+            flow_status,
+        }
+    }
+    
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::Relaxed)
+    }
+    
+    pub fn producers(&self) -> &[Box<dyn super::Producer>] {
+        &self.producers
+    }
+    
+    pub fn flows(&self) -> &[Flow] {
+        &self.flows
+    }
+}
+
+#[derive(Debug)]
+pub struct NodeStatus {
+    pub running: bool,
+    pub uptime_seconds: u64,
+    pub producers: usize,
+    pub flows: usize,
+    pub producer_status: Vec<super::ProducerStatus>,
+    pub flow_status: Vec<FlowStatus>,
+}
+EOF
+
+# Überschreibe die komplette node.rs mit Debug-Version
+cp /tmp/new_node_rs src/core/node.rs
+
+echo "✅ node.rs komplett mit Debug-Logs ersetzt"
+echo "🔧 Starte Test mit: RUST_LOG=debug cargo run 2>&1 | grep -E '(connect|add_input|Flow.*Frames|Buffer.*addr)'"
+echo "   oder volle Ausgabe: RUST_LOG=debug cargo run"

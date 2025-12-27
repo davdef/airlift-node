@@ -1,0 +1,8 @@
+node_name = "test"
+
+[producers.test_mic]
+type = "alsa_input"
+enabled = true
+device = "default"
+channels = 1
+sample_rate = 44100
