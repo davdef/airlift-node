@@ -30,6 +30,7 @@ pub mod file_writer {
         name: String,
         running: Arc<AtomicBool>,
         input_buffer: Option<Arc<AudioRingBuffer>>,
+        reader_id: String,
         output_path: String,
         thread_handle: Option<std::thread::JoinHandle<()>>,
         frames_processed: Arc<AtomicU64>,
@@ -42,6 +43,7 @@ pub mod file_writer {
                 name: name.to_string(),
                 running: Arc::new(AtomicBool::new(false)),
                 input_buffer: None,
+                reader_id: format!("consumer:{}", name),
                 output_path: output_path.to_string(),
                 thread_handle: None,
                 frames_processed: Arc::new(AtomicU64::new(0)),
@@ -103,6 +105,7 @@ pub mod file_writer {
             let output_path = self.output_path.clone();
             let frames_processed = self.frames_processed.clone();
             let bytes_written = self.bytes_written.clone();
+            let reader_id = self.reader_id.clone();
             
             let handle = std::thread::spawn(move || {
                 match File::create(&output_path) {
@@ -118,7 +121,7 @@ pub mod file_writer {
                         
                         while running.load(Ordering::Relaxed) {
                             if let Some(buffer) = &input_buffer {
-                                if let Some(frame) = buffer.pop() {
+                                if let Some(frame) = buffer.pop_for_reader(&reader_id) {
                                     for sample in &frame.samples {
                                         if let Err(e) = writer.write_all(&sample.to_le_bytes()) {
                                             log::error!("Write error: {}", e);

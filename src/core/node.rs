@@ -11,6 +11,7 @@ use super::consumer::{Consumer, ConsumerStatus};
 pub struct Flow {
     pub name: String,
     pub input_buffers: Vec<Arc<AudioRingBuffer>>,
+    pub input_merge_buffer: Arc<AudioRingBuffer>,
     pub processor_buffers: Vec<Arc<AudioRingBuffer>>,
     pub output_buffer: Arc<AudioRingBuffer>,
     processors: Vec<Box<dyn Processor>>,
@@ -24,6 +25,7 @@ impl Flow {
         Self {
             name: name.to_string(),
             input_buffers: Vec::new(),
+            input_merge_buffer: Arc::new(AudioRingBuffer::new(1000)),
             processor_buffers: Vec::new(),
             output_buffer: Arc::new(AudioRingBuffer::new(1000)),
             processors: Vec::new(),
@@ -59,9 +61,11 @@ impl Flow {
         // Starte Processing-Thread
         let running = self.running.clone();
         let input_buffers = self.input_buffers.clone();
+        let input_merge_buffer = self.input_merge_buffer.clone();
         let processor_buffers = self.processor_buffers.clone();
         let output_buffer = self.output_buffer.clone();
         let flow_name = self.name.clone();
+        let flow_reader_id = format!("flow:{}:input", self.name);
         
         // Prozessoren für Thread vorbereiten (vereinfacht)
         let mut thread_processors: Vec<Box<dyn Processor>> = Vec::new();
@@ -74,10 +78,12 @@ impl Flow {
             Self::processing_loop(
                 running,
                 input_buffers,
+                input_merge_buffer,
                 processor_buffers,
                 output_buffer,
                 thread_processors,
                 &flow_name,
+                &flow_reader_id,
             );
         });
         
@@ -96,10 +102,12 @@ impl Flow {
     fn processing_loop(
         running: Arc<AtomicBool>,
         input_buffers: Vec<Arc<AudioRingBuffer>>,
+        input_merge_buffer: Arc<AudioRingBuffer>,
         processor_buffers: Vec<Arc<AudioRingBuffer>>,
         output_buffer: Arc<AudioRingBuffer>,
         mut processors: Vec<Box<dyn Processor>>,
         flow_name: &str,
+        flow_reader_id: &str,
     ) {
         info!("Flow '{}' processing thread started", flow_name);
         
@@ -110,6 +118,12 @@ impl Flow {
             if input_buffers.is_empty() {
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 continue;
+            }
+            
+            for buffer in &input_buffers {
+                while let Some(frame) = buffer.pop_for_reader(flow_reader_id) {
+                    input_merge_buffer.push(frame);
+                }
             }
             
             // Einfacher Debug: Zeige Buffer-Status alle 20 Iterationen
@@ -127,7 +141,7 @@ impl Flow {
             // Einfache Pipeline-Verarbeitung
             for (i, processor) in processors.iter_mut().enumerate() {
                 let input = if i == 0 {
-                    &input_buffers[0]
+                    &input_merge_buffer
                 } else {
                     &processor_buffers[i - 1]
                 };
