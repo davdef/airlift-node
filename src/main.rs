@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .format_timestamp_millis()
@@ -138,43 +137,49 @@ fn run_normal_mode() -> anyhow::Result<()> {
             continue;
         }
         
-        match producer_cfg.producer_type.as_str() {
-            "file" => {
-                let producer = producers::file::FileProducer::new(name, producer_cfg);
+match producer_cfg.producer_type.as_str() {
+    "file" => {
+        let producer = producers::file::FileProducer::new(name, producer_cfg);
+        node.add_producer(Box::new(producer));
+        log::info!("Added file producer: {}", name);
+    }
+    "alsa_input" => {
+        match producers::alsa::AlsaProducer::new(name, producer_cfg) {
+            Ok(producer) => {
                 node.add_producer(Box::new(producer));
-                log::info!("Added file producer: {}", name);
+                log::info!("Added ALSA input producer: {}", name);
             }
-            "alsa_input" => {
-                match producers::alsa::AlsaProducer::new(name, producer_cfg) {
-                    Ok(producer) => {
-                        node.add_producer(Box::new(producer));
-                        log::info!("Added ALSA input producer: {}", name);
-                    }
-                    Err(e) => {
-                        log::error!("Failed to create ALSA producer {}: {}", name, e);
-                    }
-                }
+            Err(e) => {
+                log::error!("Failed to create ALSA producer {}: {}", name, e);
             }
-            "alsa_output" => {
-                match producers::alsa::AlsaOutputCapture::new(name, producer_cfg) {
-                    Ok(producer) => {
-                        node.add_producer(Box::new(producer));
-                        log::info!("Added ALSA output capture: {}", name);
-                    }
-                    Err(e) => {
-                        log::error!("Failed to create output capture {}: {}", name, e);
-                    }
-                }
+        }
+    }
+    "alsa_output" => {
+        match producers::alsa::AlsaOutputCapture::new(name, producer_cfg) {
+            Ok(producer) => {
+                node.add_producer(Box::new(producer));
+                log::info!("Added ALSA output capture: {}", name);
             }
+            Err(e) => {
+                log::error!("Failed to create output capture {}: {}", name, e);
+            }
+        }
+    }
+
 "sine" => {
-    let freq: f32 = 440.0;
+    let freq: f32 = producer_cfg.config.get("frequency")
+        .and_then(|v: &serde_json::Value| v.as_f64())
+        .map(|f| f as f32)
+        .unwrap_or(440.0);
     let rate = producer_cfg.sample_rate.unwrap_or(48000);
     let producer = producers::sine::SineProducer::new(name, freq, rate);
     node.add_producer(Box::new(producer));
-    log::info!("Added sine producer: {}", name);
+    log::info!("Added sine producer: {} ({} Hz)", name, freq);
 }
-            _ => log::error!("Unknown producer type: {}", producer_cfg.producer_type),
-        }
+
+    _ => log::error!("Unknown producer type: {}", producer_cfg.producer_type),
+}
+
     }
     
     // Flows aus Config erstellen und Processors hinzufügen
@@ -192,39 +197,49 @@ fn run_normal_mode() -> anyhow::Result<()> {
                     continue;
                 }
                 
-                match processor_cfg.processor_type.as_str() {
-                    "passthrough" => {
-                        let processor = core::processor::basic::PassThrough::new(processor_name);
-                        flow.add_processor(Box::new(processor));
-                        log::info!("Added passthrough processor '{}' to flow '{}'", 
-                            processor_name, flow_name);
-                    }
-                    "gain" => {
-                        let gain = processor_cfg.config.get("gain")
-                            .and_then(|v| v.as_f64())
-                            .unwrap_or(1.0) as f32;
-                        let processor = core::processor::basic::Gain::new(processor_name, gain);
-                        flow.add_processor(Box::new(processor));
-                        log::info!("Added gain processor '{}' (gain: {}) to flow '{}'", 
-                            processor_name, gain, flow_name);
-                    }
-                    "mixer" => {
-                        let mut mixer = processors::mixer::Mixer::new(processor_name);
-                        
-                        // Mixer-Konfiguration anwenden
-                        if let Some(sample_rate) = processor_cfg.config.get("sample_rate") {
-                            if let Some(sr) = sample_rate.as_u64() {
-                                mixer.set_output_format(sr as u32, 2); // Default 2 channels
-                            }
-                        }
-                        
-                        flow.add_processor(Box::new(mixer));
-                        log::info!("Added mixer processor '{}' to flow '{}'", 
-                            processor_name, flow_name);
-                    }
-                    _ => log::error!("Unknown processor type for '{}': {}", 
-                        processor_name, processor_cfg.processor_type),
-                }
+match processor_cfg.processor_type.as_str() {
+    "passthrough" => {
+        let processor = core::processor::basic::PassThrough::new(processor_name);
+        flow.add_processor(Box::new(processor));
+        log::info!("Added passthrough processor '{}' to flow '{}'", 
+            processor_name, flow_name);
+    }
+    "gain" => {
+        let gain = processor_cfg.config.get("gain")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(1.0) as f32;
+        let processor = core::processor::basic::Gain::new(processor_name, gain);
+        flow.add_processor(Box::new(processor));
+        log::info!("Added gain processor '{}' (gain: {}) to flow '{}'", 
+            processor_name, gain, flow_name);
+    }
+"mixer" => {
+    // Mixer aus Config parsen
+    match serde_json::from_value::<processors::MixerConfig>(
+        serde_json::to_value(&processor_cfg.config).unwrap_or_default()
+    ) {
+        Ok(mixer_config) => {
+            let mixer = processors::Mixer::from_config(processor_name, &mixer_config);
+            
+            // Mixer zu Flow hinzufügen
+            flow.add_processor(Box::new(mixer));
+            
+            log::info!("Added mixer processor '{}' with {} inputs to flow '{}'", 
+                processor_name, mixer_config.inputs.len(), flow_name);
+        }
+        Err(e) => {
+            log::error!("Failed to parse mixer config for '{}': {}", processor_name, e);
+            // Fallback: einfachen Mixer erstellen
+            let mixer = processors::Mixer::new(processor_name);
+            flow.add_processor(Box::new(mixer));
+            log::warn!("Created fallback mixer '{}'", processor_name);
+        }
+    }
+}
+    _ => log::error!("Unknown processor type for '{}': {}", 
+        processor_name, processor_cfg.processor_type),
+}
+
             }
         }
         
@@ -350,6 +365,7 @@ fn run_normal_mode() -> anyhow::Result<()> {
             channels: Some(2),
             sample_rate: Some(48000),
             loop_audio: Some(true),
+            config: std::collections::HashMap::new(),
         };
         let demo_producer = producers::file::FileProducer::new("demo", &demo_cfg);
         node.add_producer(Box::new(demo_producer));

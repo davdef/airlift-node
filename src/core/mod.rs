@@ -1,10 +1,12 @@
 pub mod device_scanner;
+pub mod buffer_registry;
 pub mod ringbuffer;
 pub mod timestamp;
 pub mod processor;
 pub mod node;
 pub mod consumer;
 
+pub use buffer_registry::BufferRegistry;
 pub use ringbuffer::*;
 pub use timestamp::*;
 pub use node::{AirliftNode, Flow};
@@ -25,4 +27,29 @@ pub struct ProducerStatus {
     pub samples_processed: u64,
     pub errors: u64,
     pub buffer_stats: Option<RingBufferStats>,
+}
+
+pub mod logging;
+pub use logging::{LogContext, ComponentLogger};
+
+// Am ENDE von src/core/mod.rs
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_producer_status() {
+        let status = ProducerStatus {
+            running: true,
+            connected: true,
+            samples_processed: 1000,
+            errors: 0,
+            buffer_stats: None,
+        };
+        
+        assert!(status.running);
+        assert!(status.connected);
+        assert_eq!(status.samples_processed, 1000);
+    }
 }

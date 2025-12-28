@@ -182,7 +182,7 @@ impl AlsaOutputCapture {
                         
                         if let Some(rb) = &ring_buffer {
                             let frame = crate::core::PcmFrame {
-                                utc_ns: crate::core::utc_ns_now(),
+                                utc_ns: crate::core::timestamp::utc_ns_now(),
                                 samples: chunk_samples.clone(),
                                 sample_rate,
                                 channels: channels as u8,
@@ -225,7 +225,7 @@ impl AlsaOutputCapture {
                 
                 if let Some(rb) = &ring_buffer {
                     let frame = crate::core::PcmFrame {
-                        utc_ns: crate::core::utc_ns_now(),
+                        utc_ns: crate::core::timestamp::utc_ns_now(),
                         samples: chunk_samples,
                         sample_rate,
                         channels: channels as u8,

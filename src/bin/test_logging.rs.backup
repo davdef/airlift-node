@@ -1,0 +1,59 @@
+// src/bin/test_logging.rs - NEUE VERSION
+fn main() {
+    // Setup logging
+    env_logger::Builder::from_env(
+        env_logger::Env::default()
+            .default_filter_or("info")
+    )
+    .format_timestamp_micros()
+    .format_module_path(false)
+    .init();
+    
+    println!("=== Simple Logging Test ===\n");
+    
+    test_simple();
+}
+
+fn test_simple() {
+    // KEINE use-Statements - direkte Pfade
+    let buffer = airlift_node::core::ringbuffer::AudioRingBuffer::new(10);
+    
+    println!("Buffer created with capacity: {}", buffer.stats().capacity);
+    
+    // Einfacher Frame
+    let frame = airlift_node::core::ringbuffer::PcmFrame {
+        utc_ns: 123456789,
+        samples: vec![1, 2, 3, 4, 5, 6],
+        sample_rate: 48000,
+        channels: 2,
+    };
+    
+    buffer.push(frame);
+    println!("Frame pushed, buffer length: {}", buffer.len());
+    
+    if let Some(read_frame) = buffer.pop() {
+        println!("Frame popped, {} samples", read_frame.samples.len());
+    }
+    
+    println!("\nTest 2: Multi-reader");
+    let buffer = airlift_node::core::ringbuffer::AudioRingBuffer::new(20);
+    
+    // Zwei Frames
+    for i in 0..2 {
+        let frame = airlift_node::core::ringbuffer::PcmFrame {
+            utc_ns: i as u64 * 1000,
+            samples: vec![i as i16; 48],
+            sample_rate: 48000,
+            channels: 2,
+        };
+        buffer.push(frame);
+    }
+    
+    let reader1_frame = buffer.pop_for_reader("reader1");
+    let reader2_frame = buffer.pop_for_reader("reader2");
+    
+    println!("Reader 1 got frame: {}", reader1_frame.is_some());
+    println!("Reader 2 got frame: {}", reader2_frame.is_some());
+    
+    println!("\n=== All tests passed! ===");
+}

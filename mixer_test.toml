@@ -1,20 +1,14 @@
-# config.toml Beispiel
-[node]
-name = "audio_mixer"
+node_name = "mixer_test"
 
-[producers.mic]
-type = "alsa_input"
+[producers.sine1]
+type = "sine"
 enabled = true
-device = "hw:0,0"
 sample_rate = 48000
-channels = 2
 
-[producers.system]
-type = "alsa_output"
+[producers.sine2]
+type = "sine"
 enabled = true
-device = "pulse"
-sample_rate = 48000
-channels = 2
+sample_rate = 44100
 
 [processors.main_mixer]
 type = "mixer"
@@ -27,24 +21,24 @@ master_gain = 0.8
 auto_connect = true
 
 [[processors.main_mixer.config.inputs]]
-name = "microphone"
-source = "producer:mic"  # Buffer-Name in Registry
-gain = 0.7
+name = "sine_440"
+source = "producer:sine1"
+gain = 0.5
 enabled = true
 
 [[processors.main_mixer.config.inputs]]
-name = "system_audio"
-source = "producer:system"
-gain = 0.4
+name = "sine_880"
+source = "producer:sine2"
+gain = 0.3
 enabled = true
 
-[flows.main]
+[flows.mixer_test]
 enabled = true
-inputs = ["mic", "system"]  # Diese gehen direkt in den Mixer
+inputs = ["sine1", "sine2"]
 processors = ["main_mixer"]
 outputs = ["recorder"]
 
 [consumers.recorder]
 type = "file"
 enabled = true
-path = "mixed_output.wav"
+path = "mixed_sines.wav"

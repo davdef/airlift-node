@@ -9,6 +9,21 @@ pub trait Processor: Send + Sync {
     fn status(&self) -> ProcessorStatus;
     
     fn update_config(&mut self, config: serde_json::Value) -> Result<()>;
+    
+    fn as_any(&self) -> &dyn std::any::Any
+    where
+        Self: Sized + 'static,
+    {
+        self
+    }
+    
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any
+    where
+        Self: Sized + 'static,
+    {
+        self
+    }
+
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +79,15 @@ pub mod basic {
         fn update_config(&mut self, _config: serde_json::Value) -> Result<()> {
             Ok(())
         }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     }
     
     pub struct Gain {
@@ -108,5 +132,14 @@ pub mod basic {
             }
             Ok(())
         }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+    
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
     }
 }

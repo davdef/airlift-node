@@ -12,6 +12,8 @@ pub struct ProducerConfig {
     pub channels: Option<u8>,
     pub sample_rate: Option<u32>,
     pub loop_audio: Option<bool>,
+    #[serde(default)]
+    pub config: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -75,6 +77,21 @@ impl Default for Config {
             processors: HashMap::new(),
             consumers: HashMap::new(),
             flows: HashMap::new(),
+        }
+    }
+}
+
+impl Default for ProducerConfig {
+    fn default() -> Self {
+        Self {
+            producer_type: "file".to_string(),
+            enabled: true,
+            device: None,
+            path: None,
+            channels: Some(2),
+            sample_rate: Some(48000),
+            loop_audio: Some(false),
+            config: HashMap::new(), // ← Wichtig!
         }
     }
 }

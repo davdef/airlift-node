@@ -2,11 +2,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use anyhow::Result;
-use log::{info, error, warn};
 
 use super::ringbuffer::AudioRingBuffer;
 use super::processor::{Processor, ProcessorStatus};
 use super::consumer::{Consumer, ConsumerStatus};
+use super::BufferRegistry;
+use crate::core::logging::ComponentLogger;
 
 pub struct Flow {
     pub name: String,
@@ -22,7 +23,7 @@ pub struct Flow {
 
 impl Flow {
     pub fn new(name: &str) -> Self {
-        Self {
+        let flow = Self {
             name: name.to_string(),
             input_buffers: Vec::new(),
             input_merge_buffer: Arc::new(AudioRingBuffer::new(1000)),
@@ -32,30 +33,54 @@ impl Flow {
             consumers: Vec::new(),
             running: Arc::new(AtomicBool::new(false)),
             thread_handle: None,
-        }
+        };
+        
+        flow.info(&format!("Flow '{}' created", name));
+        flow
     }
     
     pub fn add_input_buffer(&mut self, buffer: Arc<AudioRingBuffer>) {
-        log::debug!("Flow '{}': add_input_buffer mit Buffer addr: {:?}", 
-            self.name, Arc::as_ptr(&buffer));
+        let buffer_addr = Arc::as_ptr(&buffer);
+        let capacity = buffer.stats().capacity;
+        
         self.input_buffers.push(buffer);
+        
+        // Jetzt können wir loggen, da mutable borrow beendet ist
+        self.info(&format!(
+            "add_input_buffer: buffer addr={:?}, capacity={}",
+            buffer_addr, capacity
+        ));
     }
     
     pub fn add_processor(&mut self, processor: Box<dyn Processor>) {
+        let processor_name = processor.name().to_string();
         let buffer = Arc::new(AudioRingBuffer::new(1000));
+        
         self.processor_buffers.push(buffer);
         self.processors.push(processor);
+        
+        // Logging nach mutable borrow
+        self.info(&format!("Added processor '{}'", processor_name));
     }
     
     pub fn add_consumer(&mut self, mut consumer: Box<dyn Consumer>) {
         let consumer_name = consumer.name().to_string();
         consumer.attach_input_buffer(self.output_buffer.clone());
+        
         self.consumers.push(consumer);
-        info!("Flow '{}': Added consumer '{}'", self.name, consumer_name);
+        
+        // Logging nach mutable borrow
+        self.info(&format!("Added consumer '{}'", consumer_name));
     }
     
     pub fn start(&mut self) -> Result<()> {
-        info!("Flow '{}' starting...", self.name);
+        self.info("Starting flow...");
+        
+        if self.running.load(Ordering::Relaxed) {
+            self.warn("Flow already running");
+            return Ok(());
+        }
+        
         self.running.store(true, Ordering::SeqCst);
         
         // Starte Processing-Thread
@@ -67,10 +92,9 @@ impl Flow {
         let flow_name = self.name.clone();
         let flow_reader_id = format!("flow:{}:input", self.name);
         
-        // Prozessoren für Thread vorbereiten (vereinfacht)
+        // Prozessoren für Thread vorbereiten
         let mut thread_processors: Vec<Box<dyn Processor>> = Vec::new();
         for processor in &self.processors {
-            // Einfache PassThrough als Platzhalter (später echte Cloning-Logik)
             thread_processors.push(Box::new(super::processor::basic::PassThrough::new(processor.name())));
         }
         
@@ -89,11 +113,31 @@ impl Flow {
         
         self.thread_handle = Some(handle);
         
-        // Consumer starten
-        for consumer in &mut self.consumers {
+        // Consumer starten - Namen vorher sammeln
+        let consumer_names: Vec<String> = self.consumers.iter().map(|c| c.name().to_string()).collect();
+        let mut start_errors = Vec::new();
+        
+        for (i, consumer) in self.consumers.iter_mut().enumerate() {
+            let consumer_name = &consumer_names[i];
             if let Err(e) = consumer.start() {
-                warn!("Failed to start consumer '{}': {}", consumer.name(), e);
+                start_errors.push((consumer_name.clone(), e));
             }
+        }
+        
+        // Jetzt loggen (nach mutable borrow)
+        for (consumer_name, error) in &start_errors {
+            self.warn(&format!("Failed to start consumer '{}': {}", consumer_name, error));
+        }
+        
+        let successful_starts = consumer_names.len() - start_errors.len();
+        if successful_starts > 0 {
+            self.info(&format!("{} consumer(s) started successfully", successful_starts));
+        }
+        
+        if start_errors.is_empty() {
+            self.info("Flow started successfully");
+        } else {
+            self.warn(&format!("Flow started with {} error(s)", start_errors.len()));
         }
         
         Ok(())
@@ -109,7 +153,10 @@ impl Flow {
         flow_name: &str,
         flow_reader_id: &str,
     ) {
-        info!("Flow '{}' processing thread started", flow_name);
+        // Erstelle einen Logger für den Thread
+        let flow_logger = FlowLogger { name: flow_name.to_string() };
+        flow_logger.info(&format!("Processing thread started with {} input buffers", 
+            input_buffers.len()));
         
         let mut iteration = 0;
         while running.load(Ordering::Relaxed) {
@@ -120,22 +167,26 @@ impl Flow {
                 continue;
             }
             
+            // Sammle Frames von allen Input-Buffern
+            let mut frames_collected = 0;
             for buffer in &input_buffers {
                 while let Some(frame) = buffer.pop_for_reader(flow_reader_id) {
                     input_merge_buffer.push(frame);
+                    frames_collected += 1;
                 }
             }
             
-            // Einfacher Debug: Zeige Buffer-Status alle 20 Iterationen
-            if iteration % 20 == 0 {
+            // Log alle 100 Iterationen
+            if iteration % 100 == 0 {
                 let total_frames: usize = input_buffers.iter().map(|b| b.len()).sum();
-                log::debug!("Flow '{}': Input buffers haben {} Frames", flow_name, total_frames);
+                let total_available: usize = input_buffers.iter()
+                    .map(|b| b.available_for_reader(flow_reader_id))
+                    .sum();
                 
-                for (i, buf) in input_buffers.iter().enumerate() {
-                    if buf.len() > 0 {
-                        log::debug!("  Buffer {}: {} Frames (addr: {:?})", i, buf.len(), Arc::as_ptr(buf));
-                    }
-                }
+                flow_logger.debug(&format!(
+                    "Iteration {}: collected={}, total_frames={}, available={}, processors={}",
+                    iteration, frames_collected, total_frames, total_available, processors.len()
+                ));
             }
             
             // Einfache Pipeline-Verarbeitung
@@ -153,31 +204,51 @@ impl Flow {
                 };
                 
                 if let Err(e) = processor.process(input, output) {
-                    log::error!("Processor '{}' error: {}", processor.name(), e);
+                    flow_logger.error(&format!("Processor '{}' error: {}", processor.name(), e));
                 }
             }
             
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         
-        info!("Flow '{}' processing thread stopped", flow_name);
+        flow_logger.info("Processing thread stopped");
     }
     
     pub fn stop(&mut self) -> Result<()> {
-        info!("Flow '{}' stopping...", self.name);
+        self.info("Stopping flow...");
         self.running.store(false, Ordering::SeqCst);
         
-        // Consumer stoppen
-        for consumer in &mut self.consumers {
+        // Consumer stoppen - Namen vorher sammeln
+        let consumer_names: Vec<String> = self.consumers.iter().map(|c| c.name().to_string()).collect();
+        let mut stop_errors = Vec::new();
+        
+        for (i, consumer) in self.consumers.iter_mut().enumerate() {
+            let consumer_name = &consumer_names[i];
             if let Err(e) = consumer.stop() {
-                warn!("Error stopping consumer '{}': {}", consumer.name(), e);
+                stop_errors.push((consumer_name.clone(), e));
             }
+        }
+        
+        // Jetzt loggen (nach mutable borrow)
+        for (consumer_name, error) in &stop_errors {
+            self.warn(&format!("Error stopping consumer '{}': {}", consumer_name, error));
+        }
+        
+        let successful_stops = consumer_names.len() - stop_errors.len();
+        if successful_stops > 0 {
+            self.info(&format!("{} consumer(s) stopped successfully", successful_stops));
         }
         
         if let Some(handle) = self.thread_handle.take() {
             if let Err(e) = handle.join() {
-                log::error!("Failed to join flow thread: {:?}", e);
+                self.error(&format!("Failed to join flow thread: {:?}", e));
             }
+        }
+        
+        if stop_errors.is_empty() {
+            self.info("Flow stopped successfully");
+        } else {
+            self.warn(&format!("Flow stopped with {} error(s)", stop_errors.len()));
         }
         
         Ok(())
@@ -207,6 +278,24 @@ impl Flow {
     }
 }
 
+// Helper struct für Thread-Logging
+struct FlowLogger {
+    name: String,
+}
+
+impl crate::core::logging::ComponentLogger for FlowLogger {
+    fn log_context(&self) -> crate::core::logging::LogContext {
+        crate::core::logging::LogContext::new("Flow", &self.name)
+    }
+}
+
+// Implementierung des ComponentLogger Traits für Flow
+impl crate::core::logging::ComponentLogger for Flow {
+    fn log_context(&self) -> crate::core::logging::LogContext {
+        crate::core::logging::LogContext::new("Flow", &self.name)
+    }
+}
+
 #[derive(Debug)]
 pub struct FlowStatus {
     pub running: bool,
@@ -223,81 +312,223 @@ pub struct AirliftNode {
     producers: Vec<Box<dyn super::Producer>>,
     producer_buffers: Vec<Arc<AudioRingBuffer>>,
     pub flows: Vec<Flow>,
+    buffer_registry: Arc<BufferRegistry>,
 }
 
 impl AirliftNode {
     pub fn new() -> Self {
-        Self {
+        let node = Self {
             running: Arc::new(AtomicBool::new(false)),
             start_time: Instant::now(),
             producers: Vec::new(),
             producer_buffers: Vec::new(),
             flows: Vec::new(),
-        }
+            buffer_registry: Arc::new(BufferRegistry::new()),
+        };
+        
+        node.info("AirliftNode created with buffer registry");
+        node
     }
     
-    pub fn add_producer(&mut self, producer: Box<dyn super::Producer>) {
+    pub fn buffer_registry(&self) -> Arc<BufferRegistry> {
+        self.buffer_registry.clone()
+    }
+    
+    pub fn add_producer(&mut self, producer: Box<dyn super::Producer>) -> Result<()> {
+        let producer_name = producer.name().to_string();
         let buffer = Arc::new(AudioRingBuffer::new(1000));
         
         let mut producer = producer;
         producer.attach_ring_buffer(buffer.clone());
         
+        // Buffer in Registry registrieren
+        let buffer_name = format!("producer:{}", producer_name);
+        if let Err(e) = self.buffer_registry.register(&buffer_name, buffer.clone()) {
+            self.error(&format!("Failed to register buffer '{}': {}", buffer_name, e));
+            return Err(e);
+        }
+        
         self.producer_buffers.push(buffer);
         self.producers.push(producer);
+        
+        self.info(&format!("Added producer '{}' (buffer: '{}')", producer_name, buffer_name));
+        Ok(())
     }
     
     pub fn add_flow(&mut self, flow: Flow) {
+        let flow_name = flow.name.clone();
         self.flows.push(flow);
+        
+        // Logging nach mutable borrow
+        self.info(&format!("Added flow: '{}'", flow_name));
     }
     
     pub fn connect_producer_to_flow(&mut self, producer_index: usize, flow_index: usize) -> Result<()> {
         if producer_index < self.producer_buffers.len() && flow_index < self.flows.len() {
             let buffer = self.producer_buffers[producer_index].clone();
-            log::debug!("connect_producer_to_flow: Producer buffer addr: {:?}, Flow bekommt clone", 
-                Arc::as_ptr(&self.producer_buffers[producer_index]));
+            
             self.flows[flow_index].add_input_buffer(buffer);
-            info!("Connected producer {} to flow {}", producer_index, flow_index);
+            
+            // Logging nach mutable borrow
+            self.info(&format!(
+                "Connected producer {} to flow {}",
+                producer_index, flow_index
+            ));
+            
             Ok(())
         } else {
+            self.error(&format!(
+                "Invalid indices: producer={}, flow={} (max producer={}, max flow={})",
+                producer_index, flow_index, 
+                self.producer_buffers.len(), self.flows.len()
+            ));
             anyhow::bail!("Invalid producer or flow index");
         }
     }
     
+    /// Erstelle und füge einen Mixer mit Buffer-Registry hinzu
+    pub fn create_and_add_mixer(&mut self, flow_index: usize, name: &str, config: crate::processors::MixerConfig) -> Result<()> {
+        if flow_index < self.flows.len() {
+            let mut mixer = crate::processors::Mixer::from_config(name, &config);
+            mixer.set_buffer_registry(self.buffer_registry());
+            
+            // Versuche automatisch zu verbinden
+            if let Err(e) = mixer.connect_from_registry() {
+                self.warn(&format!("Mixer '{}' auto-connect failed: {}", name, e));
+                // Nicht fatal, Mixer kann später verbunden werden
+            }
+            
+            self.flows[flow_index].add_processor(Box::new(mixer));
+            self.info(&format!("Added mixer '{}' to flow {}", name, flow_index));
+            Ok(())
+        } else {
+            anyhow::bail!("Invalid flow index: {}", flow_index)
+        }
+    }
+    
+    /// Füge einen beliebigen Processor hinzu
+    pub fn add_processor_to_flow(&mut self, flow_index: usize, processor: Box<dyn Processor>) -> Result<()> {
+        if flow_index < self.flows.len() {
+            self.flows[flow_index].add_processor(processor);
+            Ok(())
+        } else {
+            anyhow::bail!("Invalid flow index: {}", flow_index)
+        }
+    }
+    
     pub fn start(&mut self) -> Result<()> {
-        info!("Node starting...");
+        self.info("Node starting...");
+        
+        if self.running.load(Ordering::Relaxed) {
+            self.warn("Node already running");
+            return Ok(());
+        }
+        
         self.running.store(true, Ordering::SeqCst);
         
+        // Producer starten - Namen vorher sammeln
+        let producer_names: Vec<String> = self.producers.iter().map(|p| p.name().to_string()).collect();
+        let mut start_errors = Vec::new();
+        
         for (i, producer) in self.producers.iter_mut().enumerate() {
-            info!("Starting producer {}: {}", i, producer.name());
+            let producer_name = &producer_names[i];
             if let Err(e) = producer.start() {
-                error!("Failed to start producer {}: {}", producer.name(), e);
+                start_errors.push((producer_name.clone(), e));
             }
         }
         
-        for flow in &mut self.flows {
+        // Jetzt loggen (nach mutable borrow)
+        for (producer_name, error) in &start_errors {
+            self.error(&format!("Failed to start producer '{}': {}", producer_name, error));
+        }
+        
+        let successful_starts = producer_names.len() - start_errors.len();
+        if successful_starts > 0 {
+            self.info(&format!("{} producer(s) started successfully", successful_starts));
+        }
+        
+        // Flows starten - Namen vorher sammeln
+        let flow_names: Vec<String> = self.flows.iter().map(|f| f.name.clone()).collect();
+        let mut flow_start_errors = Vec::new();
+        
+        for (i, flow) in self.flows.iter_mut().enumerate() {
+            let flow_name = &flow_names[i];
             if let Err(e) = flow.start() {
-                warn!("Failed to start flow {}: {}", flow.name, e);
+                flow_start_errors.push((flow_name.clone(), e));
             }
+        }
+        
+        // Loggen
+        for (flow_name, error) in &flow_start_errors {
+            self.warn(&format!("Failed to start flow '{}': {}", flow_name, error));
+        }
+        
+        let successful_flows = flow_names.len() - flow_start_errors.len();
+        if successful_flows > 0 {
+            self.info(&format!("{} flow(s) started successfully", successful_flows));
+        }
+        
+        if start_errors.is_empty() && flow_start_errors.is_empty() {
+            self.info("Node started successfully");
+        } else {
+            let total_errors = start_errors.len() + flow_start_errors.len();
+            self.warn(&format!("Node started with {} error(s)", total_errors));
         }
         
         Ok(())
     }
     
     pub fn stop(&mut self) -> Result<()> {
-        info!("Node stopping...");
+        self.info("Node stopping...");
         self.running.store(false, Ordering::SeqCst);
         
-        for flow in &mut self.flows {
+        // Flows stoppen - Namen vorher sammeln
+        let flow_names: Vec<String> = self.flows.iter().map(|f| f.name.clone()).collect();
+        let mut flow_stop_errors = Vec::new();
+        
+        for (i, flow) in self.flows.iter_mut().enumerate() {
+            let flow_name = &flow_names[i];
             if let Err(e) = flow.stop() {
-                warn!("Error stopping flow {}: {}", flow.name, e);
+                flow_stop_errors.push((flow_name.clone(), e));
             }
         }
         
-        for producer in &mut self.producers {
-            info!("Stopping producer: {}", producer.name());
+        // Loggen
+        for (flow_name, error) in &flow_stop_errors {
+            self.warn(&format!("Error stopping flow '{}': {}", flow_name, error));
+        }
+        
+        let successful_flows = flow_names.len() - flow_stop_errors.len();
+        if successful_flows > 0 {
+            self.info(&format!("{} flow(s) stopped successfully", successful_flows));
+        }
+        
+        // Producer stoppen - Namen vorher sammeln
+        let producer_names: Vec<String> = self.producers.iter().map(|p| p.name().to_string()).collect();
+        let mut producer_stop_errors = Vec::new();
+        
+        for (i, producer) in self.producers.iter_mut().enumerate() {
+            let producer_name = &producer_names[i];
             if let Err(e) = producer.stop() {
-                warn!("Error stopping producer {}: {}", producer.name(), e);
+                producer_stop_errors.push((producer_name.clone(), e));
             }
+        }
+        
+        // Loggen
+        for (producer_name, error) in &producer_stop_errors {
+            self.warn(&format!("Error stopping producer '{}': {}", producer_name, error));
+        }
+        
+        let successful_producers = producer_names.len() - producer_stop_errors.len();
+        if successful_producers > 0 {
+            self.info(&format!("{} producer(s) stopped successfully", successful_producers));
+        }
+        
+        if flow_stop_errors.is_empty() && producer_stop_errors.is_empty() {
+            self.info("Node stopped successfully");
+        } else {
+            let total_errors = flow_stop_errors.len() + producer_stop_errors.len();
+            self.warn(&format!("Node stopped with {} error(s)", total_errors));
         }
         
         Ok(())
@@ -333,6 +564,13 @@ impl AirliftNode {
     }
 }
 
+// Implementierung des ComponentLogger Traits für AirliftNode
+impl crate::core::logging::ComponentLogger for AirliftNode {
+    fn log_context(&self) -> crate::core::logging::LogContext {
+        crate::core::logging::LogContext::new("Node", "main")
+    }
+}
+
 #[derive(Debug)]
 pub struct NodeStatus {
     pub running: bool,
@@ -341,4 +579,80 @@ pub struct NodeStatus {
     pub flows: usize,
     pub producer_status: Vec<super::ProducerStatus>,
     pub flow_status: Vec<FlowStatus>,
+}
+
+// Unit Tests
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::processor::basic::PassThrough;
+    use crate::core::logging::ComponentLogger;
+
+    #[test]
+    fn test_flow_creation() {
+        let flow = Flow::new("test_flow");
+        assert_eq!(flow.name, "test_flow");
+        assert!(flow.input_buffers.is_empty());
+        assert!(flow.processors.is_empty());
+        assert!(flow.consumers.is_empty());
+        assert!(!flow.running.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_flow_add_components() {
+        let mut flow = Flow::new("test_flow");
+        
+        // Add processor
+        let processor = Box::new(PassThrough::new("test_processor"));
+        flow.add_processor(processor);
+        assert_eq!(flow.processors.len(), 1);
+        
+        // Add input buffer
+        let buffer = Arc::new(AudioRingBuffer::new(100));
+        flow.add_input_buffer(buffer);
+        assert_eq!(flow.input_buffers.len(), 1);
+    }
+
+    #[test]
+    fn test_node_creation() {
+        let node = AirliftNode::new();
+        assert!(!node.is_running());
+        assert!(node.producers.is_empty());
+        assert!(node.flows.is_empty());
+    }
+
+    #[test]
+    fn test_node_add_flow() {
+        let mut node = AirliftNode::new();
+        let flow = Flow::new("test_flow");
+        
+        node.add_flow(flow);
+        assert_eq!(node.flows.len(), 1);
+        assert_eq!(node.flows[0].name, "test_flow");
+    }
+
+    #[test]
+    fn test_flow_logging() {
+        let flow = Flow::new("logging_test");
+        
+        // Test dass Logging-Methoden verfügbar sind
+        flow.debug("Test debug message");
+        flow.info("Test info message");
+        flow.warn("Test warning message");
+        flow.error("Test error message");
+        
+        // Test buffer tracing
+        flow.trace_buffer(&flow.output_buffer);
+    }
+
+    #[test]
+    fn test_node_logging() {
+        let node = AirliftNode::new();
+        
+        // Test dass Logging-Methoden verfügbar sind
+        node.debug("Test debug message");
+        node.info("Test info message");
+        node.warn("Test warning message");
+        node.error("Test error message");
+    }
 }
