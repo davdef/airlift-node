@@ -9,4 +9,4 @@ enabled = true
 bind = "127.0.0.1:3008"
 
 [monitoring]
-http_port = 8087
+http_port = 3008
