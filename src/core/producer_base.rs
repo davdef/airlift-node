@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
-use anyhow::Result;
+use crate::core::error::{AudioError, AudioResult};
 
 use crate::decoders::AudioDecoder;
 use crate::ring::{PcmFrame, PcmSink};
@@ -47,7 +47,7 @@ impl ProducerBase {
         self.decoder = Some(decoder);
     }
     
-    pub fn write_pcm_chunk(&self, pcm_samples: Vec<i16>) -> Result<()> {
+    pub fn write_pcm_chunk(&self, pcm_samples: Vec<i16>) -> AudioResult<()> {
         if let Some(buffer) = &self.buffer {
             let utc_ns = Self::utc_ns_now() - 100_000_000;  // Latenz-Kompensation
             let frame = PcmFrame {
@@ -57,24 +57,31 @@ impl ProducerBase {
                 channels: self.channels,
             };
             let sample_len = frame.samples.len() as u64;
-            buffer.push(frame)?;
+            buffer.push(frame).map_err(|e| {
+                AudioError::with_context("write pcm chunk to buffer", e)
+            })?;
             self.samples_processed
                 .fetch_add(sample_len, Ordering::Relaxed);
         }
         Ok(())
     }
 
-    pub fn decode_packet(&mut self, packet: &[u8]) -> Result<()> {
+    pub fn decode_packet(&mut self, packet: &[u8]) -> AudioResult<()> {
         let decoder = match self.decoder.as_mut() {
             Some(decoder) => decoder,
             None => return Ok(()),
         };
 
-        if let Some(frame) = decoder.decode(packet)? {
+        if let Some(frame) = decoder
+            .decode(packet)
+            .map_err(|e| AudioError::with_context("decode audio packet", e))?
+        {
             if let Some(buffer) = &self.buffer {
                 self.samples_processed
                     .fetch_add(frame.samples.len() as u64, Ordering::Relaxed);
-                buffer.push(frame)?;
+                buffer.push(frame).map_err(|e| {
+                    AudioError::with_context("write decoded frame to buffer", e)
+                })?;
             }
         }
 
@@ -82,7 +89,7 @@ impl ProducerBase {
     }
     
     // FIFO-Handling (wie in deinem Code)
-    pub fn process_fifo(&self, fifo: &mut Vec<i16>, new_samples: &[i16]) -> Result<()> {
+    pub fn process_fifo(&self, fifo: &mut Vec<i16>, new_samples: &[i16]) -> AudioResult<()> {
         fifo.extend_from_slice(new_samples);
         
         while fifo.len() >= self.target_frames * self.channels as usize {
@@ -112,7 +119,7 @@ impl ProducerBase {
     }
     
     /// Scannt verfügbare Geräte (implementierungsspezifisch)
-    pub fn scan_available_devices(&self) -> Result<Vec<AudioDeviceInfo>> {
+    pub fn scan_available_devices(&self) -> AudioResult<Vec<AudioDeviceInfo>> {
         // Default-Implementierung (kann überschrieben werden)
         Ok(Vec::new())
     }

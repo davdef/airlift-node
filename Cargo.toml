@@ -35,6 +35,7 @@ nix = "0.27"
 tiny_http = "0.12"
 hound = "3.5"
 bytemuck = "1.14"
+thiserror = "1"
 
 [features]
 lockfree = []
