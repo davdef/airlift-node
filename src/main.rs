@@ -2,6 +2,7 @@ mod core;
 mod config;
 mod producers;
 mod processors;
+mod app;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -182,6 +183,8 @@ match producer_cfg.producer_type.as_str() {
 
     }
     
+    let plugin_registry = app::init::build_plugin_registry();
+
     // Flows aus Config erstellen und Processors hinzufügen
     for (flow_name, flow_cfg) in &config.flows {
         if !flow_cfg.enabled {
@@ -197,40 +200,25 @@ match producer_cfg.producer_type.as_str() {
                     continue;
                 }
                 
-match processor_cfg.processor_type.as_str() {
-    "passthrough" => {
-        let processor = core::processor::basic::PassThrough::new(processor_name);
-        flow.add_processor(Box::new(processor));
-        log::info!("Added passthrough processor '{}' to flow '{}'", 
-            processor_name, flow_name);
-    }
-    "gain" => {
-        let gain = processor_cfg.config.get("gain")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(1.0) as f32;
-        let processor = core::processor::basic::Gain::new(processor_name, gain);
-        flow.add_processor(Box::new(processor));
-        log::info!("Added gain processor '{}' (gain: {}) to flow '{}'", 
-            processor_name, gain, flow_name);
-    }
-"mixer" => {
-    let mut mixer = processors::Mixer::new(processor_name);
-
-    if let Err(e) = mixer.update_config(
-        serde_json::to_value(&processor_cfg.config).unwrap_or_default()
-    ) {
-        log::error!("Failed to apply mixer config for '{}': {}", processor_name, e);
-    }
-
-    // Mixer zu Flow hinzufügen
-    flow.add_processor(Box::new(mixer));
-
-    log::info!("Added mixer processor '{}' to flow '{}'", 
-        processor_name, flow_name);
-}
-    _ => log::error!("Unknown processor type for '{}': {}", 
-        processor_name, processor_cfg.processor_type),
-}
+                match plugin_registry.create_processor(processor_name, processor_cfg) {
+                    Ok(processor) => {
+                        flow.add_processor(processor);
+                        log::info!(
+                            "Added processor '{}' (type: {}) to flow '{}'",
+                            processor_name,
+                            processor_cfg.processor_type,
+                            flow_name
+                        );
+                    }
+                    Err(e) => {
+                        log::error!(
+                            "Failed to create processor '{}' (type: {}): {}",
+                            processor_name,
+                            processor_cfg.processor_type,
+                            e
+                        );
+                    }
+                }
 
             }
         }
