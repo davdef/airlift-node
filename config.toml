@@ -1,29 +1,28 @@
-node_name = "airlift-node"
-
-[api]
-enabled = true
-bind = "127.0.0.1:3008"
+node_name = "airlift-node-sample"
 
 [monitoring]
 http_port = 3008
 
-[ringbuffers.main]
-slots = 6000
-prealloc_samples = 9600
-
-[inputs.sine]
-type = "producer"
+[producers.sine]
+type = "sine"
 enabled = true
-buffer = "main"
-
-[outputs.file]
-type = "consumer"
-enabled = true
-buffer = "main"
-input = "sine"
-codec_id = "passthrough"
-
-[codecs.passthrough]
-type = "processor"
 sample_rate = 48000
 channels = 2
+
+[producers.sine.config]
+frequency = 440.0
+
+[processors.passthrough]
+type = "passthrough"
+enabled = true
+
+[consumers.file]
+type = "file"
+enabled = true
+path = "data/sample_output.wav"
+
+[flows.main]
+enabled = true
+inputs = ["sine"]
+processors = ["passthrough"]
+outputs = ["file"]
