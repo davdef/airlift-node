@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::Result;
 use crossbeam_channel::{select, unbounded, Receiver, Sender};
 use super::events::{Event, EventPriority};
+use super::lock::{lock_mutex, lock_rwlock_read, lock_rwlock_write};
 use super::logging::{ComponentLogger, LogContext};
 
 /// Event-Handler Trait
@@ -137,8 +138,7 @@ impl EventBus {
     
     /// Event-Handler registrieren
     pub fn register_handler(&self, handler: Arc<dyn EventHandler>) -> Result<()> {
-        let mut handlers = self.handlers.write()
-            .map_err(|e| anyhow::anyhow!("Failed to acquire write lock: {}", e))?;
+        let mut handlers = lock_rwlock_write(&self.handlers, "event_bus.register_handler");
         
         handlers.push(handler.clone());
         
@@ -153,8 +153,7 @@ impl EventBus {
     
     /// Event-Handler entfernen
     pub fn unregister_handler(&self, handler_name: &str) -> Result<()> {
-        let mut handlers = self.handlers.write()
-            .map_err(|e| anyhow::anyhow!("Failed to acquire write lock: {}", e))?;
+        let mut handlers = lock_rwlock_write(&self.handlers, "event_bus.unregister_handler");
         
         let initial_len = handlers.len();
         handlers.retain(|h| h.name() != handler_name);
@@ -175,13 +174,8 @@ impl EventBus {
     
     /// Liste der registrierten Handler
     pub fn handler_list(&self) -> Vec<String> {
-        match self.handlers.read() {
-            Ok(guard) => guard.iter().map(|h| h.name().to_string()).collect(),
-            Err(_) => {
-                reset_poisoned_handlers(&self.handlers, self, "handler_list");
-                Vec::new()
-            }
-        }
+        let guard = lock_rwlock_read(&self.handlers, "event_bus.handler_list");
+        guard.iter().map(|h| h.name().to_string()).collect()
     }
     
     fn processing_loop(
@@ -209,13 +203,7 @@ impl EventBus {
                         }
                     };
                     // Get handlers (with read lock)
-                    let handlers_guard = match handlers.read() {
-                        Ok(guard) => guard,
-                        Err(_) => {
-                            reset_poisoned_handlers(&handlers, &bus_logger, "processing_loop");
-                            continue;
-                        }
-                    };
+                    let handlers_guard = lock_rwlock_read(&handlers, "event_bus.processing_loop");
 
                     // Distribute to handlers
                     for handler in handlers_guard.iter() {
@@ -253,26 +241,6 @@ impl EventBus {
         }
         
         bus_logger.info("EventBus processing thread stopped");
-    }
-}
-
-fn reset_poisoned_handlers<L: ComponentLogger>(
-    handlers: &Arc<RwLock<Vec<Arc<dyn EventHandler>>>>,
-    logger: &L,
-    context: &str,
-) {
-    logger.error(&format!(
-        "Handler lock poisoned in {}, resetting handler list",
-        context
-    ));
-    match handlers.write() {
-        Ok(mut guard) => {
-            guard.clear();
-        }
-        Err(poisoned) => {
-            let mut guard = poisoned.into_inner();
-            guard.clear();
-        }
     }
 }
 
@@ -407,16 +375,14 @@ impl EventStatsHandler {
     }
     
     pub fn get_stats(&self) -> Result<EventHandlerStats> {
-        let stats = self.stats.lock()
-            .map_err(|e| anyhow::anyhow!("Failed to lock stats: {}", e))?;
+        let stats = lock_mutex(&self.stats, "event_stats_handler.get_stats");
         Ok(stats.clone())
     }
 }
 
 impl EventHandler for EventStatsHandler {
     fn handle_event(&self, event: &Event) -> Result<()> {
-        let mut stats = self.stats.lock()
-            .map_err(|e| anyhow::anyhow!("Failed to lock stats: {}", e))?;
+        let mut stats = lock_mutex(&self.stats, "event_stats_handler.handle_event");
         
         stats.total_events += 1;
         *stats.events_by_type.entry(format!("{:?}", event.event_type))

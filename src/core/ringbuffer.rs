@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crate::core::logging::ComponentLogger;
+use crate::core::lock::lock_mutex_with_timeout;
 pub use crate::ring::PcmFrame;
 use crate::ring::PcmSink;
 
@@ -20,6 +22,8 @@ pub struct AudioRingBuffer {
     read_positions: Mutex<HashMap<String, u64>>,
     dropped_frames: AtomicU64,
 }
+
+const BUFFER_LOCK_TIMEOUT: Duration = Duration::from_millis(5);
 
 impl AudioRingBuffer {
     pub fn new(capacity: usize) -> Self {
@@ -60,9 +64,12 @@ impl AudioRingBuffer {
         let idx = (seq as usize) % self.capacity;
         let slot = &self.slots[idx];
 
-        {
-            let mut guard = slot.frame.lock().unwrap();
+        if let Some(mut guard) = lock_mutex_with_timeout(&slot.frame, "ringbuffer.push.slot", BUFFER_LOCK_TIMEOUT) {
             *guard = Some(frame);
+        } else {
+            self.dropped_frames.fetch_add(1, Ordering::Relaxed);
+            self.warn("Dropping frame: slot lock timeout");
+            return self.len() as u64;
         }
 
         slot.seq.store(seq, Ordering::Release);
@@ -97,7 +104,17 @@ impl AudioRingBuffer {
 
         let oldest = self.oldest_seq(head);
         let target_seq = {
-            let mut read_positions = self.read_positions.lock().unwrap();
+            let mut read_positions = match lock_mutex_with_timeout(
+                &self.read_positions,
+                "ringbuffer.pop.read_positions",
+                BUFFER_LOCK_TIMEOUT,
+            ) {
+                Some(guard) => guard,
+                None => {
+                    self.warn("Pop aborted: read_positions lock timeout");
+                    return None;
+                }
+            };
             let position = read_positions.entry(reader_id.to_string()).or_insert(oldest);
             if *position < oldest {
                 *position = oldest;
@@ -113,7 +130,17 @@ impl AudioRingBuffer {
         
         if slot_seq != target_seq {
             self.dropped_frames.fetch_add(1, Ordering::Relaxed);
-            let mut read_positions = self.read_positions.lock().unwrap();
+            let mut read_positions = match lock_mutex_with_timeout(
+                &self.read_positions,
+                "ringbuffer.pop.sequence_mismatch.read_positions",
+                BUFFER_LOCK_TIMEOUT,
+            ) {
+                Some(guard) => guard,
+                None => {
+                    self.warn("Sequence mismatch handling skipped: read_positions lock timeout");
+                    return None;
+                }
+            };
             if let Some(pos) = read_positions.get_mut(reader_id) {
                 *pos = oldest;
             }
@@ -123,9 +150,29 @@ impl AudioRingBuffer {
             return None;
         }
 
-        let frame = slot.frame.lock().unwrap().clone();
+        let frame = match lock_mutex_with_timeout(
+            &slot.frame,
+            "ringbuffer.pop.slot",
+            BUFFER_LOCK_TIMEOUT,
+        ) {
+            Some(guard) => guard.clone(),
+            None => {
+                self.warn("Pop aborted: slot lock timeout");
+                return None;
+            }
+        };
         if frame.is_some() {
-            let mut read_positions = self.read_positions.lock().unwrap();
+            let mut read_positions = match lock_mutex_with_timeout(
+                &self.read_positions,
+                "ringbuffer.pop.advance.read_positions",
+                BUFFER_LOCK_TIMEOUT,
+            ) {
+                Some(guard) => guard,
+                None => {
+                    self.warn("Pop aborted: read_positions lock timeout");
+                    return None;
+                }
+            };
             if let Some(pos) = read_positions.get_mut(reader_id) {
                 *pos = target_seq + 1;
             }
@@ -147,8 +194,16 @@ impl AudioRingBuffer {
         self.info("Clearing buffer");
         
         for slot in self.slots.iter() {
-            let mut guard = slot.frame.lock().unwrap();
-            *guard = None;
+            if let Some(mut guard) = lock_mutex_with_timeout(
+                &slot.frame,
+                "ringbuffer.clear.slot",
+                BUFFER_LOCK_TIMEOUT,
+            ) {
+                *guard = None;
+            } else {
+                self.warn("Clear aborted: slot lock timeout");
+                return;
+            }
             slot.seq.store(0, Ordering::Release);
         }
 
@@ -156,8 +211,15 @@ impl AudioRingBuffer {
         self.next_seq.store(1, Ordering::Release);
         self.dropped_frames.store(0, Ordering::Relaxed);
 
-        let mut read_positions = self.read_positions.lock().unwrap();
-        read_positions.clear();
+        if let Some(mut read_positions) = lock_mutex_with_timeout(
+            &self.read_positions,
+            "ringbuffer.clear.read_positions",
+            BUFFER_LOCK_TIMEOUT,
+        ) {
+            read_positions.clear();
+        } else {
+            self.warn("Clear aborted: read_positions lock timeout");
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -181,7 +243,17 @@ impl AudioRingBuffer {
         }
         
         let oldest = self.oldest_seq(head);
-        let read_positions = self.read_positions.lock().unwrap();
+        let read_positions = match lock_mutex_with_timeout(
+            &self.read_positions,
+            "ringbuffer.available.read_positions",
+            BUFFER_LOCK_TIMEOUT,
+        ) {
+            Some(guard) => guard,
+            None => {
+                self.warn("available_for_reader aborted: read_positions lock timeout");
+                return 0;
+            }
+        };
         let reader_pos = read_positions.get(reader_id).copied().unwrap_or(oldest);
         
         if reader_pos > head {
@@ -253,7 +325,8 @@ impl AudioRingBuffer {
     fn read_by_seq(&self, seq: u64) -> Option<PcmFrame> {
         let slot = &self.slots[(seq as usize) % self.capacity];
         if slot.seq.load(Ordering::Acquire) == seq {
-            slot.frame.lock().unwrap().clone()
+            lock_mutex_with_timeout(&slot.frame, "ringbuffer.read_by_seq.slot", BUFFER_LOCK_TIMEOUT)
+                .and_then(|guard| guard.clone())
         } else {
             None
         }

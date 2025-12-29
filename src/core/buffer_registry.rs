@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use super::ringbuffer::AudioRingBuffer;
 use anyhow::Result;
+use super::lock::{lock_rwlock_read, lock_rwlock_write};
 
 #[derive(Clone)]
 pub struct BufferRegistry {
@@ -16,26 +17,9 @@ impl BufferRegistry {
         }
     }
 
-    fn recover_poisoned_buffers(&self, context: &str) {
-        log::error!(
-            "Buffer registry lock poisoned in {}, clearing buffer registry",
-            context
-        );
-        match self.buffers.write() {
-            Ok(mut guard) => {
-                guard.clear();
-            }
-            Err(poisoned) => {
-                let mut guard = poisoned.into_inner();
-                guard.clear();
-            }
-        }
-    }
-    
     /// Registriere einen Buffer unter einem Namen
     pub fn register(&self, name: &str, buffer: Arc<AudioRingBuffer>) -> Result<()> {
-        let mut buffers = self.buffers.write()
-            .map_err(|e| anyhow::anyhow!("Failed to acquire write lock: {}", e))?;
+        let mut buffers = lock_rwlock_write(&self.buffers, "buffer_registry.register");
         
         if buffers.contains_key(name) {
             anyhow::bail!("Buffer '{}' already registered", name);
@@ -48,8 +32,7 @@ impl BufferRegistry {
     
     /// Aktualisiere einen Buffer (überschreibt falls existiert)
     pub fn update(&self, name: &str, buffer: Arc<AudioRingBuffer>) -> Result<()> {
-        let mut buffers = self.buffers.write()
-            .map_err(|e| anyhow::anyhow!("Failed to acquire write lock: {}", e))?;
+        let mut buffers = lock_rwlock_write(&self.buffers, "buffer_registry.update");
         
         buffers.insert(name.to_string(), buffer);
         log::debug!("Updated buffer '{}'", name);
@@ -58,14 +41,13 @@ impl BufferRegistry {
     
     /// Hole einen Buffer
     pub fn get(&self, name: &str) -> Option<Arc<AudioRingBuffer>> {
-        let buffers = self.buffers.read().ok()?;
+        let buffers = lock_rwlock_read(&self.buffers, "buffer_registry.get");
         buffers.get(name).cloned()
     }
     
     /// Entferne einen Buffer
     pub fn remove(&self, name: &str) -> Result<()> {
-        let mut buffers = self.buffers.write()
-            .map_err(|e| anyhow::anyhow!("Failed to acquire write lock: {}", e))?;
+        let mut buffers = lock_rwlock_write(&self.buffers, "buffer_registry.remove");
         
         if buffers.remove(name).is_some() {
             log::debug!("Removed buffer '{}'", name);
@@ -77,23 +59,13 @@ impl BufferRegistry {
     
     /// Liste aller registrierten Buffer-Namen
     pub fn list(&self) -> Vec<String> {
-        match self.buffers.read() {
-            Ok(guard) => guard.keys().cloned().collect(),
-            Err(_) => {
-                self.recover_poisoned_buffers("list");
-                Vec::new()
-            }
-        }
+        let guard = lock_rwlock_read(&self.buffers, "buffer_registry.list");
+        guard.keys().cloned().collect()
     }
     
     /// Prüfe ob Buffer existiert
     pub fn exists(&self, name: &str) -> bool {
-        match self.buffers.read() {
-            Ok(guard) => guard.contains_key(name),
-            Err(_) => {
-                self.recover_poisoned_buffers("exists");
-                false
-            }
-        }
+        let guard = lock_rwlock_read(&self.buffers, "buffer_registry.exists");
+        guard.contains_key(name)
     }
 }

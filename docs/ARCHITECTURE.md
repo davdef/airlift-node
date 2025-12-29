@@ -121,3 +121,15 @@ flowchart LR
 - `src/core/ringbuffer.rs` — AudioRingBuffer mit Multi-Reader-Logik,
   Sequenz-Tracking und Drop-Handling.
 - `src/processors/*` — Konkrete Processor-Implementierungen.
+
+## Ringbuffer-Feature-Strategie
+
+Der `AudioRingBuffer` wird über ein Compile-Time-Feature ausgewählt:
+
+- **Default:** `src/core/ringbuffer.rs` (Mutex/RwLock-basiert), stabil und
+  gut debugbar.
+- **`lockfree`-Feature:** `src/core/ringbuffer_lockfree.rs`, optimiert für
+  hohe Parallelität/Contention und reduziert Lock-Overhead.
+
+Aktivierung: `cargo build --features lockfree`. Der öffentliche Importpfad
+bleibt in beiden Fällen `crate::core::ringbuffer`.

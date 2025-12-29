@@ -6,6 +6,7 @@ use crate::core::error::{AudioError, AudioResult};
 use super::ringbuffer::AudioRingBuffer;
 use super::processor::{Processor, ProcessorStatus};
 use super::consumer::{Consumer, ConsumerStatus};
+use super::lock::lock_mutex;
 use super::BufferRegistry;
 use crate::core::logging::ComponentLogger;
 
@@ -384,15 +385,9 @@ impl AirliftNode {
             payload,
         ).with_context(self.log_context());
         
-        match self.event_bus.lock() {
-            Ok(event_bus) => {
-                if let Err(e) = event_bus.publish(event) {
-                    self.error(&format!("Failed to publish event: {}", e));
-                }
-            }
-            Err(e) => {
-                self.error(&format!("Failed to lock EventBus for publish: {}", e));
-            }
+        let event_bus = lock_mutex(&self.event_bus, "airlift_node.publish_event");
+        if let Err(e) = event_bus.publish(event) {
+            self.error(&format!("Failed to publish event: {}", e));
         }
     }
 
@@ -663,8 +658,9 @@ impl AirliftNode {
             self.info(&format!("{} producer(s) stopped successfully", successful_producers));
         }
         
-        let event_bus_stop_error = match self.event_bus.lock() {
-            Ok(mut event_bus) => match event_bus.stop() {
+        let event_bus_stop_error = {
+            let mut event_bus = lock_mutex(&self.event_bus, "airlift_node.stop_event_bus");
+            match event_bus.stop() {
                 Ok(()) => {
                     self.info("EventBus stopped successfully");
                     false
@@ -673,10 +669,6 @@ impl AirliftNode {
                     self.warn(&format!("Error stopping EventBus: {}", e));
                     true
                 }
-            },
-            Err(e) => {
-                self.warn(&format!("Failed to lock EventBus for stop: {}", e));
-                true
             }
         };
 
@@ -731,15 +723,9 @@ impl crate::core::logging::ComponentLogger for AirliftNode {
 
 impl Drop for AirliftNode {
     fn drop(&mut self) {
-        match self.event_bus.lock() {
-            Ok(mut event_bus) => {
-                if let Err(e) = event_bus.stop() {
-                    self.warn(&format!("Error stopping EventBus during drop: {}", e));
-                }
-            }
-            Err(e) => {
-                self.warn(&format!("Failed to lock EventBus during drop: {}", e));
-            }
+        let mut event_bus = lock_mutex(&self.event_bus, "airlift_node.drop_event_bus");
+        if let Err(e) = event_bus.stop() {
+            self.warn(&format!("Error stopping EventBus during drop: {}", e));
         }
     }
 }

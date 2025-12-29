@@ -5,6 +5,7 @@ pub mod device_scanner;
 pub mod error;
 pub mod graph;
 pub mod graph_api;
+pub mod lock;
 pub mod node;
 pub mod plugin;
 pub mod processor;

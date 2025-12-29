@@ -4,6 +4,7 @@ use std::fs;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use anyhow::Result;
 use crate::config::Config;
+use crate::core::lock::lock_mutex;
 
 pub struct ConfigManager {
     config: Arc<Mutex<Config>>,
@@ -25,7 +26,7 @@ impl ConfigManager {
     }
     
     pub fn get_config(&self) -> Config {
-        let config = self.config.lock().unwrap();
+        let config = lock_mutex(&self.config, "config_manager.get_config");
         config.clone()
     }
     
@@ -69,13 +70,13 @@ impl ConfigManager {
         let metadata = fs::metadata(path)?;
         let modified = metadata.modified()?;
         
-        let mut last_mod = last_modified.lock().unwrap();
+        let mut last_mod = lock_mutex(last_modified, "config_manager.try_reload.last_modified");
         if &modified > &*last_mod {
             *last_mod = modified;
             
             match Config::load(path) {
                 Ok(new_config) => {
-                    let mut config_lock = config.lock().unwrap();
+                    let mut config_lock = lock_mutex(config, "config_manager.try_reload.config");
                     *config_lock = new_config;
                     Ok(true)
                 }
