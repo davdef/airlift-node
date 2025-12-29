@@ -56,25 +56,26 @@ impl Mixer {
         }
     }
     
-pub fn from_config(name: &str, config: &MixerConfig) -> Self {  // &MixerConfig statt MixerConfig
-    let output_sample_rate = config.output_sample_rate.unwrap_or(48000);
-    let output_channels = config.output_channels.unwrap_or(2);
-    let master_gain = config.master_gain.unwrap_or(1.0);
-    
-    let mixer = Self {
-        name: name.to_string(),
-        config: config.clone(),  // Clone statt Move
-        input_buffers: Vec::new(),
-        output_sample_rate,
-        output_channels,
-        master_gain,
-        buffer_registry: None,
-        connected: false,
-    };
-    
-    mixer.info(&format!("Created mixer '{}' with {} inputs", name, config.inputs.len()));
-    mixer
-}
+    pub fn from_config(name: &str, config: MixerConfig) -> Self {
+        let inputs_len = config.inputs.len();
+        let output_sample_rate = config.output_sample_rate.unwrap_or(48000);
+        let output_channels = config.output_channels.unwrap_or(2);
+        let master_gain = config.master_gain.unwrap_or(1.0);
+        
+        let mixer = Self {
+            name: name.to_string(),
+            config,
+            input_buffers: Vec::new(),
+            output_sample_rate,
+            output_channels,
+            master_gain,
+            buffer_registry: None,
+            connected: false,
+        };
+        
+        mixer.info(&format!("Created mixer '{}' with {} inputs", name, inputs_len));
+        mixer
+    }
     
     /// Setze die Buffer-Registry für automatisches Verbinden
     pub fn set_buffer_registry(&mut self, registry: Arc<BufferRegistry>) {
@@ -351,7 +352,7 @@ mod tests {
             auto_connect: Some(true),
         };
         
-        let mixer = Mixer::from_config("test_mixer", &config);
+        let mixer = Mixer::from_config("test_mixer", config);
         
         assert_eq!(mixer.name(), "test_mixer");
         assert_eq!(mixer.output_sample_rate, 44100);
