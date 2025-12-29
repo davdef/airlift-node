@@ -402,27 +402,41 @@ impl AirliftNode {
         self.info(&format!("Added flow: '{}'", flow_name));
     }
     
-    pub fn connect_producer_to_flow(&mut self, producer_index: usize, flow_index: usize) -> Result<()> {
-        if producer_index < self.producer_buffers.len() && flow_index < self.flows.len() {
-            let buffer = self.producer_buffers[producer_index].clone();
-            
-            self.flows[flow_index].add_input_buffer(buffer);
-            
-            // Logging nach mutable borrow
-            self.info(&format!(
-                "Connected producer {} to flow {}",
-                producer_index, flow_index
-            ));
-            
-            Ok(())
-        } else {
-            self.error(&format!(
-                "Invalid indices: producer={}, flow={} (max producer={}, max flow={})",
-                producer_index, flow_index, 
-                self.producer_buffers.len(), self.flows.len()
-            ));
-            anyhow::bail!("Invalid producer or flow index");
+    pub fn connect_registered_buffer_to_flow(&mut self, buffer_name: &str, flow_index: usize) -> Result<()> {
+        if flow_index >= self.flows.len() {
+            anyhow::bail!("Invalid flow index: {}", flow_index);
         }
+
+        let buffer = self.buffer_registry.get(buffer_name)
+            .ok_or_else(|| anyhow::anyhow!("Buffer '{}' not found in registry", buffer_name))?;
+
+        self.flows[flow_index].add_input_buffer(buffer);
+
+        // Logging nach mutable borrow
+        self.info(&format!(
+            "Connected buffer '{}' to flow {}",
+            buffer_name, flow_index
+        ));
+
+        Ok(())
+    }
+
+    /// Deprecated: use registry-based connection instead.
+    /// Transition plan: keep deprecated during the current release line, then remove in a major version bump.
+    #[deprecated(note = "Use registry-based connection via connect_registered_buffer_to_flow instead.")]
+    pub fn connect_producer_to_flow(&mut self, producer_index: usize, flow_index: usize) -> Result<()> {
+        self.warn("connect_producer_to_flow is deprecated; use registry-based connection instead.");
+
+        let producer_name = self.producers.get(producer_index)
+            .map(|producer| producer.name().to_string())
+            .ok_or_else(|| anyhow::anyhow!(
+                "Invalid producer index: {} (max producer={})",
+                producer_index,
+                self.producers.len()
+            ))?;
+
+        let buffer_name = format!("producer:{}", producer_name);
+        self.connect_registered_buffer_to_flow(&buffer_name, flow_index)
     }
     
     /// Erstelle und füge einen Mixer mit Buffer-Registry hinzu
@@ -659,11 +673,23 @@ mod tests {
         let processor = Box::new(PassThrough::new("test_processor"));
         flow.add_processor(processor);
         assert_eq!(flow.processors.len(), 1);
-        
-        // Add input buffer
+    }
+
+    #[test]
+    fn test_node_connect_registered_buffer_to_flow() {
+        let mut node = AirliftNode::new();
+        let flow = Flow::new("test_flow");
+        node.add_flow(flow);
+
         let buffer = Arc::new(AudioRingBuffer::new(100));
-        flow.add_input_buffer(buffer);
-        assert_eq!(flow.input_buffers.len(), 1);
+        node.buffer_registry()
+            .register("test:buffer", buffer)
+            .expect("failed to register buffer");
+
+        node.connect_registered_buffer_to_flow("test:buffer", 0)
+            .expect("failed to connect buffer");
+
+        assert_eq!(node.flows[0].input_buffers.len(), 1);
     }
 
     #[test]

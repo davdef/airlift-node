@@ -289,7 +289,8 @@ match processor_cfg.processor_type.as_str() {
                     // Finde Producer mit diesem Namen
                     for (producer_index, producer) in node.producers().iter().enumerate() {
                         if producer.name() == input_name {
-                            if let Err(e) = node.connect_producer_to_flow(producer_index, flow_index) {
+                            let buffer_name = format!("producer:{}", input_name);
+                            if let Err(e) = node.connect_registered_buffer_to_flow(&buffer_name, flow_index) {
                                 log::error!("Failed to connect {} to flow {}: {}", 
                                     input_name, flow_name, e);
                             }
@@ -341,7 +342,8 @@ match processor_cfg.processor_type.as_str() {
         node.flows.push(test_flow);
         
         // Verbinde ersten Producer zum Test-Flow
-        if let Err(e) = node.connect_producer_to_flow(0, node.flows.len() - 1) {
+        let buffer_name = format!("producer:{}", first_producer.name());
+        if let Err(e) = node.connect_registered_buffer_to_flow(&buffer_name, node.flows.len() - 1) {
             log::error!("Failed to connect test: {}", e);
         }
     }
@@ -373,7 +375,7 @@ match processor_cfg.processor_type.as_str() {
         demo_flow.add_consumer(file_consumer);
         
         node.flows.push(demo_flow);
-        if let Err(e) = node.connect_producer_to_flow(0, 0) {
+        if let Err(e) = node.connect_registered_buffer_to_flow("producer:demo", 0) {
             log::error!("Failed to connect demo: {}", e);
         }
     }
