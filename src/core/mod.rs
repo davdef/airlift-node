@@ -6,6 +6,7 @@ pub mod graph;
 pub mod graph_api;
 pub mod node;
 pub mod processor;
+pub mod plugin;
 #[cfg(feature = "lockfree")]
 #[path = "ringbuffer_lockfree.rs"]
 pub mod ringbuffer;
@@ -19,6 +20,7 @@ pub use consumer::{Consumer, ConsumerStatus};
 pub use graph::{AudioGraph, GraphNode, GraphSnapshot, NodeClass};
 pub use graph_api::{ConnectionRequest, DisconnectStrategy, GraphApi, NodeRequest};
 pub use node::{AirliftNode, Flow};
+pub use plugin::{AudioPlugin, PluginFactory, PluginInfo, ProcessorPluginAdapter};
 pub use ringbuffer::*;
 pub use timestamp::*;
 
