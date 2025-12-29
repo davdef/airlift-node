@@ -2,6 +2,8 @@
 pub mod config;
 pub mod codecs;
 pub mod core;
+pub mod decoders;
+pub mod encoders;
 pub mod producers;
 pub mod processors;
 pub mod ring;

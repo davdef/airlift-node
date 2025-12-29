@@ -28,6 +28,7 @@ pub trait Producer: Send + Sync {
     fn stop(&mut self) -> anyhow::Result<()>;
     fn status(&self) -> ProducerStatus;
     fn attach_ring_buffer(&mut self, buffer: std::sync::Arc<AudioRingBuffer>);
+    fn attach_decoder(&mut self, _decoder: Box<crate::decoders::AudioDecoder>) {}
 }
 
 #[derive(Debug, Clone)]

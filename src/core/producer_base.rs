@@ -5,11 +5,15 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 
+use crate::decoders::AudioDecoder;
+use crate::ring::{PcmFrame, PcmSink};
+
 pub struct ProducerBase {
     name: String,
     running: Arc<AtomicBool>,
     samples_processed: Arc<AtomicU64>,
-    buffer: Option<Arc<dyn PcmWriter>>,
+    buffer: Option<Arc<dyn PcmSink>>,
+    decoder: Option<Box<dyn AudioDecoder>>,
     
     // PCM-Konfiguration
     sample_rate: u32,
@@ -28,25 +32,52 @@ impl ProducerBase {
             running: Arc::new(AtomicBool::new(false)),
             samples_processed: Arc::new(AtomicU64::new(0)),
             buffer: None,
+            decoder: None,
             sample_rate,
             channels,
             target_frames: (sample_rate as usize) / 10,  // 100ms
         }
     }
     
-    pub fn attach_buffer(&mut self, buffer: Arc<dyn PcmWriter>) {
+    pub fn attach_buffer(&mut self, buffer: Arc<dyn PcmSink>) {
         self.buffer = Some(buffer);
+    }
+
+    pub fn attach_decoder(&mut self, decoder: Box<dyn AudioDecoder>) {
+        self.decoder = Some(decoder);
     }
     
     pub fn write_pcm_chunk(&self, pcm_samples: Vec<i16>) -> Result<()> {
         if let Some(buffer) = &self.buffer {
-            let utc_ns = utc_ns_now() - 100_000_000;  // Latenz-Kompensation
-            buffer.write(utc_ns, pcm_samples)?;
-            self.samples_processed.fetch_add(
-                pcm_samples.len() as u64, 
-                Ordering::Relaxed
-            );
+            let utc_ns = Self::utc_ns_now() - 100_000_000;  // Latenz-Kompensation
+            let frame = PcmFrame {
+                utc_ns,
+                samples: pcm_samples,
+                sample_rate: self.sample_rate,
+                channels: self.channels,
+            };
+            let sample_len = frame.samples.len() as u64;
+            buffer.push(frame)?;
+            self.samples_processed
+                .fetch_add(sample_len, Ordering::Relaxed);
         }
+        Ok(())
+    }
+
+    pub fn decode_packet(&mut self, packet: &[u8]) -> Result<()> {
+        let decoder = match self.decoder.as_mut() {
+            Some(decoder) => decoder,
+            None => return Ok(()),
+        };
+
+        if let Some(frame) = decoder.decode(packet)? {
+            if let Some(buffer) = &self.buffer {
+                self.samples_processed
+                    .fetch_add(frame.samples.len() as u64, Ordering::Relaxed);
+                buffer.push(frame)?;
+            }
+        }
+
         Ok(())
     }
     
