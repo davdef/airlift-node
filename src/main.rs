@@ -130,6 +130,8 @@ fn run_normal_mode() -> anyhow::Result<()> {
     log::info!("Node: {}", config.node_name);
     
     let mut node = core::AirliftNode::new();
+    let mut processor_registry = core::plugin::PluginRegistry::new();
+    core::plugin::register_builtin_plugins(&mut processor_registry);
     
     // Producer aus Config laden
     for (name, producer_cfg) in &config.producers {
@@ -197,40 +199,36 @@ match producer_cfg.producer_type.as_str() {
                     continue;
                 }
                 
-match processor_cfg.processor_type.as_str() {
-    "passthrough" => {
-        let processor = core::processor::basic::PassThrough::new(processor_name);
-        flow.add_processor(Box::new(processor));
-        log::info!("Added passthrough processor '{}' to flow '{}'", 
-            processor_name, flow_name);
-    }
-    "gain" => {
-        let gain = processor_cfg.config.get("gain")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(1.0) as f32;
-        let processor = core::processor::basic::Gain::new(processor_name, gain);
-        flow.add_processor(Box::new(processor));
-        log::info!("Added gain processor '{}' (gain: {}) to flow '{}'", 
-            processor_name, gain, flow_name);
-    }
-"mixer" => {
-    let mut mixer = processors::Mixer::new(processor_name);
+                let mut config_value =
+                    serde_json::to_value(&processor_cfg.config).unwrap_or_else(|_| serde_json::json!({}));
+                if let Some(config_object) = config_value.as_object_mut() {
+                    config_object.insert(
+                        "name".to_string(),
+                        serde_json::Value::String(processor_name.to_string()),
+                    );
+                } else {
+                    config_value = serde_json::json!({ "name": processor_name });
+                }
 
-    if let Err(e) = mixer.update_config(
-        serde_json::to_value(&processor_cfg.config).unwrap_or_default()
-    ) {
-        log::error!("Failed to apply mixer config for '{}': {}", processor_name, e);
-    }
-
-    // Mixer zu Flow hinzufügen
-    flow.add_processor(Box::new(mixer));
-
-    log::info!("Added mixer processor '{}' to flow '{}'", 
-        processor_name, flow_name);
-}
-    _ => log::error!("Unknown processor type for '{}': {}", 
-        processor_name, processor_cfg.processor_type),
-}
+                match processor_registry.create(&processor_cfg.processor_type, config_value) {
+                    Ok(processor) => {
+                        flow.add_processor(processor);
+                        log::info!(
+                            "Added processor '{}' (type: {}) to flow '{}'",
+                            processor_name,
+                            processor_cfg.processor_type,
+                            flow_name
+                        );
+                    }
+                    Err(e) => {
+                        log::error!(
+                            "Failed to create processor '{}' (type: {}): {}",
+                            processor_name,
+                            processor_cfg.processor_type,
+                            e
+                        );
+                    }
+                }
 
             }
         }
