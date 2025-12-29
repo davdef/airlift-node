@@ -32,3 +32,6 @@ ctrlc = "3"
 notify = "6"
 crossbeam-channel = "0.5"
 nix = "0.27"
+
+[features]
+lockfree = []
