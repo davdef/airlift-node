@@ -306,12 +306,17 @@ impl Flow {
 
     pub fn add_consumer(&mut self, mut consumer: Box<dyn Consumer>) {
         let consumer_name = consumer.name().to_string();
-        consumer.attach_input_buffer(self.output_buffer.clone());
+        let output_buffer = self.output_buffer.clone();
+        let output_buffer_addr = Arc::as_ptr(&output_buffer);
+        consumer.attach_input_buffer(output_buffer);
 
         self.consumers.push(consumer);
 
         // Logging nach mutable borrow
-        self.info(&format!("Added consumer '{}'", consumer_name));
+        self.info(&format!(
+            "Added consumer '{}' (output_buffer addr={:?})",
+            consumer_name, output_buffer_addr
+        ));
     }
 
     pub fn attach_event_bus(&mut self, event_bus: Arc<Mutex<EventBus>>) {
@@ -457,6 +462,10 @@ impl Flow {
             "Processing thread started with {} input buffers",
             input_buffers.len()
         ));
+        flow_logger.info(&format!(
+            "Legacy output buffer addr={:?}",
+            Arc::as_ptr(&output_buffer)
+        ));
 
         let mut peak_accumulator = PeakAccumulator::new();
         let mut iteration = 0;
@@ -508,7 +517,7 @@ impl Flow {
                     &processor_buffers[i - 1]
                 };
 
-                let output = if i < processor_buffers.len() {
+                let output = if i + 1 < processors.len() {
                     &processor_buffers[i]
                 } else {
                     &output_buffer
