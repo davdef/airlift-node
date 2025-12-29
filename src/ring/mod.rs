@@ -29,4 +29,12 @@ pub trait EncodedSink: Send + Sync {
 
 pub trait EncodedSource: Send {
     fn poll(&mut self) -> EncodedRingRead;
+    fn wait_for_read(&mut self) -> EncodedRingRead;
+    fn wait_for_read_or_stop(
+        &mut self,
+        stop: &std::sync::atomic::AtomicBool,
+    ) -> Option<EncodedRingRead>;
+    fn notifier(&self) -> Option<std::sync::Arc<std::sync::Condvar>> {
+        None
+    }
 }

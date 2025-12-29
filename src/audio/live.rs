@@ -6,14 +6,14 @@ pub fn stream_live(mut reader: impl EncodedFrameSource) -> anyhow::Result<()> {
     let mut stdout = std::io::stdout();
 
     loop {
-        match reader.poll()? {
+        match reader.wait_for_read()? {
             EncodedRead::Frame(frame) => {
                 stdout.write_all(&frame.payload)?;
             }
             EncodedRead::Gap { missed } => {
                 eprintln!("[audio] live gap missed={}", missed);
             }
-            EncodedRead::Empty => std::thread::sleep(std::time::Duration::from_millis(5)),
+            EncodedRead::Empty => {}
         }
     }
 }

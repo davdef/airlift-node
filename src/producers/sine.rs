@@ -3,6 +3,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::core::{Producer, ProducerStatus, AudioRingBuffer, PcmFrame};
+use crate::producers::wait::StopWait;
 
 pub struct SineProducer {
     name: String,
@@ -11,6 +12,7 @@ pub struct SineProducer {
     ring: Option<Arc<AudioRingBuffer>>,
     freq: f32,
     sample_rate: u32,
+    stop_wait: Arc<StopWait>,
 }
 
 impl SineProducer {
@@ -22,6 +24,7 @@ impl SineProducer {
             ring: None,
             freq,
             sample_rate,
+            stop_wait: Arc::new(StopWait::new()),
         }
     }
 }
@@ -39,6 +42,8 @@ impl Producer for SineProducer {
 
         let freq = self.freq;
         let rate = self.sample_rate;
+
+        let stop_wait = self.stop_wait.clone();
 
         thread::spawn(move || {
             let mut phase: f32 = 0.0;
@@ -64,7 +69,7 @@ impl Producer for SineProducer {
                     });
                 }
 
-                thread::sleep(Duration::from_millis(10)); // 100 Hz
+                stop_wait.wait_timeout(Duration::from_millis(10)); // 100 Hz
             }
         });
 
@@ -74,6 +79,7 @@ impl Producer for SineProducer {
 
     fn stop(&mut self) -> anyhow::Result<()> {
         self.running.store(false, Ordering::SeqCst);
+        self.stop_wait.notify_all();
         Ok(())
     }
 

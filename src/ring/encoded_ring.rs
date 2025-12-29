@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 
 use crate::ring::{EncodedFramePacket, EncodedSink, EncodedSource, RingStats};
 use crate::types::EncodedFrame;
@@ -21,6 +21,7 @@ struct Inner {
 pub struct EncodedRing {
     inner: Arc<Mutex<Inner>>,
     next_seq: Arc<AtomicU64>,
+    notify: Arc<Condvar>,
 }
 
 #[derive(Clone)]
@@ -55,6 +56,7 @@ impl EncodedRing {
         Self {
             inner: Arc::new(Mutex::new(inner)),
             next_seq: Arc::new(AtomicU64::new(1)),
+            notify: Arc::new(Condvar::new()),
         }
     }
 
@@ -69,6 +71,7 @@ impl EncodedRing {
             frame: Arc::new(frame),
         };
         g.head_seq = seq;
+        self.notify.notify_all();
         seq
     }
 
@@ -110,6 +113,25 @@ impl EncodedRing {
         let g = self.inner.lock().unwrap();
         g.cap
     }
+
+    fn wait_for_data(&self, last_seq: u64) {
+        let mut guard = self.inner.lock().unwrap();
+        while guard.head_seq <= last_seq {
+            guard = self.notify.wait(guard).unwrap();
+        }
+    }
+
+    fn wait_for_data_or_stop(&self, last_seq: u64, stop: &AtomicBool) -> bool {
+        let mut guard = self.inner.lock().unwrap();
+        while guard.head_seq <= last_seq && !stop.load(Ordering::Relaxed) {
+            guard = self.notify.wait(guard).unwrap();
+        }
+        guard.head_seq > last_seq
+    }
+
+    fn notifier(&self) -> Arc<Condvar> {
+        self.notify.clone()
+    }
 }
 
 impl EncodedSink for EncodedRing {
@@ -146,14 +168,55 @@ impl EncodedRingReader {
         }
     }
 
+    pub fn wait_for_read(&mut self) -> EncodedRingRead {
+        loop {
+            match self.poll() {
+                EncodedRingRead::Empty => self.ring.wait_for_data(self.last_seq),
+                read => return read,
+            }
+        }
+    }
+
+    pub fn wait_for_read_or_stop(&mut self, stop: &AtomicBool) -> Option<EncodedRingRead> {
+        loop {
+            if stop.load(Ordering::Relaxed) {
+                return None;
+            }
+            match self.poll() {
+                EncodedRingRead::Empty => {
+                    if !self.ring.wait_for_data_or_stop(self.last_seq, stop) {
+                        return None;
+                    }
+                }
+                read => return Some(read),
+            }
+        }
+    }
+
     pub fn fill(&self) -> u64 {
         let head = self.ring.head_seq();
         head.saturating_sub(self.last_seq)
+    }
+
+    pub fn notifier(&self) -> Arc<Condvar> {
+        self.ring.notifier()
     }
 }
 
 impl EncodedSource for EncodedRingReader {
     fn poll(&mut self) -> EncodedRingRead {
         EncodedRingReader::poll(self)
+    }
+
+    fn wait_for_read(&mut self) -> EncodedRingRead {
+        EncodedRingReader::wait_for_read(self)
+    }
+
+    fn wait_for_read_or_stop(&mut self, stop: &AtomicBool) -> Option<EncodedRingRead> {
+        EncodedRingReader::wait_for_read_or_stop(self, stop)
+    }
+
+    fn notifier(&self) -> Option<Arc<Condvar>> {
+        Some(self.notifier())
     }
 }
