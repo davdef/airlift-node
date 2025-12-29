@@ -1,8 +1,10 @@
+use std::collections::HashMap;
 use std::io::Read;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    mpsc, Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+    mpsc, Arc, Mutex,
 };
 use std::thread;
 
@@ -13,6 +15,86 @@ use crate::audio::{EncodedFrameSource, EncodedRead};
 use crate::codecs::registry::CodecRegistry;
 use crate::codecs::{CodecInfo, ContainerKind, EncodedFrame};
 use crate::core::error::{AudioError, AudioResult};
+
+const MAX_STREAMS_TOTAL: usize = 32;
+const MAX_STREAMS_PER_IP: usize = 4;
+
+struct StreamRateLimiter {
+    max_streams_total: usize,
+    max_streams_per_ip: usize,
+    active_total: AtomicUsize,
+    active_per_ip: Mutex<HashMap<IpAddr, usize>>,
+}
+
+impl StreamRateLimiter {
+    fn new(max_streams_total: usize, max_streams_per_ip: usize) -> Self {
+        Self {
+            max_streams_total,
+            max_streams_per_ip,
+            active_total: AtomicUsize::new(0),
+            active_per_ip: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn try_acquire(self: &Arc<Self>, remote: Option<SocketAddr>) -> Option<StreamPermit> {
+        let ip = remote.map(|addr| addr.ip());
+
+        loop {
+            let current = self.active_total.load(Ordering::Relaxed);
+            if current >= self.max_streams_total {
+                return None;
+            }
+            if self
+                .active_total
+                .compare_exchange(current, current + 1, Ordering::SeqCst, Ordering::Relaxed)
+                .is_ok()
+            {
+                break;
+            }
+        }
+
+        if let Some(ip) = ip {
+            let mut per_ip = self.active_per_ip.lock().unwrap();
+            let count = per_ip.entry(ip).or_insert(0);
+            if *count >= self.max_streams_per_ip {
+                self.active_total.fetch_sub(1, Ordering::SeqCst);
+                return None;
+            }
+            *count += 1;
+        }
+
+        Some(StreamPermit {
+            limiter: Arc::clone(self),
+            ip,
+        })
+    }
+
+    fn release(&self, ip: Option<IpAddr>) {
+        self.active_total.fetch_sub(1, Ordering::SeqCst);
+        if let Some(ip) = ip {
+            let mut per_ip = self.active_per_ip.lock().unwrap();
+            if let Some(count) = per_ip.get_mut(&ip) {
+                if *count > 1 {
+                    *count -= 1;
+                } else {
+                    per_ip.remove(&ip);
+                }
+            }
+        }
+    }
+
+}
+
+struct StreamPermit {
+    limiter: Arc<StreamRateLimiter>,
+    ip: Option<IpAddr>,
+}
+
+impl Drop for StreamPermit {
+    fn drop(&mut self) {
+        self.limiter.release(self.ip);
+    }
+}
 
 // ============================================================================
 // Public entry
@@ -39,6 +121,10 @@ where
 
     let ring_factory: Arc<dyn Fn() -> Box<dyn EncodedFrameSource + Send> + Send + Sync> =
         Arc::new(move || Box::new(ring_reader_factory()));
+    let limiter = Arc::new(StreamRateLimiter::new(
+        MAX_STREAMS_TOTAL,
+        MAX_STREAMS_PER_IP,
+    ));
 
     info!("[audio] HTTP server on {}", bind);
 
@@ -57,7 +143,7 @@ where
             }
 
             if req.url().starts_with("/audio/live") {
-                handle_live_simple(req, ring_factory.clone());
+                handle_live_simple(req, ring_factory.clone(), limiter.clone());
                 continue;
             }
 
@@ -75,8 +161,18 @@ where
 fn handle_live_simple(
     req: tiny_http::Request,
     ring_factory: Arc<dyn Fn() -> Box<dyn EncodedFrameSource + Send> + Send + Sync>,
+    limiter: Arc<StreamRateLimiter>,
 ) {
     info!("[audio] live start (encoded frames)");
+
+    let permit = match limiter.try_acquire(req.remote_addr()) {
+        Some(permit) => permit,
+        None => {
+            warn!("[audio] live rejected (rate limit exceeded)");
+            let _ = req.respond(Response::empty(StatusCode(429)));
+            return;
+        }
+    };
 
     let stop = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
@@ -86,6 +182,7 @@ fn handle_live_simple(
         rx: mpsc::Receiver<Vec<u8>>,
         buffer: Vec<u8>,
         stop: Arc<AtomicBool>,
+        _permit: StreamPermit,
     }
 
     impl Read for LiveReader {
@@ -119,6 +216,7 @@ fn handle_live_simple(
         rx,
         buffer: Vec::new(),
         stop: stop.clone(),
+        _permit: permit,
     };
 
     let mut source = ring_factory();

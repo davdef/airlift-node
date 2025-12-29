@@ -4,7 +4,8 @@ use std::fs::File;
 use std::io::Read;
 use anyhow::{Result, anyhow};
 
-use crate::core::{Producer, ProducerStatus, AudioRingBuffer};
+use crate::audio::sanitize_audio_path;
+use crate::core::{AudioRingBuffer, Producer, ProducerStatus};
 use crate::producers::wait::StopWait;
 
 // Timing constants for file playback loop.
@@ -52,14 +53,19 @@ impl Producer for FileProducer {
             return Ok(());
         }
         
-        log::info!("FileProducer '{}': Starting (path: {}, loop: {})", 
-            self.name, 
-            self.config.path.as_deref().unwrap_or("none"),
+        let path = sanitize_audio_path(
+            self.config
+                .path
+                .as_deref()
+                .ok_or_else(|| anyhow!("No file path specified"))?,
+        )?;
+        
+        log::info!(
+            "FileProducer '{}': Starting (path: {}, loop: {})",
+            self.name,
+            path.display(),
             self.config.loop_audio.unwrap_or(false)
         );
-        
-        let path = self.config.path.clone()
-            .ok_or_else(|| anyhow!("No file path specified"))?;
             
         let sample_rate = self.config.sample_rate.unwrap_or(48000);
         let channels = self.config.channels.unwrap_or(2);
@@ -74,7 +80,7 @@ impl Producer for FileProducer {
         let stop_wait = self.stop_wait.clone();
         
         let handle = std::thread::spawn(move || {
-            log::info!("FileProducer '{}': Playing {}", name, path);
+            log::info!("FileProducer '{}': Playing {}", name, path.display());
             
             let mut iteration = 0;
             while running.load(Ordering::Relaxed) {
@@ -111,7 +117,12 @@ impl Producer for FileProducer {
                         log::debug!("FileProducer '{}': Generated frame", name);
                     }
                     Err(e) => {
-                        log::error!("FileProducer '{}': Failed to open {}: {}", name, path, e);
+                        log::error!(
+                            "FileProducer '{}': Failed to open {}: {}",
+                            name,
+                            path.display(),
+                            e
+                        );
                         break;
                     }
                 }

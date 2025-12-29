@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use anyhow::Result;
+use crate::audio::sanitize_audio_path;
 use crate::core::ringbuffer::AudioRingBuffer;
 use std::io::{self, Seek};
 
@@ -98,12 +99,17 @@ pub mod file_writer {
                 return Ok(());
             }
             
-            log::info!("FileConsumer '{}' starting to write to {}", self.name, self.output_path);
+            let output_path = sanitize_audio_path(&self.output_path)?;
+            log::info!(
+                "FileConsumer '{}' starting to write to {}",
+                self.name,
+                output_path.display()
+            );
             self.running.store(true, Ordering::SeqCst);
             
             let running = self.running.clone();
             let input_buffer = self.input_buffer.clone();
-            let output_path = self.output_path.clone();
+            let output_path = output_path.clone();
             let frames_processed = self.frames_processed.clone();
             let bytes_written = self.bytes_written.clone();
             let reader_id = self.reader_id.clone();
@@ -157,11 +163,18 @@ pub mod file_writer {
                             }
                         }
                         
-                        log::info!("FileConsumer stopped. Wrote {} frames to {}", 
-                            frames_processed.load(Ordering::Relaxed), output_path);
+                        log::info!(
+                            "FileConsumer stopped. Wrote {} frames to {}",
+                            frames_processed.load(Ordering::Relaxed),
+                            output_path.display()
+                        );
                     }
                     Err(e) => {
-                        log::error!("Failed to create file {}: {}", output_path, e);
+                        log::error!(
+                            "Failed to create file {}: {}",
+                            output_path.display(),
+                            e
+                        );
                     }
                 }
             });
