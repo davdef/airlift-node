@@ -3,6 +3,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+use std::fmt::Debug;
 
 use crate::core::lock::{lock_rwlock_read_with_timeout, lock_rwlock_write_with_timeout};
 use crate::core::logging::ComponentLogger;
@@ -87,6 +88,7 @@ const LOG_EVERY_N_POP: u64 = 100;
 const BUFFER_WARN_THRESHOLD: f32 = 0.8;
 const BUFFER_LOCK_TIMEOUT: Duration = Duration::from_millis(5);
 
+#[derive(Debug)]
 pub struct AudioRingBuffer {
     slots: Arc<Vec<RingSlot>>,
     capacity: usize,

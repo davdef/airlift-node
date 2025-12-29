@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
+use std::fmt::Debug;
 
 use crate::core::lock::lock_mutex_with_timeout;
 use crate::core::logging::ComponentLogger;
