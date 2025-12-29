@@ -7,49 +7,62 @@ use tiny_http::{Header, Method, Request, Response, StatusCode};
 
 use crate::config::{Config, ConfigPatch};
 
-pub fn handle_config_request(req: &mut Request, config: Arc<Mutex<Config>>) {
-    if req.method() != &Method::Post {
-        let _ = req.respond(Response::empty(StatusCode(405)));
-        return;
-    }
+pub fn handle_config_request(mut req: Request, config: Arc<Mutex<Config>>) {
 
-    let mut body = String::new();
-    if let Err(err) = req.as_reader().read_to_string(&mut body) {
-        error!("[config] failed to read request body: {}", err);
-        let _ = req.respond(Response::from_string("invalid request body").with_status_code(400));
-        return;
-    }
+let response = if req.method() != &Method::Post {
+    Response::from_string("")
+        .with_status_code(StatusCode(405))
+} else {
 
-    let patch: ConfigPatch = match serde_json::from_str(&body) {
-        Ok(patch) => patch,
-        Err(err) => {
-            error!("[config] invalid JSON payload: {}", err);
-            let _ = req.respond(Response::from_string("invalid JSON payload").with_status_code(400));
-            return;
+        // Body lesen
+        let mut body = String::new();
+        if let Err(err) = req.as_reader().read_to_string(&mut body) {
+            error!("[config] failed to read request body: {}", err);
+            Response::from_string("invalid request body")
+                .with_status_code(StatusCode(400))
+        } else {
+            // JSON parsen
+            match serde_json::from_str::<ConfigPatch>(&body) {
+                Ok(patch) => {
+                    // Config locken
+                    match config.lock() {
+                        Ok(mut guard) => {
+                            // Patch anwenden
+                            match guard.apply_patch(&patch) {
+                                Ok(_) => {
+                                    let payload = json!({
+                                        "status": "ok",
+                                        "config": &*guard,
+                                    });
+                                    Response::from_string(payload.to_string())
+                                        .with_status_code(StatusCode(200))
+                                        .with_header(
+                                            Header::from_bytes(
+                                                "Content-Type",
+                                                "application/json",
+                                            )
+                                            .unwrap(),
+                                        )
+                                }
+                                Err(err) => {
+                                    error!("[config] failed to apply patch: {}", err);
+                                    Response::from_string(err.to_string())
+                                        .with_status_code(StatusCode(400))
+                                }
+                            }
+                        }
+                        Err(_) => Response::from_string("config lock poisoned")
+                            .with_status_code(StatusCode(500)),
+                    }
+                }
+                Err(err) => {
+                    error!("[config] invalid JSON payload: {}", err);
+                    Response::from_string("invalid JSON payload")
+                        .with_status_code(StatusCode(400))
+                }
+            }
         }
     };
 
-    let mut guard = match config.lock() {
-        Ok(guard) => guard,
-        Err(_) => {
-            let _ = req.respond(Response::from_string("config lock poisoned").with_status_code(500));
-            return;
-        }
-    };
-
-    if let Err(err) = guard.apply_patch(&patch) {
-        error!("[config] failed to apply patch: {}", err);
-        let _ = req.respond(Response::from_string(err.to_string()).with_status_code(400));
-        return;
-    }
-
-    let payload = json!({
-        "status": "ok",
-        "config": &*guard,
-    });
-    let body = payload.to_string();
-    let response = Response::from_string(body)
-        .with_status_code(StatusCode(200))
-        .with_header(Header::from_bytes("Content-Type", "application/json").unwrap());
     let _ = req.respond(response);
 }

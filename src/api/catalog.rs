@@ -23,7 +23,7 @@ pub struct CatalogItem {
     pub flow: Option<String>,
 }
 
-pub fn handle_catalog_request(req: &mut Request, node: Arc<Mutex<AirliftNode>>) {
+pub fn handle_catalog_request(req: Request, node: Arc<Mutex<AirliftNode>>) {
     if req.method() != &Method::Get {
         let _ = req.respond(Response::empty(StatusCode(405)));
         return;
@@ -35,9 +35,12 @@ pub fn handle_catalog_request(req: &mut Request, node: Arc<Mutex<AirliftNode>>) 
             let body = serde_json::to_string(&catalog).unwrap_or_else(|_| "{}".to_string());
             Response::from_string(body)
                 .with_status_code(StatusCode(200))
-                .with_header(Header::from_bytes("Content-Type", "application/json").unwrap())
+                .with_header(
+                    Header::from_bytes("Content-Type", "application/json").unwrap(),
+                )
         }
-        Err(_) => Response::from_string("node lock poisoned").with_status_code(StatusCode(500)),
+        Err(_) => Response::from_string("node lock poisoned")
+            .with_status_code(StatusCode(500)),
     };
 
     let _ = req.respond(response);

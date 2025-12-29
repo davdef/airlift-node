@@ -28,17 +28,23 @@ pub fn start_api_server(
             }
 
             match (req.method(), req.url()) {
-                (&Method::Post, "/api/config") => {
-                    config::handle_config_request(&mut req, config.clone());
-                }
-                (&Method::Get, "/api/status") => {
-                    status::handle_status_request(&mut req, node.clone());
-                }
+
+
+(&Method::Post, "/api/config") => {
+    config::handle_config_request(req, config.clone());
+    continue;
+}
+(&Method::Get, "/api/status") => {
+    status::handle_status_request(req, node.clone());
+    continue;
+}
+(&Method::Post, "/api/control") => {
+    control::handle_control_request(req, config.clone(), node.clone());
+    continue;
+}
+
                 (&Method::Get, "/api/catalog") => {
-                    catalog::handle_catalog_request(&mut req, node.clone());
-                }
-                (&Method::Post, "/api/control") => {
-                    control::handle_control_request(&mut req, config.clone(), node.clone());
+                    catalog::handle_catalog_request(req, node.clone());
                 }
                 _ => {
                     let _ = req.respond(Response::empty(StatusCode(404)));

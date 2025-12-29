@@ -90,7 +90,7 @@ pub struct ConfigurationIssue {
     pub message: String,
 }
 
-pub fn handle_status_request(req: &mut Request, node: Arc<Mutex<AirliftNode>>) {
+pub fn handle_status_request(mut req: Request, node: Arc<Mutex<AirliftNode>>) {
     if req.method() != &Method::Get {
         let _ = req.respond(Response::empty(StatusCode(405)));
         return;

@@ -166,8 +166,8 @@ pub fn apply_config(node: &mut AirliftNode, config: &Config) -> anyhow::Result<(
     }
 
     if was_running {
-        let mut event_bus = node
-            .event_bus()
+        let event_bus = node.event_bus();
+        let mut event_bus = event_bus
             .lock()
             .map_err(|_| anyhow::anyhow!("event bus lock poisoned"))?;
         event_bus.start().context("failed to restart event bus")?;

@@ -29,48 +29,61 @@ struct ControlOutcome {
 }
 
 pub fn handle_control_request(
-    req: &mut Request,
+    mut req: Request,
     config: Arc<Mutex<Config>>,
     node: Arc<Mutex<AirliftNode>>,
 ) {
-    if req.method() != &Method::Post {
-        let _ = req.respond(Response::empty(StatusCode(405)));
-        return;
-    }
 
-    let mut body = String::new();
-    if let Err(err) = req.as_reader().read_to_string(&mut body) {
-        let _ = req.respond(Response::from_string(err.to_string()).with_status_code(400));
-        return;
-    }
+let response = if req.method() != &Method::Post {
+    Response::from_string("")
+        .with_status_code(StatusCode(405))
+} else {
 
-    let payload: ControlRequest = match serde_json::from_str(&body) {
-        Ok(payload) => payload,
-        Err(err) => {
-            let _ = req.respond(Response::from_string(err.to_string()).with_status_code(400));
-            return;
+        // Body lesen
+        let mut body = String::new();
+        if let Err(err) = req.as_reader().read_to_string(&mut body) {
+            Response::from_string(err.to_string())
+                .with_status_code(StatusCode(400))
+        } else {
+            // JSON parsen
+            match serde_json::from_str::<ControlRequest>(&body) {
+                Ok(payload) => {
+                    match node.lock() {
+                        Ok(mut guard) => {
+                            let outcome = dispatch_control(
+                                &mut guard,
+                                &config,
+                                &payload.action,
+                                payload.target,
+                                payload.parameters,
+                            );
+
+                            let body = serde_json::to_string(&ControlResponse {
+                                ok: outcome.ok,
+                                message: outcome.message,
+                            })
+                            .unwrap_or_else(|_| {
+                                "{\"ok\":false,\"message\":\"serialization_error\"}".to_string()
+                            });
+
+                            Response::from_string(body)
+                                .with_status_code(outcome.status)
+                                .with_header(
+                                    Header::from_bytes(
+                                        "Content-Type",
+                                        "application/json",
+                                    )
+                                    .unwrap(),
+                                )
+                        }
+                        Err(_) => Response::from_string("node lock poisoned")
+                            .with_status_code(StatusCode(500)),
+                    }
+                }
+                Err(err) => Response::from_string(err.to_string())
+                    .with_status_code(StatusCode(400)),
+            }
         }
-    };
-
-    let response = match node.lock() {
-        Ok(mut guard) => {
-            let outcome = dispatch_control(
-                &mut guard,
-                &config,
-                &payload.action,
-                payload.target,
-                payload.parameters,
-            );
-            let body = serde_json::to_string(&ControlResponse {
-                ok: outcome.ok,
-                message: outcome.message,
-            })
-            .unwrap_or_else(|_| "{\"ok\":false,\"message\":\"serialization_error\"}".to_string());
-            Response::from_string(body)
-                .with_status_code(outcome.status)
-                .with_header(Header::from_bytes("Content-Type", "application/json").unwrap())
-        }
-        Err(_) => Response::from_string("node lock poisoned").with_status_code(StatusCode(500)),
     };
 
     let _ = req.respond(response);
@@ -96,6 +109,7 @@ fn dispatch_control(
                 message: format!("failed to start node: {}", err),
             },
         },
+
         "stop" => match node.stop() {
             Ok(()) => ControlOutcome {
                 status: StatusCode(200),
@@ -108,6 +122,7 @@ fn dispatch_control(
                 message: format!("failed to stop node: {}", err),
             },
         },
+
         "restart" => {
             if let Err(err) = node.stop() {
                 return ControlOutcome {
@@ -129,11 +144,15 @@ fn dispatch_control(
                 },
             }
         }
+
         "reload" | "config.reload" | "node.reload" => apply_config_from_state(node, config),
+
         "config.import" => apply_config_from_toml(node, config, parameters),
+
         "flow.start" => dispatch_flow_action(node, target, FlowAction::Start),
         "flow.stop" => dispatch_flow_action(node, target, FlowAction::Stop),
         "flow.restart" => dispatch_flow_action(node, target, FlowAction::Restart),
+
         _ => ControlOutcome {
             status: StatusCode(400),
             ok: false,
@@ -186,7 +205,10 @@ fn dispatch_flow_action(
     }
 }
 
-fn apply_config_from_state(node: &mut AirliftNode, config: &Arc<Mutex<Config>>) -> ControlOutcome {
+fn apply_config_from_state(
+    node: &mut AirliftNode,
+    config: &Arc<Mutex<Config>>,
+) -> ControlOutcome {
     let snapshot = match config.lock() {
         Ok(guard) => guard.clone(),
         Err(_) => {
@@ -271,9 +293,9 @@ fn extract_toml(parameters: Option<serde_json::Value>) -> Result<String, String>
     match parameters {
         Some(serde_json::Value::String(payload)) => Ok(payload),
         Some(serde_json::Value::Object(map)) => {
-            if let Some(payload) = map.get("toml").and_then(|value| value.as_str()) {
+            if let Some(payload) = map.get("toml").and_then(|v| v.as_str()) {
                 Ok(payload.to_string())
-            } else if let Some(payload) = map.get("config_toml").and_then(|value| value.as_str()) {
+            } else if let Some(payload) = map.get("config_toml").and_then(|v| v.as_str()) {
                 Ok(payload.to_string())
             } else {
                 Err("missing toml payload".to_string())
@@ -283,3 +305,4 @@ fn extract_toml(parameters: Option<serde_json::Value>) -> Result<String, String>
         None => Err("missing parameters".to_string()),
     }
 }
+

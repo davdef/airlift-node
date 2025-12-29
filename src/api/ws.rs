@@ -67,13 +67,7 @@ pub fn handle_ws_request(request: Request, node: Arc<Mutex<AirliftNode>>) {
         }
 
         let bus = lock_mutex(&event_bus, "api.ws.unregister_handler");
-        if let Err(error) = bus.unregister_handler(&handler_name) {
-            log::debug!(
-                "Failed to unregister websocket handler '{}': {}",
-                handler_name,
-                error
-            );
-        }
+        let _ = bus.unregister_handler(&handler_name);
     });
 }
 
@@ -81,8 +75,8 @@ fn is_websocket_request(request: &Request) -> bool {
     request
         .headers()
         .iter()
-        .find(|header| header.field.equiv(&"Upgrade"))
-        .map(|header| header.value.as_str().eq_ignore_ascii_case("websocket"))
+        .find(|h| h.field.equiv(&"Upgrade"))
+        .map(|h| h.value.as_str().eq_ignore_ascii_case("websocket"))
         .unwrap_or(false)
 }
 
@@ -90,8 +84,8 @@ fn websocket_key(request: &Request) -> Option<String> {
     request
         .headers()
         .iter()
-        .find(|header| header.field.equiv(&"Sec-WebSocket-Key"))
-        .map(|header| header.value.clone())
+        .find(|h| h.field.equiv(&"Sec-WebSocket-Key"))
+        .map(|h| h.value.as_str().to_string())
 }
 
 fn stream_audio_peaks(
@@ -101,7 +95,6 @@ fn stream_audio_peaks(
     for payload in receiver.iter() {
         write_text_frame(stream, payload.as_bytes())?;
     }
-
     Ok(())
 }
 
@@ -110,9 +103,7 @@ fn write_text_frame(stream: &mut dyn ReadWrite, payload: &[u8]) -> std::io::Resu
     header.push(0x81);
 
     match payload.len() {
-        0..=125 => {
-            header.push(payload.len() as u8);
-        }
+        0..=125 => header.push(payload.len() as u8),
         126..=65535 => {
             header.push(126);
             header.extend_from_slice(&(payload.len() as u16).to_be_bytes());
@@ -129,8 +120,7 @@ fn write_text_frame(stream: &mut dyn ReadWrite, payload: &[u8]) -> std::io::Resu
 }
 
 fn make_header(name: &str, value: &str) -> Header {
-    Header::from_bytes(name.as_bytes(), value.as_bytes())
-        .expect("valid websocket header")
+    Header::from_bytes(name.as_bytes(), value.as_bytes()).unwrap()
 }
 
 fn websocket_accept_key(key: &str) -> String {
@@ -173,6 +163,8 @@ impl EventHandler for WsEventHandler {
     }
 }
 
+/* ===================== SHA1 ===================== */
+
 struct Sha1 {
     state: [u32; 5],
     buffer: [u8; 64],
@@ -210,7 +202,10 @@ impl Sha1 {
             let remaining = 64 - self.buffer_len;
             if input.len() >= remaining {
                 self.buffer[self.buffer_len..64].copy_from_slice(&input[..remaining]);
-                self.process_block(&self.buffer);
+
+                let block = self.buffer;
+                self.process_block(&block);
+
                 self.buffer_len = 0;
                 input = &input[remaining..];
             } else {
@@ -225,34 +220,32 @@ impl Sha1 {
             self.process_block(chunk);
         }
 
-        let remainder = input.len() % 64;
-        if remainder > 0 {
-            let start = input.len() - remainder;
-            self.buffer[..remainder].copy_from_slice(&input[start..]);
-            self.buffer_len = remainder;
+        let rem = input.len() % 64;
+        if rem > 0 {
+            let start = input.len() - rem;
+            self.buffer[..rem].copy_from_slice(&input[start..]);
+            self.buffer_len = rem;
         }
     }
 
     fn finalize(mut self) -> [u8; 20] {
-        let bit_len = self.message_len.saturating_mul(8);
+        let bit_len = self.message_len * 8;
 
         self.buffer[self.buffer_len] = 0x80;
         self.buffer_len += 1;
 
         if self.buffer_len > 56 {
-            for i in self.buffer_len..64 {
-                self.buffer[i] = 0;
-            }
-            self.process_block(&self.buffer);
+            self.buffer[self.buffer_len..64].fill(0);
+            let block = self.buffer;
+            self.process_block(&block);
             self.buffer_len = 0;
         }
 
-        for i in self.buffer_len..56 {
-            self.buffer[i] = 0;
-        }
-
+        self.buffer[self.buffer_len..56].fill(0);
         self.buffer[56..64].copy_from_slice(&bit_len.to_be_bytes());
-        self.process_block(&self.buffer);
+
+        let block = self.buffer;
+        self.process_block(&block);
 
         let mut out = [0u8; 20];
         for (i, chunk) in out.chunks_exact_mut(4).enumerate() {
@@ -263,10 +256,9 @@ impl Sha1 {
 
     fn process_block(&mut self, block: &[u8]) {
         let mut w = [0u32; 80];
-        for (i, chunk) in block.chunks_exact(4).take(16).enumerate() {
-            w[i] = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+        for (i, c) in block.chunks_exact(4).take(16).enumerate() {
+            w[i] = u32::from_be_bytes([c[0], c[1], c[2], c[3]]);
         }
-
         for i in 16..80 {
             w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
         }
@@ -291,6 +283,7 @@ impl Sha1 {
                 .wrapping_add(e)
                 .wrapping_add(k)
                 .wrapping_add(w[i]);
+
             e = d;
             d = c;
             c = b.rotate_left(30);
@@ -312,29 +305,26 @@ fn base64_encode(data: &[u8]) -> String {
     let mut out = String::with_capacity(((data.len() + 2) / 3) * 4);
 
     for chunk in data.chunks(3) {
-        let bytes = match chunk.len() {
+        let b = match chunk.len() {
             1 => [chunk[0], 0, 0],
             2 => [chunk[0], chunk[1], 0],
             _ => [chunk[0], chunk[1], chunk[2]],
         };
-
-        let n = ((bytes[0] as u32) << 16) | ((bytes[1] as u32) << 8) | bytes[2] as u32;
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
 
         out.push(TABLE[((n >> 18) & 0x3F) as usize] as char);
         out.push(TABLE[((n >> 12) & 0x3F) as usize] as char);
-
-        if chunk.len() > 1 {
-            out.push(TABLE[((n >> 6) & 0x3F) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[((n >> 6) & 0x3F) as usize] as char
         } else {
-            out.push('=');
-        }
-
-        if chunk.len() > 2 {
-            out.push(TABLE[(n & 0x3F) as usize] as char);
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[(n & 0x3F) as usize] as char
         } else {
-            out.push('=');
-        }
+            '='
+        });
     }
-
     out
 }
+
