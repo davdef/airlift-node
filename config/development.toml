@@ -1,0 +1,28 @@
+node_name = "airlift-node-dev"
+
+[monitoring]
+http_port = 8087
+
+[producers.sine]
+type = "sine"
+enabled = true
+sample_rate = 48000
+channels = 2
+
+[producers.sine.config]
+frequency = 440.0
+
+[processors.passthrough]
+type = "passthrough"
+enabled = true
+
+[consumers.file]
+type = "file"
+enabled = true
+path = "data/dev_output.wav"
+
+[flows.main]
+enabled = true
+inputs = ["sine"]
+processors = ["passthrough"]
+outputs = ["file"]

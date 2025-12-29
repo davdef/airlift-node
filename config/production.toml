@@ -1,0 +1,29 @@
+node_name = "airlift-node"
+
+[monitoring]
+http_port = 8087
+
+[producers.alsa_in]
+type = "alsa_input"
+enabled = true
+device = "hw:0,0"
+sample_rate = 48000
+channels = 2
+
+[processors.main_gain]
+type = "gain"
+enabled = true
+
+[processors.main_gain.config]
+gain = 1.0
+
+[consumers.file]
+type = "file"
+enabled = true
+path = "/var/lib/airlift-node/output.wav"
+
+[flows.main]
+enabled = true
+inputs = ["alsa_in"]
+processors = ["main_gain"]
+outputs = ["file"]
