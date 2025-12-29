@@ -3,6 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use tiny_http::{Header, Method, Request, Response, StatusCode};
 
+use crate::app::configurator::{
+    supported_consumer_type_list, supported_producer_type_list, supported_processor_type_list,
+};
 use crate::core::AirliftNode;
 
 #[derive(Serialize)]
@@ -47,11 +50,10 @@ pub fn handle_catalog_request(req: Request, node: Arc<Mutex<AirliftNode>>) {
 }
 
 fn build_catalog(node: &AirliftNode) -> CatalogResponse {
-    let inputs = node
-        .producers()
+    let inputs = supported_producer_type_list()
         .iter()
-        .map(|producer| CatalogItem {
-            name: producer.name().to_string(),
+        .map(|producer_type| CatalogItem {
+            name: (*producer_type).to_string(),
             item_type: "producer".to_string(),
             flow: None,
         })
@@ -72,28 +74,26 @@ fn build_catalog(node: &AirliftNode) -> CatalogResponse {
     let mut outputs = Vec::new();
     let mut services = Vec::new();
 
-    for flow in node.flows() {
-        services.push(CatalogItem {
-            name: flow.name.clone(),
-            item_type: "flow".to_string(),
+    services.push(CatalogItem {
+        name: "flow".to_string(),
+        item_type: "flow".to_string(),
+        flow: None,
+    });
+
+    for processor_type in supported_processor_type_list() {
+        processing.push(CatalogItem {
+            name: (*processor_type).to_string(),
+            item_type: "processor".to_string(),
             flow: None,
         });
+    }
 
-        for processor in flow.processor_names() {
-            processing.push(CatalogItem {
-                name: processor,
-                item_type: "processor".to_string(),
-                flow: Some(flow.name.clone()),
-            });
-        }
-
-        for consumer in flow.consumer_names() {
-            outputs.push(CatalogItem {
-                name: consumer,
-                item_type: "consumer".to_string(),
-                flow: Some(flow.name.clone()),
-            });
-        }
+    for consumer_type in supported_consumer_type_list() {
+        outputs.push(CatalogItem {
+            name: (*consumer_type).to_string(),
+            item_type: "consumer".to_string(),
+            flow: None,
+        });
     }
 
     CatalogResponse {
