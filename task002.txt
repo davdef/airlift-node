@@ -1,0 +1,195 @@
+Potenzielle Probleme / Inkonsistenzen
+1. Mixer-Config-Handling
+rust
+// In main.rs Zeile ~260:
+let mixer_config = serde_json::from_value::<processors::MixerConfig>(
+    serde_json::to_value(&processor_cfg.config).unwrap_or_default()
+)
+Problem: Der Mixer erwartet MixerConfig, aber die Processor-Config hat nur ein generisches config: HashMap<String, serde_json::Value> Feld.
+
+Lösung: Entweder:
+
+Mixer-Config direkt in Processor-Config einbetten
+
+Oder spezielles Mixer-Config-Parsing in main.rs entfernen
+
+2. Buffer-Registry vs. direkte Verbindungen
+Es gibt jetzt zwei Methoden:
+
+Traditionell: connect_producer_to_flow()
+
+Modern: Mixer mit connect_from_registry()
+
+Problem: Inkonsistente Verbindungslogik. Mixer verwendet Registry, Flows verwenden direkte Buffer-Referenzen.
+
+3. Event-Bus in AirliftNode
+rust
+// In node.rs, Zeile ~250:
+event_bus.start().expect("Failed to start EventBus");
+Problem: EventBus wird im new() gestartet, aber nie gestoppt (außer bei Node-Shutdown).
+
+4. Double-Implementationen
+node.rs.backup existiert noch
+
+processor.rs.backup2 existiert noch
+
+ringbuffer_lockfree.rs und ringbuffer.rs parallel
+
+5. Mixer from_config Signatur
+rust
+pub fn from_config(name: &str, config: &MixerConfig) -> Self {  // &MixerConfig statt MixerConfig
+    config.clone()  // Clone statt Move
+}
+Problem: Unnötiges Cloning. Besser: config: MixerConfig nehmen und verschieben.
+
+🚀 Vorschläge für Processor-Plugins
+1. EQ-Processor (Equalizer)
+rust
+pub struct Equalizer {
+    bands: Vec<BiquadFilter>,  // Mehrere Bands
+    sample_rate: u32,
+}
+
+pub struct BiquadFilter {
+    b0: f32, b1: f32, b2: f32, a1: f32, a2: f32,
+    x1: f32, x2: f32, y1: f32, y2: f32,
+}
+
+// Config: [{type: "lowpass", freq: 100, q: 0.7}, ...]
+2. Compressor/Limiter
+rust
+pub struct Compressor {
+    threshold: f32,    // dB
+    ratio: f32,       // 4:1 etc.
+    attack: f32,      // ms
+    release: f32,     // ms
+    makeup_gain: f32, // dB
+    envelope: f32,
+}
+
+// Mit Lookahead und RMS/Peak-Detection
+3. Reverb/Delay
+rust
+pub struct ReverbProcessor {
+    delay_lines: Vec<DelayLine>,
+    feedback: f32,
+    wet_dry: f32,
+}
+
+pub struct DelayLine {
+    buffer: Vec<f32>,
+    write_pos: usize,
+    read_pos: usize,
+    delay_samples: usize,
+}
+4. VST3/LV2 Hosting
+rust
+pub struct Vst3Processor {
+    plugin_path: String,
+    plugin: Option<Box<dyn vst3::Plugin>>,
+    buffer: Vec<Vec<f32>>,
+}
+
+// Integration mit https://crates.io/crates/vst3
+5. Spectrum Analyzer / FFT
+rust
+pub struct SpectrumAnalyzer {
+    fft_size: usize,
+    window: Vec<f32>,
+    spectrum: Arc<Mutex<Vec<f32>>>,
+}
+
+// Real-time FFT mit WebSocket-Output für Web-UI
+6. Noise Gate
+rust
+pub struct NoiseGate {
+    threshold: f32,
+    attack: f32,
+    release: f32,
+    hold: f32,
+    state: GateState,
+}
+
+enum GateState { Open, Closing, Closed, Opening }
+7. Pitch Shifter / Time Stretcher
+rust
+pub struct PitchShifter {
+    pitch_ratio: f32,
+    overlap: usize,
+    fft_plan: rustfft::FftPlanner<f32>,
+}
+
+// Mit Phase Vocoder für bessere Qualität
+8. Multi-Band Compressor
+rust
+pub struct MultiBandCompressor {
+    crossover_freqs: Vec<f32>,
+    bands: Vec<Compressor>,
+    filters: Vec<(BiquadFilter, BiquadFilter)>, // Split/Join
+}
+🔧 Dringende Verbesserungen
+1. Registry-Konsistenz
+rust
+// Statt zwei Systeme, eins verwenden:
+trait Connectable {
+    fn connect_to_registry(&mut self, registry: &BufferRegistry) -> Result<()>;
+    fn disconnect_from_registry(&mut self) -> Result<()>;
+}
+2. Event-System verbessern
+Event-Bus automatisch stoppen bei Drop
+
+Event-Handler mit Prioritäts-Warteschlange
+
+Persistente Event-Speicherung (SQLite)
+
+3. Config-Validation
+rust
+impl Config {
+    pub fn validate(&self) -> Result<ValidationResult> {
+        // Prüfe: Alle referenzierten Komponenten existieren
+        // Prüfe: Keine Zyklen im Graph
+        // Prüfe: Sample-Rate Kompatibilität
+    }
+}
+4. Plugin-System
+rust
+pub trait AudioPlugin: Processor {
+    fn plugin_info() -> PluginInfo;
+    fn create(config: serde_json::Value) -> Result<Box<dyn AudioPlugin>>;
+}
+
+struct PluginRegistry {
+    plugins: HashMap<String, PluginFactory>,
+}
+📈 Empfehlung für nächste Schritte
+Zuerst Inkonsistenzen beheben:
+
+Mixer-Config Parsing in main.rs korrigieren
+
+Event-Bus Lifecycle managen
+
+Backup-Dateien entfernen
+
+Dann Registry vereinheitlichen:
+
+Alle Komponenten über Registry verbinden
+
+Deprecate connect_producer_to_flow()
+
+Danach Processor-Plugins hinzufügen:
+
+Starte mit EQ und Compressor (einfachste)
+
+Dann Reverb/Delay (mittel)
+
+Zuletzt VST-Hosting (komplex)
+
+Testing/Validation:
+
+Unit-Tests für alle neuen Processors
+
+Integrationstests für Mixer mit Registry
+
+Performance-Tests für Lockfree vs. Mutex
+
+Das Projekt entwickelt sich gut in Richtung professionelle Audio-Pipeline. Die Architektur mit Event-Bus und Buffer-Registry ist solide und erweiterbar.
