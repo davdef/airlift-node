@@ -2,6 +2,7 @@ mod core;
 mod config;
 mod producers;
 mod processors;
+mod app;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -184,6 +185,8 @@ match producer_cfg.producer_type.as_str() {
 
     }
     
+    let plugin_registry = app::init::build_plugin_registry();
+
     // Flows aus Config erstellen und Processors hinzufügen
     for (flow_name, flow_cfg) in &config.flows {
         if !flow_cfg.enabled {
@@ -199,18 +202,7 @@ match producer_cfg.producer_type.as_str() {
                     continue;
                 }
                 
-                let mut config_value =
-                    serde_json::to_value(&processor_cfg.config).unwrap_or_else(|_| serde_json::json!({}));
-                if let Some(config_object) = config_value.as_object_mut() {
-                    config_object.insert(
-                        "name".to_string(),
-                        serde_json::Value::String(processor_name.to_string()),
-                    );
-                } else {
-                    config_value = serde_json::json!({ "name": processor_name });
-                }
-
-                match processor_registry.create(&processor_cfg.processor_type, config_value) {
+                match plugin_registry.create_processor(processor_name, processor_cfg) {
                     Ok(processor) => {
                         flow.add_processor(processor);
                         log::info!(
