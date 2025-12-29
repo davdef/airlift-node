@@ -313,10 +313,27 @@ pub struct AirliftNode {
     producer_buffers: Vec<Arc<AudioRingBuffer>>,
     pub flows: Vec<Flow>,
     buffer_registry: Arc<BufferRegistry>,
+    event_bus: Arc<EventBus>,
 }
 
 impl AirliftNode {
     pub fn new() -> Self {
+        // EventBus erstellen und Standard-Handler registrieren
+        let mut event_bus = EventBus::new("airlift_node");
+        
+        // Standard-Handler registrieren
+        let logger_handler = Arc::new(EventLoggerHandler::new(
+            "node_event_logger", 
+            EventPriority::Info
+        ));
+        let _ = event_bus.register_handler(logger_handler);
+        
+        let stats_handler = Arc::new(EventStatsHandler::new("node_event_stats"));
+        let _ = event_bus.register_handler(stats_handler);
+        
+        // EventBus starten
+        event_bus.start().expect("Failed to start EventBus");
+
         let node = Self {
             running: Arc::new(AtomicBool::new(false)),
             start_time: Instant::now(),
@@ -324,12 +341,27 @@ impl AirliftNode {
             producer_buffers: Vec::new(),
             flows: Vec::new(),
             buffer_registry: Arc::new(BufferRegistry::new()),
+            event_bus: Arc::new(event_bus),
         };
         
         node.info("AirliftNode created with buffer registry");
         node
     }
     
+    pub fn publish_event(&self, event_type: EventType, priority: EventPriority, payload: serde_json::Value) {
+        let event = Event::new(
+            event_type,
+            priority,
+            "AirliftNode",
+            "main",
+            payload,
+        ).with_context(self.log_context());
+        
+        if let Err(e) = self.event_bus.publish(event) {
+            self.error(&format!("Failed to publish event: {}", e));
+        }
+    }
+
     pub fn buffer_registry(&self) -> Arc<BufferRegistry> {
         self.buffer_registry.clone()
     }
@@ -351,6 +383,13 @@ impl AirliftNode {
         self.producer_buffers.push(buffer);
         self.producers.push(producer);
         
+        self.publish_event(EventType::ProducerAdded, EventPriority::Info,
+            serde_json::json!({
+                "name": producer_name,
+                "buffer_name": buffer_name,
+                "timestamp": crate::core::timestamp::utc_ns_now(),
+            }));
+
         self.info(&format!("Added producer '{}' (buffer: '{}')", producer_name, buffer_name));
         Ok(())
     }
@@ -418,6 +457,13 @@ impl AirliftNode {
     
     pub fn start(&mut self) -> Result<()> {
         self.info("Node starting...");
+
+        self.publish_event(EventType::NodeStarted, EventPriority::Info,
+            serde_json::json!({
+                "timestamp": crate::core::timestamp::utc_ns_now(),
+                "producers": self.producers.len(),
+                "flows": self.flows.len(),
+            }));
         
         if self.running.load(Ordering::Relaxed) {
             self.warn("Node already running");
@@ -480,6 +526,13 @@ impl AirliftNode {
     
     pub fn stop(&mut self) -> Result<()> {
         self.info("Node stopping...");
+
+        self.publish_event(EventType::NodeStopped, EventPriority::Info,
+            serde_json::json!({
+                "timestamp": crate::core::timestamp::utc_ns_now(),
+                "uptime_seconds": self.start_time.elapsed().as_secs(),
+            }));
+
         self.running.store(false, Ordering::SeqCst);
         
         // Flows stoppen - Namen vorher sammeln
