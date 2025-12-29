@@ -10,6 +10,7 @@ pub mod catalog;
 pub mod config;
 pub mod control;
 pub mod status;
+pub mod ws;
 
 pub fn start_api_server(
     bind: &str,
@@ -21,6 +22,11 @@ pub fn start_api_server(
 
     thread::spawn(move || {
         for mut req in server.incoming_requests() {
+            if req.method() == &Method::Get && req.url() == "/ws" {
+                ws::handle_ws_request(req, node.clone());
+                continue;
+            }
+
             match (req.method(), req.url()) {
                 (&Method::Post, "/api/config") => {
                     config::handle_config_request(&mut req, config.clone());
