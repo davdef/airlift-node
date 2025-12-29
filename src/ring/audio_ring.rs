@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
