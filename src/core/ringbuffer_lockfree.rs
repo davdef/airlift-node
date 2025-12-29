@@ -2,8 +2,13 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 use crate::core::logging::ComponentLogger;
+use crate::core::lock::{
+    lock_rwlock_read_with_timeout,
+    lock_rwlock_write_with_timeout,
+};
 pub use crate::ring::PcmFrame;
 use crate::ring::PcmSink;
 
@@ -83,6 +88,7 @@ const LOG_EVERY_N_PUSH: u64 = 50;
 const LOG_INITIAL_PUSH_COUNT: u64 = 5;
 const LOG_EVERY_N_POP: u64 = 100;
 const BUFFER_WARN_THRESHOLD: f32 = 0.8;
+const BUFFER_LOCK_TIMEOUT: Duration = Duration::from_millis(5);
 
 pub struct AudioRingBuffer {
     slots: Arc<Vec<RingSlot>>,
@@ -131,10 +137,17 @@ impl AudioRingBuffer {
         let idx = (seq as usize) % self.capacity;
         let slot = &self.slots[idx];
 
-        {
-            let mut guard = slot.frame.write().unwrap();
+        if let Some(mut guard) = lock_rwlock_write_with_timeout(
+            &slot.frame,
+            "ringbuffer_lockfree.push.slot",
+            BUFFER_LOCK_TIMEOUT,
+        ) {
             *guard = Some(frame);
             slot.seq.store(seq, Ordering::Release);
+        } else {
+            self.dropped_frames.fetch_add(1, Ordering::Relaxed);
+            self.warn("Dropping frame: slot write lock timeout");
+            return self.len() as u64;
         }
         self.head_seq.store(seq, Ordering::Release);
 
@@ -193,7 +206,17 @@ impl AudioRingBuffer {
         }
 
         let slot = &self.slots[(position as usize) % self.capacity];
-        let guard = slot.frame.read().unwrap();
+        let guard = match lock_rwlock_read_with_timeout(
+            &slot.frame,
+            "ringbuffer_lockfree.pop.slot",
+            BUFFER_LOCK_TIMEOUT,
+        ) {
+            Some(guard) => guard,
+            None => {
+                self.warn("Pop aborted: slot read lock timeout");
+                return None;
+            }
+        };
         let slot_seq = slot.seq.load(Ordering::Acquire);
         if slot_seq != position {
             self.dropped_frames.fetch_add(1, Ordering::Relaxed);
@@ -230,8 +253,16 @@ impl AudioRingBuffer {
         self.info("Clearing buffer");
 
         for slot in self.slots.iter() {
-            let mut guard = slot.frame.write().unwrap();
-            *guard = None;
+            if let Some(mut guard) = lock_rwlock_write_with_timeout(
+                &slot.frame,
+                "ringbuffer_lockfree.clear.slot",
+                BUFFER_LOCK_TIMEOUT,
+            ) {
+                *guard = None;
+            } else {
+                self.warn("Clear aborted: slot write lock timeout");
+                return;
+            }
             slot.seq.store(0, Ordering::Release);
         }
 
@@ -349,7 +380,17 @@ impl AudioRingBuffer {
 
     fn read_by_seq(&self, seq: u64) -> Option<PcmFrame> {
         let slot = &self.slots[(seq as usize) % self.capacity];
-        let guard = slot.frame.read().unwrap();
+        let guard = match lock_rwlock_read_with_timeout(
+            &slot.frame,
+            "ringbuffer_lockfree.read_by_seq.slot",
+            BUFFER_LOCK_TIMEOUT,
+        ) {
+            Some(guard) => guard,
+            None => {
+                self.warn("Read aborted: slot read lock timeout");
+                return None;
+            }
+        };
         let seq_start = slot.seq.load(Ordering::Acquire);
         if seq_start != seq {
             return None;

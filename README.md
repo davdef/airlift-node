@@ -118,9 +118,17 @@ Geplantes Zielbild:
 
 ## Ringbuffer-Auswahl
 
-Standardmäßig wird `src/core/ringbuffer.rs` verwendet. Die Lockfree-Variante
-`src/core/ringbuffer_lockfree.rs` ist nur aktiv, wenn das Feature
-`lockfree` gesetzt ist. Externe Nutzung importiert immer
-`crate::core::ringbuffer`, unabhängig vom Feature-Flag.
+Standardmäßig wird `src/core/ringbuffer.rs` verwendet (Mutex/RwLock-basierte
+Synchronisierung). Die Lockfree-Variante `src/core/ringbuffer_lockfree.rs`
+ist nur aktiv, wenn das Feature `lockfree` gesetzt ist:
+
+- **Default (ohne Feature):** `src/core/ringbuffer.rs` – stabiler, einfacher
+  zu debuggen, geeignet für die meisten Deployments.
+- **Feature `lockfree`:** `src/core/ringbuffer_lockfree.rs` – optimiert für
+  hohe Parallelität/Contention und geringere Lock-Overheads, dafür mit
+  komplexerer Debugging-Oberfläche.
+
+Aktivierung: `cargo build --features lockfree`. Externe Nutzung importiert
+immer `crate::core::ringbuffer`, unabhängig vom Feature-Flag.
 - **Consumers**: `src/core/consumer/*`
 - **Tests**: `src/core/*.rs`, `src/processors/mixer.rs`, `tests/*`
