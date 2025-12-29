@@ -296,6 +296,9 @@ match processor_cfg.processor_type.as_str() {
                             }
                             break;
                         }
+                    if let Err(e) = node.connect_registry_to_flow(flow_index, input_name) {
+                        log::error!("Failed to connect buffer {} to flow {}: {}", 
+                            input_name, flow_name, e);
                     }
                 }
                 
@@ -328,6 +331,7 @@ match processor_cfg.processor_type.as_str() {
     // und verbinde einen Producer direkt
     if let Some(first_producer) = node.producers().first() {
         log::info!("Found producer: {}, setting up test...", first_producer.name());
+        let buffer_name = format!("producer:{}", first_producer.name());
         
         // Erstelle einfachen Test-Flow
         let mut test_flow = core::Flow::new("test_recording");
@@ -342,8 +346,7 @@ match processor_cfg.processor_type.as_str() {
         node.flows.push(test_flow);
         
         // Verbinde ersten Producer zum Test-Flow
-        let buffer_name = format!("producer:{}", first_producer.name());
-        if let Err(e) = node.connect_registered_buffer_to_flow(&buffer_name, node.flows.len() - 1) {
+        if let Err(e) = node.connect_registry_to_flow(node.flows.len() - 1, &buffer_name) {
             log::error!("Failed to connect test: {}", e);
         }
     }
