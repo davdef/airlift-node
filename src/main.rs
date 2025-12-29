@@ -214,27 +214,19 @@ match processor_cfg.processor_type.as_str() {
             processor_name, gain, flow_name);
     }
 "mixer" => {
-    // Mixer aus Config parsen
-    match serde_json::from_value::<processors::MixerConfig>(
+    let mut mixer = processors::Mixer::new(processor_name);
+
+    if let Err(e) = mixer.update_config(
         serde_json::to_value(&processor_cfg.config).unwrap_or_default()
     ) {
-        Ok(mixer_config) => {
-            let mixer = processors::Mixer::from_config(processor_name, &mixer_config);
-            
-            // Mixer zu Flow hinzufügen
-            flow.add_processor(Box::new(mixer));
-            
-            log::info!("Added mixer processor '{}' with {} inputs to flow '{}'", 
-                processor_name, mixer_config.inputs.len(), flow_name);
-        }
-        Err(e) => {
-            log::error!("Failed to parse mixer config for '{}': {}", processor_name, e);
-            // Fallback: einfachen Mixer erstellen
-            let mixer = processors::Mixer::new(processor_name);
-            flow.add_processor(Box::new(mixer));
-            log::warn!("Created fallback mixer '{}'", processor_name);
-        }
+        log::error!("Failed to apply mixer config for '{}': {}", processor_name, e);
     }
+
+    // Mixer zu Flow hinzufügen
+    flow.add_processor(Box::new(mixer));
+
+    log::info!("Added mixer processor '{}' to flow '{}'", 
+        processor_name, flow_name);
 }
     _ => log::error!("Unknown processor type for '{}': {}", 
         processor_name, processor_cfg.processor_type),
