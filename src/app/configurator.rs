@@ -219,18 +219,32 @@ pub fn validate_config_capabilities(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+const SUPPORTED_PRODUCER_TYPES: [&str; 4] = ["file", "alsa_input", "alsa_output", "sine"];
+const SUPPORTED_PROCESSOR_TYPES: [&str; 3] = ["passthrough", "gain", "mixer"];
+const SUPPORTED_CONSUMER_TYPES: [&str; 1] = ["file"];
+
+pub(crate) fn supported_producer_type_list() -> &'static [&'static str] {
+    &SUPPORTED_PRODUCER_TYPES
+}
+
+pub(crate) fn supported_processor_type_list() -> &'static [&'static str] {
+    &SUPPORTED_PROCESSOR_TYPES
+}
+
+pub(crate) fn supported_consumer_type_list() -> &'static [&'static str] {
+    &SUPPORTED_CONSUMER_TYPES
+}
+
 fn supported_producer_types() -> HashSet<&'static str> {
-    ["file", "alsa_input", "alsa_output", "sine"]
-        .into_iter()
-        .collect()
+    SUPPORTED_PRODUCER_TYPES.into_iter().collect()
 }
 
 fn supported_processor_types() -> HashSet<&'static str> {
-    ["passthrough", "gain", "mixer"].into_iter().collect()
+    SUPPORTED_PROCESSOR_TYPES.into_iter().collect()
 }
 
 fn supported_consumer_types() -> HashSet<&'static str> {
-    ["file"].into_iter().collect()
+    SUPPORTED_CONSUMER_TYPES.into_iter().collect()
 }
 
 fn validate_codec_config(
