@@ -3,14 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::core::logging::ComponentLogger;
-
-#[derive(Debug, Clone)]
-pub struct PcmFrame {
-    pub utc_ns: u64,
-    pub samples: Vec<i16>,
-    pub sample_rate: u32,
-    pub channels: u8,
-}
+pub use crate::ring::PcmFrame;
 
 #[derive(Debug)]
 struct RingSlot {
