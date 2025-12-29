@@ -140,7 +140,7 @@ fn run_normal_mode() -> anyhow::Result<()> {
     let node = Arc::new(Mutex::new(core::AirliftNode::new()));
 
     let api_bind =
-        std::env::var("AIRLIFT_CONFIG_API_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+        std::env::var("AIRLIFT_CONFIG_API_BIND").unwrap_or_else(|_| "127.0.0.1:3008".to_string());
     api::start_api_server(&api_bind, config.clone(), node.clone())?;
 
     let config_snapshot = config

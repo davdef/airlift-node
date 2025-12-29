@@ -1,50 +1,11 @@
-# config.toml Beispiel
-[node]
-name = "audio_mixer"
+node_name = "airlift-node"
+producers = {}
+processors = {}
+consumers = {}
+flows = {}
 
-[producers.mic]
-type = "alsa_input"
-enabled = true
-device = "hw:0,0"
-sample_rate = 48000
-channels = 2
+[api]
+bind = "127.0.0.1:3008"
 
-[producers.system]
-type = "alsa_output"
-enabled = true
-device = "pulse"
-sample_rate = 48000
-channels = 2
-
-[processors.main_mixer]
-type = "mixer"
-enabled = true
-
-[processors.main_mixer.config]
-output_sample_rate = 48000
-output_channels = 2
-master_gain = 0.8
-auto_connect = true
-
-[[processors.main_mixer.config.inputs]]
-name = "microphone"
-source = "producer:mic"  # Buffer-Name in Registry
-gain = 0.7
-enabled = true
-
-[[processors.main_mixer.config.inputs]]
-name = "system_audio"
-source = "producer:system"
-gain = 0.4
-enabled = true
-
-[flows.main]
-enabled = true
-inputs = ["mic", "system"]  # Diese gehen direkt in den Mixer
-processors = ["main_mixer"]
-outputs = ["recorder"]
-
-[consumers.recorder]
-type = "file"
-enabled = true
-path = "mixed_output.wav"
+[monitoring]
+http_port = 8087
