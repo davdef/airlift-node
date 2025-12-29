@@ -2,7 +2,7 @@ use std::fmt::Write;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use tiny_http::{Header, Method, Response, Server, StatusCode};
+use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
 
 use crate::core::AirliftNode;
 
@@ -13,32 +13,8 @@ pub fn start_monitoring_server(bind: &str, node: Arc<Mutex<AirliftNode>>) -> any
     thread::spawn(move || {
         for req in server.incoming_requests() {
             match (req.method(), req.url()) {
-                (&Method::Get, "/health") => {
-                    let running = node.lock().map(|node| node.is_running()).unwrap_or(false);
-                    let status = if running {
-                        StatusCode(200)
-                    } else {
-                        StatusCode(503)
-                    };
-                    let body = if running { "ok" } else { "not_running" };
-                    let response = Response::from_string(body)
-                        .with_status_code(status)
-                        .with_header(Header::from_bytes("Content-Type", "text/plain").unwrap());
-                    let _ = req.respond(response);
-                }
-                (&Method::Get, "/metrics") => {
-                    let metrics = node
-                        .lock()
-                        .map(|node| build_metrics(&node))
-                        .unwrap_or_else(|_| "# error generating metrics\n".to_string());
-                    let response = Response::from_string(metrics)
-                        .with_status_code(StatusCode(200))
-                        .with_header(
-                            Header::from_bytes("Content-Type", "text/plain; version=0.0.4")
-                                .unwrap(),
-                        );
-                    let _ = req.respond(response);
-                }
+                (&Method::Get, "/health") => handle_health_request(req, node.clone()),
+                (&Method::Get, "/metrics") => handle_metrics_request(req, node.clone()),
                 _ => {
                     let _ = req.respond(Response::empty(StatusCode(404)));
                 }
@@ -47,6 +23,33 @@ pub fn start_monitoring_server(bind: &str, node: Arc<Mutex<AirliftNode>>) -> any
     });
 
     Ok(())
+}
+
+pub fn handle_health_request(req: Request, node: Arc<Mutex<AirliftNode>>) {
+    let running = node.lock().map(|node| node.is_running()).unwrap_or(false);
+    let status = if running {
+        StatusCode(200)
+    } else {
+        StatusCode(503)
+    };
+    let body = if running { "ok" } else { "not_running" };
+    let response = Response::from_string(body)
+        .with_status_code(status)
+        .with_header(Header::from_bytes("Content-Type", "text/plain").unwrap());
+    let _ = req.respond(response);
+}
+
+pub fn handle_metrics_request(req: Request, node: Arc<Mutex<AirliftNode>>) {
+    let metrics = node
+        .lock()
+        .map(|node| build_metrics(&node))
+        .unwrap_or_else(|_| "# error generating metrics\n".to_string());
+    let response = Response::from_string(metrics)
+        .with_status_code(StatusCode(200))
+        .with_header(
+            Header::from_bytes("Content-Type", "text/plain; version=0.0.4").unwrap(),
+        );
+    let _ = req.respond(response);
 }
 
 fn build_metrics(node: &AirliftNode) -> String {
