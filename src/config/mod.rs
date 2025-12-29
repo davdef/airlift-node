@@ -50,12 +50,19 @@ pub struct FlowConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MonitoringConfig {
+    pub http_port: u16,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
     pub node_name: String,
     pub producers: HashMap<String, ProducerConfig>,
     pub processors: HashMap<String, ProcessorConfig>,
     pub consumers: HashMap<String, ConsumerConfig>,
     pub flows: HashMap<String, FlowConfig>,
+    #[serde(default)]
+    pub monitoring: MonitoringConfig,
 }
 
 impl Config {
@@ -108,6 +115,10 @@ impl Config {
             }
         }
 
+        if self.monitoring.http_port == 0 {
+            bail!("monitoring.http_port must be > 0");
+        }
+
         Ok(())
     }
 
@@ -128,6 +139,7 @@ impl Default for Config {
             processors: HashMap::new(),
             consumers: HashMap::new(),
             flows: HashMap::new(),
+            monitoring: MonitoringConfig::default(),
         }
     }
 }
@@ -237,6 +249,12 @@ impl FlowConfig {
     }
 }
 
+impl Default for MonitoringConfig {
+    fn default() -> Self {
+        Self { http_port: 8087 }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct ConfigPatch {
     pub node_name: Option<String>,
@@ -244,6 +262,7 @@ pub struct ConfigPatch {
     pub processors: Option<HashMap<String, ProcessorConfigPatch>>,
     pub consumers: Option<HashMap<String, ConsumerConfigPatch>>,
     pub flows: Option<HashMap<String, FlowConfigPatch>>,
+    pub monitoring: Option<MonitoringConfigPatch>,
 }
 
 impl ConfigPatch {
@@ -323,6 +342,27 @@ impl ConfigPatch {
             }
         }
 
+        if let Some(ref monitoring) = self.monitoring {
+            monitoring.apply_to(&mut config.monitoring)?;
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct MonitoringConfigPatch {
+    pub http_port: Option<u16>,
+}
+
+impl MonitoringConfigPatch {
+    fn apply_to(&self, target: &mut MonitoringConfig) -> anyhow::Result<()> {
+        if let Some(port) = self.http_port {
+            if port == 0 {
+                bail!("monitoring.http_port must be > 0");
+            }
+            target.http_port = port;
+        }
         Ok(())
     }
 }

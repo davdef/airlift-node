@@ -12,6 +12,7 @@ prealloc_samples = 9600
 
 [monitoring]
 # HTTP-Port für /metrics und /health (Monitoring-Service)
+# Endpoints: GET /health, GET /metrics
 http_port = 8087
 
 [ringbuffers.main]
