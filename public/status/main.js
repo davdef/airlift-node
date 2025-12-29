@@ -317,9 +317,9 @@ function updateSystemStatus(status) {
     }
     
     // Update Buffer stats
-    if (status.ring) {
-        const errorFills = status.ring.fill || 0;
-        document.getElementById('systemAudioBuffer').textContent = `${Math.round((status.ring.capacity || 6000) * 0.1)}s`;
+    if (status.ringbuffer) {
+        const errorFills = status.ringbuffer.fill || 0;
+        document.getElementById('systemAudioBuffer').textContent = `${Math.round((status.ringbuffer.capacity || 6000) * 0.1)}s`;
         document.getElementById('ringbufferInfo').textContent = `Error-Fills: ${errorFills}`;
     }
 }

@@ -27,7 +27,7 @@ function normalizeHistoryPoint(point) {
 // EINFACHE Ringbuffer Initialization
 async function initializeRingbuffer(status) {
     try {
-        const ring = status.ring;
+        const ring = status.ringbuffer || {};
         bufferCapacity = ring.capacity || 6000;
         bufferHeadIndex = ring.head_index || 0;
         bufferTailIndex = ring.tail_index || 0;
