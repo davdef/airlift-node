@@ -39,6 +39,7 @@ impl Flow {
         flow
     }
     
+    #[deprecated(note = "Use add_input_from_registry to connect buffers by registry name.")]
     pub fn add_input_buffer(&mut self, buffer: Arc<AudioRingBuffer>) {
         let buffer_addr = Arc::as_ptr(&buffer);
         let capacity = buffer.stats().capacity;
@@ -57,6 +58,24 @@ impl Flow {
             .ok_or_else(|| AudioError::BufferNotFound { name: buffer_name.to_string() })?;
         self.add_input_buffer(buffer);
         self.info(&format!("Connected input buffer from registry '{}'", buffer_name));
+        Ok(())
+    }
+
+    pub fn remove_input_from_registry(&mut self, registry: &BufferRegistry, buffer_name: &str) -> AudioResult<()> {
+        let buffer = registry.get(buffer_name)
+            .ok_or_else(|| AudioError::BufferNotFound { name: buffer_name.to_string() })?;
+
+        let before = self.input_buffers.len();
+        self.input_buffers.retain(|candidate| !Arc::ptr_eq(candidate, &buffer));
+        if self.input_buffers.len() == before {
+            return Err(AudioError::message(format!(
+                "buffer '{}' is not connected to flow '{}'",
+                buffer_name,
+                self.name
+            )));
+        }
+
+        self.info(&format!("Disconnected input buffer from registry '{}'", buffer_name));
         Ok(())
     }
     
@@ -420,7 +439,7 @@ impl AirliftNode {
         self.info(&format!("Added flow: '{}'", flow_name));
     }
     
-    pub fn connect_registered_buffer_to_flow(&mut self, buffer_name: &str, flow_index: usize) -> AudioResult<()> {
+    pub fn connect_flow_input(&mut self, flow_index: usize, buffer_name: &str) -> AudioResult<()> {
         if flow_index >= self.flows.len() {
             return Err(AudioError::InvalidFlowIndex {
                 index: flow_index,
@@ -428,25 +447,46 @@ impl AirliftNode {
             });
         }
 
-        let buffer = self.buffer_registry.get(buffer_name)
-            .ok_or_else(|| AudioError::BufferNotFound { name: buffer_name.to_string() })?;
+        self.flows[flow_index].add_input_from_registry(&self.buffer_registry, buffer_name)?;
 
-        self.flows[flow_index].add_input_buffer(buffer);
-
-        // Logging nach mutable borrow
         self.info(&format!(
-            "Connected buffer '{}' to flow {}",
+            "Connected registry buffer '{}' to flow {}",
             buffer_name, flow_index
         ));
 
         Ok(())
     }
 
+    pub fn disconnect_flow_input(&mut self, flow_index: usize, buffer_name: &str) -> AudioResult<()> {
+        if flow_index >= self.flows.len() {
+            return Err(AudioError::InvalidFlowIndex {
+                index: flow_index,
+                max: self.flows.len().saturating_sub(1),
+            });
+        }
+
+        self.flows[flow_index].remove_input_from_registry(&self.buffer_registry, buffer_name)?;
+
+        self.info(&format!(
+            "Disconnected registry buffer '{}' from flow {}",
+            buffer_name, flow_index
+        ));
+
+        Ok(())
+    }
+
+    /// Deprecated: use registry-based connection via connect_flow_input instead.
+    /// Transition plan: keep deprecated during the current release line, then remove in a major version bump.
+    #[deprecated(note = "Use connect_flow_input instead.")]
+    pub fn connect_registered_buffer_to_flow(&mut self, buffer_name: &str, flow_index: usize) -> AudioResult<()> {
+        self.connect_flow_input(flow_index, buffer_name)
+    }
+
     /// Deprecated: use registry-based connection instead.
     /// Transition plan: keep deprecated during the current release line, then remove in a major version bump.
-    #[deprecated(note = "Use registry-based connection via connect_registered_buffer_to_flow instead.")]
+    #[deprecated(note = "Use registry-based connection via connect_flow_input instead.")]
     pub fn connect_producer_to_flow(&mut self, producer_index: usize, flow_index: usize) -> AudioResult<()> {
-        self.warn("connect_producer_to_flow is deprecated; use registry-based connection instead.");
+        self.warn("connect_producer_to_flow is deprecated; use connect_flow_input instead.");
 
         let producer_name = self.producers.get(producer_index)
             .map(|producer| producer.name().to_string())
@@ -456,28 +496,13 @@ impl AirliftNode {
             })?;
 
         let buffer_name = format!("producer:{}", producer_name);
-        self.connect_registered_buffer_to_flow(&buffer_name, flow_index)
+        self.connect_flow_input(flow_index, &buffer_name)
     }
 
+    /// Deprecated: use connect_flow_input instead.
+    #[deprecated(note = "Use connect_flow_input instead.")]
     pub fn connect_registry_to_flow(&mut self, flow_index: usize, buffer_name: &str) -> AudioResult<()> {
-        if flow_index < self.flows.len() {
-            self.flows[flow_index].add_input_from_registry(&self.buffer_registry, buffer_name)?;
-            self.info(&format!(
-                "Connected registry buffer '{}' to flow {}",
-                buffer_name, flow_index
-            ));
-            Ok(())
-        } else {
-            self.error(&format!(
-                "Invalid flow index: {} (max flow={})",
-                flow_index,
-                self.flows.len()
-            ));
-            Err(AudioError::InvalidFlowIndex {
-                index: flow_index,
-                max: self.flows.len().saturating_sub(1),
-            })
-        }
+        self.connect_flow_input(flow_index, buffer_name)
     }
     
     /// Erstelle und füge einen Mixer mit Buffer-Registry hinzu
@@ -767,7 +792,7 @@ mod tests {
             .register("test:buffer", buffer)
             .expect("failed to register buffer");
 
-        node.connect_registered_buffer_to_flow("test:buffer", 0)
+        node.connect_flow_input(0, "test:buffer")
             .expect("failed to connect buffer");
 
         assert_eq!(node.flows[0].input_buffers.len(), 1);
