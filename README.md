@@ -5,6 +5,12 @@ Rollen **AirliftNode → Flow → Producer/Processor/Consumer**. Die aktuelle
 Implementierung ist in `src/core/node.rs` zu finden und bildet die Grundlage
 für Konfiguration, Start und Laufzeitverarbeitung.
 
+## Architektur
+
+Eine detaillierte Beschreibung der Pipeline, des Datenflusses, des
+Buffer-Lifecycles und des Threading-Modells findet sich in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+
 ## Aktuelle Pipeline-Struktur (AirliftNode → Flow → Producer/Processor/Consumer)
 
 Die zentrale Pipeline besteht aus:
