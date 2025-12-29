@@ -1,8 +1,4 @@
 node_name = "airlift-node"
-producers = {}
-processors = {}
-consumers = {}
-flows = {}
 
 [api]
 enabled = true
@@ -10,3 +6,24 @@ bind = "127.0.0.1:3008"
 
 [monitoring]
 http_port = 3008
+
+[ringbuffers.main]
+slots = 6000
+prealloc_samples = 9600
+
+[inputs.sine]
+type = "producer"
+enabled = true
+buffer = "main"
+
+[outputs.file]
+type = "consumer"
+enabled = true
+buffer = "main"
+input = "sine"
+codec_id = "passthrough"
+
+[codecs.passthrough]
+type = "processor"
+sample_rate = 48000
+channels = 2
