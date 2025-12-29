@@ -137,9 +137,11 @@ fn run_normal_mode() -> anyhow::Result<()> {
 
     let config = Arc::new(Mutex::new(config));
 
+    let node = Arc::new(Mutex::new(core::AirliftNode::new()));
+
     let api_bind =
         std::env::var("AIRLIFT_CONFIG_API_BIND").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
-    api::config::start_config_api(&api_bind, config.clone())?;
+    api::start_api_server(&api_bind, config.clone(), node.clone())?;
 
     let config_snapshot = config
         .lock()
@@ -148,13 +150,7 @@ fn run_normal_mode() -> anyhow::Result<()> {
 
     log::info!("Node: {}", config_snapshot.node_name);
 
-
-use airlift_node::app::init::{
-    PluginRegistry,
-    build_plugin_registry,
-};
-
-    let node = Arc::new(Mutex::new(core::AirliftNode::new()));
+    use airlift_node::app::init::{build_plugin_registry, PluginRegistry};
 
     let mut processor_registry = PluginRegistry::new();
 

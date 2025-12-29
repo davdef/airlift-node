@@ -191,6 +191,9 @@ Integration-Tests liegen unter `tests/` und `tests/integration/`:
 Aktuell verfügbar:
 
 - **POST `/api/config`**: Runtime-Konfigurationsupdates via JSON-Patch.
+- **GET `/api/status`**: Status-Snapshot (Node, Flows, Producer, Buffer).
+- **GET `/api/catalog`**: Katalog der bekannten Inputs/Buffers/Processing/Services/Outputs.
+- **POST `/api/control`**: Steueraktionen (z. B. Start/Stop) via JSON-Request.
 - **GET `/health`**: Monitoring-Healthcheck (200 = ok, 503 = not running).
 - **GET `/metrics`**: Prometheus-kompatible Metriken (Frames processed, Buffer-Auslastung, Latenz).
 

@@ -228,6 +228,20 @@ impl Flow {
         self.info(&format!("Added consumer '{}'", consumer_name));
     }
 
+    pub fn processor_names(&self) -> Vec<String> {
+        self.processors
+            .iter()
+            .map(|processor| processor.name().to_string())
+            .collect()
+    }
+
+    pub fn consumer_names(&self) -> Vec<String> {
+        self.consumers
+            .iter()
+            .map(|consumer| consumer.name().to_string())
+            .collect()
+    }
+
     pub fn start(&mut self) -> AudioResult<()> {
         self.info("Starting flow...");
 
@@ -1083,4 +1097,3 @@ pub struct NodeStatus {
     pub producer_status: Vec<super::ProducerStatus>,
     pub flow_status: Vec<FlowStatus>,
 }
-
