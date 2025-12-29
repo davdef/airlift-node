@@ -93,7 +93,11 @@ Integration-Tests liegen unter `tests/` und `tests/integration/`:
 
 ## API-Übersicht (geplant)
 
-Die API ist **noch nicht implementiert**. Zielbild:
+Aktuell verfügbar:
+
+- **POST `/api/config`**: Runtime-Konfigurationsupdates via JSON-Patch.
+
+Geplantes Zielbild:
 
 - **Remote-Steuerung** (Start/Stop/Status)
 - **Flow-CRUD** (Create/Update/Delete von Flows)

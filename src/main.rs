@@ -1,10 +1,12 @@
 mod core;
 mod config;
+mod api;
 mod producers;
 mod processors;
 mod app;
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
@@ -127,15 +129,26 @@ fn run_normal_mode() -> anyhow::Result<()> {
             log::warn!("Config error: {}, using defaults", e);
             config::Config::default()
         });
-    
-    log::info!("Node: {}", config.node_name);
+
+    let config = Arc::new(Mutex::new(config));
+
+    let api_bind = std::env::var("AIRLIFT_CONFIG_API_BIND")
+        .unwrap_or_else(|_| "127.0.0.1:8080".to_string());
+    api::config::start_config_api(&api_bind, config.clone())?;
+
+    let config_snapshot = config
+        .lock()
+        .map_err(|_| anyhow::anyhow!("config lock poisoned"))?
+        .clone();
+
+    log::info!("Node: {}", config_snapshot.node_name);
     
     let mut node = core::AirliftNode::new();
     let mut processor_registry = core::plugin::PluginRegistry::new();
     core::plugin::register_builtin_plugins(&mut processor_registry);
     
     // Producer aus Config laden
-    for (name, producer_cfg) in &config.producers {
+    for (name, producer_cfg) in &config_snapshot.producers {
         if !producer_cfg.enabled {
             continue;
         }
@@ -188,7 +201,7 @@ match producer_cfg.producer_type.as_str() {
     let plugin_registry = app::init::build_plugin_registry();
 
     // Flows aus Config erstellen und Processors hinzufügen
-    for (flow_name, flow_cfg) in &config.flows {
+    for (flow_name, flow_cfg) in &config_snapshot.flows {
         if !flow_cfg.enabled {
             continue;
         }
@@ -197,7 +210,7 @@ match producer_cfg.producer_type.as_str() {
         
         // Processors zum Flow hinzufügen
         for processor_name in &flow_cfg.processors {
-            if let Some(processor_cfg) = config.processors.get(processor_name) {
+            if let Some(processor_cfg) = config_snapshot.processors.get(processor_name) {
                 if !processor_cfg.enabled {
                     continue;
                 }
@@ -230,7 +243,7 @@ match producer_cfg.producer_type.as_str() {
     }
     
     // Consumer zu Flows hinzufügen (basierend auf Flow outputs)
-    for (flow_name, flow_cfg) in &config.flows {
+    for (flow_name, flow_cfg) in &config_snapshot.flows {
         if !flow_cfg.enabled {
             continue;
         }
@@ -239,7 +252,7 @@ match producer_cfg.producer_type.as_str() {
             if flow.name == *flow_name {
                 for output_name in &flow_cfg.outputs {
                     // Finde Consumer mit diesem Namen
-                    if let Some(consumer_cfg) = config.consumers.get(output_name) {
+                    if let Some(consumer_cfg) = config_snapshot.consumers.get(output_name) {
                         if !consumer_cfg.enabled {
                             continue;
                         }
@@ -267,7 +280,7 @@ match producer_cfg.producer_type.as_str() {
     
     // Producer mit Flows verbinden (basierend auf Flow inputs)
     // UND: Mixer-Inputs verbinden (special case)
-    for (flow_name, flow_cfg) in &config.flows {
+    for (flow_name, flow_cfg) in &config_snapshot.flows {
         if !flow_cfg.enabled {
             continue;
         }
@@ -294,7 +307,7 @@ match producer_cfg.producer_type.as_str() {
                 
                 // Mixer-Inputs konfigurieren
                 for processor_name in &flow_cfg.processors {
-                    if let Some(processor_cfg) = config.processors.get(processor_name) {
+                    if let Some(processor_cfg) = config_snapshot.processors.get(processor_name) {
                         if processor_cfg.processor_type == "mixer" {
                             // Finde den Mixer in diesem Flow
                             let processor_index = flow_cfg.processors.iter()
