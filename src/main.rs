@@ -156,14 +156,20 @@ fn run_normal_mode() -> anyhow::Result<()> {
 match producer_cfg.producer_type.as_str() {
     "file" => {
         let producer = producers::file::FileProducer::new(name, producer_cfg);
-        node.add_producer(Box::new(producer));
-        log::info!("Added file producer: {}", name);
+        if let Err(e) = node.add_producer(Box::new(producer)) {
+            log::error!("Failed to add file producer {}: {}", name, e);
+        } else {
+            log::info!("Added file producer: {}", name);
+        }
     }
     "alsa_input" => {
         match producers::alsa::AlsaProducer::new(name, producer_cfg) {
             Ok(producer) => {
-                node.add_producer(Box::new(producer));
-                log::info!("Added ALSA input producer: {}", name);
+                if let Err(e) = node.add_producer(Box::new(producer)) {
+                    log::error!("Failed to add ALSA input producer {}: {}", name, e);
+                } else {
+                    log::info!("Added ALSA input producer: {}", name);
+                }
             }
             Err(e) => {
                 log::error!("Failed to create ALSA producer {}: {}", name, e);
@@ -173,8 +179,11 @@ match producer_cfg.producer_type.as_str() {
     "alsa_output" => {
         match producers::alsa::AlsaOutputCapture::new(name, producer_cfg) {
             Ok(producer) => {
-                node.add_producer(Box::new(producer));
-                log::info!("Added ALSA output capture: {}", name);
+                if let Err(e) = node.add_producer(Box::new(producer)) {
+                    log::error!("Failed to add ALSA output capture {}: {}", name, e);
+                } else {
+                    log::info!("Added ALSA output capture: {}", name);
+                }
             }
             Err(e) => {
                 log::error!("Failed to create output capture {}: {}", name, e);
@@ -189,8 +198,11 @@ match producer_cfg.producer_type.as_str() {
         .unwrap_or(440.0);
     let rate = producer_cfg.sample_rate.unwrap_or(48000);
     let producer = producers::sine::SineProducer::new(name, freq, rate);
-    node.add_producer(Box::new(producer));
-    log::info!("Added sine producer: {} ({} Hz)", name, freq);
+    if let Err(e) = node.add_producer(Box::new(producer)) {
+        log::error!("Failed to add sine producer {}: {}", name, e);
+    } else {
+        log::info!("Added sine producer: {} ({} Hz)", name, freq);
+    }
 }
 
     _ => log::error!("Unknown producer type: {}", producer_cfg.producer_type),
@@ -368,7 +380,9 @@ match producer_cfg.producer_type.as_str() {
             config: std::collections::HashMap::new(),
         };
         let demo_producer = producers::file::FileProducer::new("demo", &demo_cfg);
-        node.add_producer(Box::new(demo_producer));
+        if let Err(e) = node.add_producer(Box::new(demo_producer)) {
+            log::error!("Failed to add demo producer: {}", e);
+        }
         
         // Demo-Flow mit FileConsumer
         let mut demo_flow = core::Flow::new("demo_flow");
@@ -394,7 +408,7 @@ match producer_cfg.producer_type.as_str() {
         shutdown_clone.store(true, Ordering::SeqCst);
     })?;
     
-    node.start()?;
+    node.start().map_err(|e| anyhow::anyhow!(e))?;
     log::info!("Node started. Press Ctrl+C to stop.");
     
     let mut tick = 0;
@@ -426,7 +440,7 @@ match producer_cfg.producer_type.as_str() {
         }
     }
     
-    node.stop()?;
+    node.stop().map_err(|e| anyhow::anyhow!(e))?;
     log::info!("Node stopped");
     
     Ok(())

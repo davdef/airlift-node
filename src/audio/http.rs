@@ -12,6 +12,7 @@ use tiny_http::{Header, Method, Response, Server, StatusCode};
 use crate::audio::{EncodedFrameSource, EncodedRead};
 use crate::codecs::registry::CodecRegistry;
 use crate::codecs::{CodecInfo, ContainerKind, EncodedFrame};
+use crate::core::error::{AudioError, AudioResult};
 
 // ============================================================================
 // Public entry
@@ -23,14 +24,17 @@ pub fn start_audio_http_server<F, R>(
     ring_reader_factory: F,
     codec_id: Option<String>,
     codec_registry: Arc<CodecRegistry>,
-) -> anyhow::Result<()>
+) -> AudioResult<()>
 where
     F: Fn() -> R + Send + Sync + 'static,
     R: EncodedFrameSource + Send + 'static,
 {
-    let server = Server::http(bind).map_err(|e| anyhow::anyhow!(e))?;
+    let server = Server::http(bind)
+        .map_err(|e| AudioError::with_context("bind audio http server", e))?;
     let codec_id = require_codec_id(codec_id.as_deref())?;
-    let codec_info = codec_registry.get_info(codec_id)?;
+    let codec_info = codec_registry
+        .get_info(codec_id)
+        .map_err(|e| AudioError::with_context("load codec info", e))?;
     validate_http_codec(codec_id, &codec_info)?;
 
     let ring_factory: Arc<dyn Fn() -> Box<dyn EncodedFrameSource + Send> + Send + Sync> =
@@ -233,7 +237,7 @@ fn extract_ts(url: &str) -> Option<u64> {
     })
 }
 
-fn content_type_for_container(info: &CodecInfo) -> anyhow::Result<&'static str> {
+fn content_type_for_container(info: &CodecInfo) -> AudioResult<&'static str> {
     match info.container {
         ContainerKind::Raw => Ok("application/octet-stream"),
         ContainerKind::Ogg => Ok("application/ogg"),
@@ -242,9 +246,12 @@ fn content_type_for_container(info: &CodecInfo) -> anyhow::Result<&'static str> 
     }
 }
 
-fn wait_for_frame(source: &mut dyn EncodedFrameSource) -> anyhow::Result<EncodedFrame> {
+fn wait_for_frame(source: &mut dyn EncodedFrameSource) -> AudioResult<EncodedFrame> {
     loop {
-        match source.wait_for_read()? {
+        match source
+            .wait_for_read()
+            .map_err(|e| AudioError::with_context("wait for encoded frame", e))?
+        {
             EncodedRead::Frame(frame) => return Ok(frame),
             EncodedRead::Gap { missed } => {
                 warn!("[audio] live gap while waiting for first frame: {}", missed);
@@ -254,17 +261,16 @@ fn wait_for_frame(source: &mut dyn EncodedFrameSource) -> anyhow::Result<Encoded
     }
 }
 
-fn require_codec_id(codec_id: Option<&str>) -> anyhow::Result<&str> {
-    codec_id.ok_or_else(|| anyhow::anyhow!("missing codec_id for audio http output"))
+fn require_codec_id(codec_id: Option<&str>) -> AudioResult<&str> {
+    codec_id.ok_or_else(|| AudioError::message("missing codec_id for audio http output"))
 }
 
-fn validate_http_codec(codec_id: &str, info: &CodecInfo) -> anyhow::Result<()> {
+fn validate_http_codec(codec_id: &str, info: &CodecInfo) -> AudioResult<()> {
     match info.container {
         ContainerKind::Raw | ContainerKind::Ogg | ContainerKind::Mpeg => Ok(()),
-        ContainerKind::Rtp => Err(anyhow::anyhow!(
+        ContainerKind::Rtp => Err(AudioError::message(format!(
             "audio http output does not accept RTP container (codec_id '{}', container {:?})",
-            codec_id,
-            info.container
-        )),
+            codec_id, info.container
+        ))),
     }
 }

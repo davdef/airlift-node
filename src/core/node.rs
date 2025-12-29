@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
-use anyhow::Result;
+use crate::core::error::{AudioError, AudioResult};
 
 use super::ringbuffer::AudioRingBuffer;
 use super::processor::{Processor, ProcessorStatus};
@@ -52,9 +52,9 @@ impl Flow {
         ));
     }
 
-    pub fn add_input_from_registry(&mut self, registry: &BufferRegistry, buffer_name: &str) -> Result<()> {
+    pub fn add_input_from_registry(&mut self, registry: &BufferRegistry, buffer_name: &str) -> AudioResult<()> {
         let buffer = registry.get(buffer_name)
-            .ok_or_else(|| anyhow::anyhow!("Buffer '{}' not found in registry", buffer_name))?;
+            .ok_or_else(|| AudioError::BufferNotFound { name: buffer_name.to_string() })?;
         self.add_input_buffer(buffer);
         self.info(&format!("Connected input buffer from registry '{}'", buffer_name));
         Ok(())
@@ -81,7 +81,7 @@ impl Flow {
         self.info(&format!("Added consumer '{}'", consumer_name));
     }
     
-    pub fn start(&mut self) -> Result<()> {
+    pub fn start(&mut self) -> AudioResult<()> {
         self.info("Starting flow...");
         
         if self.running.load(Ordering::Relaxed) {
@@ -222,7 +222,7 @@ impl Flow {
         flow_logger.info("Processing thread stopped");
     }
     
-    pub fn stop(&mut self) -> Result<()> {
+    pub fn stop(&mut self) -> AudioResult<()> {
         self.info("Stopping flow...");
         self.running.store(false, Ordering::SeqCst);
         
@@ -381,7 +381,7 @@ impl AirliftNode {
         self.buffer_registry.clone()
     }
     
-    pub fn add_producer(&mut self, producer: Box<dyn super::Producer>) -> Result<()> {
+    pub fn add_producer(&mut self, producer: Box<dyn super::Producer>) -> AudioResult<()> {
         let producer_name = producer.name().to_string();
         let buffer = Arc::new(AudioRingBuffer::new(1000));
         
@@ -392,7 +392,10 @@ impl AirliftNode {
         let buffer_name = format!("producer:{}", producer_name);
         if let Err(e) = self.buffer_registry.register(&buffer_name, buffer.clone()) {
             self.error(&format!("Failed to register buffer '{}': {}", buffer_name, e));
-            return Err(e);
+            return Err(AudioError::with_context(
+                format!("register buffer '{}'", buffer_name),
+                e,
+            ));
         }
         
         self.producer_buffers.push(buffer);
@@ -417,13 +420,16 @@ impl AirliftNode {
         self.info(&format!("Added flow: '{}'", flow_name));
     }
     
-    pub fn connect_registered_buffer_to_flow(&mut self, buffer_name: &str, flow_index: usize) -> Result<()> {
+    pub fn connect_registered_buffer_to_flow(&mut self, buffer_name: &str, flow_index: usize) -> AudioResult<()> {
         if flow_index >= self.flows.len() {
-            anyhow::bail!("Invalid flow index: {}", flow_index);
+            return Err(AudioError::InvalidFlowIndex {
+                index: flow_index,
+                max: self.flows.len().saturating_sub(1),
+            });
         }
 
         let buffer = self.buffer_registry.get(buffer_name)
-            .ok_or_else(|| anyhow::anyhow!("Buffer '{}' not found in registry", buffer_name))?;
+            .ok_or_else(|| AudioError::BufferNotFound { name: buffer_name.to_string() })?;
 
         self.flows[flow_index].add_input_buffer(buffer);
 
@@ -439,22 +445,21 @@ impl AirliftNode {
     /// Deprecated: use registry-based connection instead.
     /// Transition plan: keep deprecated during the current release line, then remove in a major version bump.
     #[deprecated(note = "Use registry-based connection via connect_registered_buffer_to_flow instead.")]
-    pub fn connect_producer_to_flow(&mut self, producer_index: usize, flow_index: usize) -> Result<()> {
+    pub fn connect_producer_to_flow(&mut self, producer_index: usize, flow_index: usize) -> AudioResult<()> {
         self.warn("connect_producer_to_flow is deprecated; use registry-based connection instead.");
 
         let producer_name = self.producers.get(producer_index)
             .map(|producer| producer.name().to_string())
-            .ok_or_else(|| anyhow::anyhow!(
-                "Invalid producer index: {} (max producer={})",
-                producer_index,
-                self.producers.len()
-            ))?;
+            .ok_or_else(|| AudioError::InvalidProducerIndex {
+                index: producer_index,
+                max: self.producers.len().saturating_sub(1),
+            })?;
 
         let buffer_name = format!("producer:{}", producer_name);
         self.connect_registered_buffer_to_flow(&buffer_name, flow_index)
     }
 
-    pub fn connect_registry_to_flow(&mut self, flow_index: usize, buffer_name: &str) -> Result<()> {
+    pub fn connect_registry_to_flow(&mut self, flow_index: usize, buffer_name: &str) -> AudioResult<()> {
         if flow_index < self.flows.len() {
             self.flows[flow_index].add_input_from_registry(&self.buffer_registry, buffer_name)?;
             self.info(&format!(
@@ -468,12 +473,15 @@ impl AirliftNode {
                 flow_index,
                 self.flows.len()
             ));
-            anyhow::bail!("Invalid flow index");
+            Err(AudioError::InvalidFlowIndex {
+                index: flow_index,
+                max: self.flows.len().saturating_sub(1),
+            })
         }
     }
     
     /// Erstelle und füge einen Mixer mit Buffer-Registry hinzu
-    pub fn create_and_add_mixer(&mut self, flow_index: usize, name: &str, config: crate::processors::MixerConfig) -> Result<()> {
+    pub fn create_and_add_mixer(&mut self, flow_index: usize, name: &str, config: crate::processors::MixerConfig) -> AudioResult<()> {
         if flow_index < self.flows.len() {
             let mut mixer = crate::processors::Mixer::from_config(name, config);
             mixer.set_buffer_registry(self.buffer_registry());
@@ -488,21 +496,27 @@ impl AirliftNode {
             self.info(&format!("Added mixer '{}' to flow {}", name, flow_index));
             Ok(())
         } else {
-            anyhow::bail!("Invalid flow index: {}", flow_index)
+            Err(AudioError::InvalidFlowIndex {
+                index: flow_index,
+                max: self.flows.len().saturating_sub(1),
+            })
         }
     }
     
     /// Füge einen beliebigen Processor hinzu
-    pub fn add_processor_to_flow(&mut self, flow_index: usize, processor: Box<dyn Processor>) -> Result<()> {
+    pub fn add_processor_to_flow(&mut self, flow_index: usize, processor: Box<dyn Processor>) -> AudioResult<()> {
         if flow_index < self.flows.len() {
             self.flows[flow_index].add_processor(processor);
             Ok(())
         } else {
-            anyhow::bail!("Invalid flow index: {}", flow_index)
+            Err(AudioError::InvalidFlowIndex {
+                index: flow_index,
+                max: self.flows.len().saturating_sub(1),
+            })
         }
     }
     
-    pub fn start(&mut self) -> Result<()> {
+    pub fn start(&mut self) -> AudioResult<()> {
         self.info("Node starting...");
 
         self.publish_event(EventType::NodeStarted, EventPriority::Info,
@@ -571,7 +585,7 @@ impl AirliftNode {
         Ok(())
     }
     
-    pub fn stop(&mut self) -> Result<()> {
+    pub fn stop(&mut self) -> AudioResult<()> {
         self.info("Node stopping...");
 
         self.publish_event(EventType::NodeStopped, EventPriority::Info,
