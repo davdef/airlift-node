@@ -9,16 +9,9 @@ pub use audio_ring::RingStats;
 pub use encoded_ring::EncodedRing;
 pub use encoded_ring::EncodedRingRead;
 pub use encoded_ring::EncodedRingReader;
+pub use crate::types::PcmFrame;
 
-use crate::codecs::EncodedFrame;
-
-#[derive(Clone, Debug)]
-pub struct PcmFrame {
-    pub utc_ns: u64,
-    pub samples: Vec<i16>,
-    pub sample_rate: u32,
-    pub channels: u8,
-}
+use crate::types::EncodedFrame;
 
 #[derive(Clone, Debug)]
 pub struct EncodedFramePacket {
