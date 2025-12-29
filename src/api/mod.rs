@@ -38,7 +38,7 @@ pub fn start_api_server(
                     catalog::handle_catalog_request(&mut req, node.clone());
                 }
                 (&Method::Post, "/api/control") => {
-                    control::handle_control_request(&mut req, node.clone());
+                    control::handle_control_request(&mut req, config.clone(), node.clone());
                 }
                 _ => {
                     let _ = req.respond(Response::empty(StatusCode(404)));
