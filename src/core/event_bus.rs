@@ -168,15 +168,13 @@ impl EventBus {
     
     /// Liste der registrierten Handler
     pub fn handler_list(&self) -> Vec<String> {
-        let handlers = match self.handlers.read() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                self.error("Handler lock poisoned, recovering");
-                poisoned.into_inner()
+        match self.handlers.read() {
+            Ok(guard) => guard.iter().map(|h| h.name().to_string()).collect(),
+            Err(_) => {
+                reset_poisoned_handlers(&self.handlers, self, "handler_list");
+                Vec::new()
             }
-        };
-        
-        handlers.iter().map(|h| h.name().to_string()).collect()
+        }
     }
     
     fn processing_loop(
@@ -200,9 +198,9 @@ impl EventBus {
                     // Get handlers (with read lock)
                     let handlers_guard = match handlers.read() {
                         Ok(guard) => guard,
-                        Err(poisoned) => {
-                            bus_logger.error("Handler lock poisoned, recovering");
-                            poisoned.into_inner()
+                        Err(_) => {
+                            reset_poisoned_handlers(&handlers, &bus_logger, "processing_loop");
+                            continue;
                         }
                     };
                     
@@ -254,6 +252,26 @@ impl EventBus {
         }
         
         bus_logger.info("EventBus processing thread stopped");
+    }
+}
+
+fn reset_poisoned_handlers<L: ComponentLogger>(
+    handlers: &Arc<RwLock<Vec<Arc<dyn EventHandler>>>>,
+    logger: &L,
+    context: &str,
+) {
+    logger.error(&format!(
+        "Handler lock poisoned in {}, resetting handler list",
+        context
+    ));
+    match handlers.write() {
+        Ok(mut guard) => {
+            guard.clear();
+        }
+        Err(poisoned) => {
+            let mut guard = poisoned.into_inner();
+            guard.clear();
+        }
     }
 }
 
