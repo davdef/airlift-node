@@ -286,15 +286,9 @@ match processor_cfg.processor_type.as_str() {
             if flow.name == *flow_name {
                 // Normale Producer-Verbindungen
                 for input_name in &flow_cfg.inputs {
-                    // Finde Producer mit diesem Namen
-                    for (producer_index, producer) in node.producers().iter().enumerate() {
-                        if producer.name() == input_name {
-                            if let Err(e) = node.connect_producer_to_flow(producer_index, flow_index) {
-                                log::error!("Failed to connect {} to flow {}: {}", 
-                                    input_name, flow_name, e);
-                            }
-                            break;
-                        }
+                    if let Err(e) = node.connect_registry_to_flow(flow_index, input_name) {
+                        log::error!("Failed to connect buffer {} to flow {}: {}", 
+                            input_name, flow_name, e);
                     }
                 }
                 
@@ -327,6 +321,7 @@ match processor_cfg.processor_type.as_str() {
     // und verbinde einen Producer direkt
     if let Some(first_producer) = node.producers().first() {
         log::info!("Found producer: {}, setting up test...", first_producer.name());
+        let buffer_name = format!("producer:{}", first_producer.name());
         
         // Erstelle einfachen Test-Flow
         let mut test_flow = core::Flow::new("test_recording");
@@ -341,7 +336,7 @@ match processor_cfg.processor_type.as_str() {
         node.flows.push(test_flow);
         
         // Verbinde ersten Producer zum Test-Flow
-        if let Err(e) = node.connect_producer_to_flow(0, node.flows.len() - 1) {
+        if let Err(e) = node.connect_registry_to_flow(node.flows.len() - 1, &buffer_name) {
             log::error!("Failed to connect test: {}", e);
         }
     }
@@ -373,7 +368,7 @@ match processor_cfg.processor_type.as_str() {
         demo_flow.add_consumer(file_consumer);
         
         node.flows.push(demo_flow);
-        if let Err(e) = node.connect_producer_to_flow(0, 0) {
+        if let Err(e) = node.connect_registry_to_flow(0, "producer:demo") {
             log::error!("Failed to connect demo: {}", e);
         }
     }
