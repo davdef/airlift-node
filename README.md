@@ -71,6 +71,16 @@ Der Einstiegspunkt ist `src/main.rs`. Es gibt drei Startmodi:
    - Führt einen Kurztest gegen das angegebene Device durch und gibt
      Format-Informationen sowie JSON-Ausgabe zurück.
 
+## Examples
+
+Die Beispielprogramme nutzen die bestehenden `AirliftNode`/`Flow`-Strukturen
+und können direkt über Cargo gestartet werden:
+
+- **Simple Recording** → `cargo run --example simple_recording`
+- **Live Streaming (encoded ring)** → `cargo run --example live_streaming`
+- **Audio Mixing (Mixer + zwei Sine-Producer)** → `cargo run --example audio_mixing`
+- **Custom Processor (eigene Processor-Implementierung)** → `cargo run --example custom_processor`
+
 ## Test-Übersicht
 
 ### Unit-Tests
