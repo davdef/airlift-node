@@ -1,165 +1,102 @@
 # Airlift Node
 
-Airlift Node ist ein Audio-Node, der kontinuierliche PCM-Audioframes annimmt,
-über eine Ringpuffer-Pipeline verarbeitet und als Streams, Dateien oder HTTP-
-Endpunkte bereitstellt. Das System bringt eine modulare Codec-Schicht,
-Monitoring sowie eine Steuer- und Status-API mit.
+Airlift Node ist eine Audio-Pipeline für PCM-Frames mit klarer Trennung der
+Rollen **AirliftNode → Flow → Producer/Processor/Consumer**. Die aktuelle
+Implementierung ist in `src/core/node.rs` zu finden und bildet die Grundlage
+für Konfiguration, Start und Laufzeitverarbeitung.
 
-## Aufgaben
+## Aktuelle Pipeline-Struktur (AirliftNode → Flow → Producer/Processor/Consumer)
 
-- **Audioeingang**: SRT- und ALSA-Quellen in den gemeinsamen Ringpuffer führen.
-- **Verarbeitung**: Codec-Instanzen auf feste PCM-Frames anwenden.
-- **Ausgabe**: Icecast/SRT-Streams, Recorder (WAV/MP3) und Audio-HTTP-Endpoints.
-- **Betrieb**: Status/Steuerung via API, Monitoring über Metrics & Health.
+Die zentrale Pipeline besteht aus:
 
-## Zentrale Bausteine
+- **AirliftNode** (`src/core/node.rs`): Orchestriert Produzenten und Flows,
+  hält die Buffer-Registry und startet/stoppt das System als Ganzes.
+- **Producer** (`src/core/mod.rs` + Implementierungen in `src/producers/*`):
+  Schreiben Audio-Frames in Ringbuffer, die vom Node verwaltet werden.
+- **Flow** (`src/core/node.rs`): Verbindet mehrere Producer-Inputs, führt sie
+  zusammen, verarbeitet sie über eine Processor-Kette und verteilt an Consumer.
+- **Processor** (`src/core/processor/*`, `src/processors/*`): Transformieren
+  den Audiostream (z. B. PassThrough, Gain, Mixer).
+- **Consumer** (`src/core/consumer/*`): Konsumieren den Flow-Output
+  (z. B. FileWriter).
 
-- **Ring** (`src/ring`): geteilte Audio-Drehscheibe mit Puffer- und Statistiklogik.
-- **Codecs** (`src/codecs`): Instanzbasierte Encoder mit eigener Konfiguration.
-- **I/O** (`src/io`): Eingänge (SRT/ALSA) und Ausgänge (Icecast/SRT).
-- **Recorder** (`src/recorder`): WAV/MP3-Aufzeichnung und Retention.
-- **API/Web** (`src/api`, `src/web`): Status, Steuerung, Peaks & History.
-- **Services** (`src/services`): API-, Audio-HTTP- und Monitoring-Server.
+`AirliftNode` verwaltet mehrere `Flow`-Instanzen. Jeder Flow besitzt eigene
+Ringbuffer und wird von einem Processing-Thread bedient.
 
-## Datenfluss (vereinfacht)
+## Flow-Struktur (Inputs → Merge → Processor-Kette → Output → Consumers)
 
-```mermaid
-flowchart LR
-    SRTIn[SRT Input] --> Ring[Audio Ring]
-    ALSAIn[ALSA Input] --> Ring
+Die `Flow`-Struktur in `src/core/node.rs` besteht aus folgenden Feldern:
 
-    Ring --> Codecs[Codec-Instanzen]
-    Codecs --> Icecast[Icecast Out]
-    Codecs --> SRTOut[SRT Out]
+- `input_buffers`: Alle Input-Ringbuffer, die von Producers/Inputs befüllt
+  werden.
+- `input_merge_buffer`: Sammelbuffer, in den die Frames aus allen
+  `input_buffers` zusammengeführt werden.
+- `processor_buffers`: Zwischenbuffer zwischen den einzelnen Processors.
+- `output_buffer`: Endbuffer nach der Processor-Kette.
+- `processors`: Liste der Processor-Instanzen (Reihenfolge = Kette).
+- `consumers`: Liste der Consumer-Instanzen, die am `output_buffer` hängen.
 
-    Ring --> Recorder[Recorder]
-    Ring --> AudioHTTP[Audio HTTP Endpoints]
+Die Verarbeitung läuft wie folgt:
 
-    API[HTTP API] --> Control[Control State]
-    Control --> Modules[Module Registry]
+1. **Inputs** liefern Frames in `input_buffers`.
+2. **Merge**: Der Flow sammelt alle Frames in `input_merge_buffer`.
+3. **Processor-Kette**: Jeder Processor liest aus dem jeweiligen Input-Buffer
+   und schreibt in den nächsten Buffer der Kette (`processor_buffers`).
+4. **Output**: Der letzte Processor schreibt in `output_buffer`.
+5. **Consumers** lesen aus `output_buffer` und geben die Daten aus.
 
-    Monitoring[Monitoring] --> Metrics[(Metrics/Health)]
-```
+## Startmodi
+
+Der Einstiegspunkt ist `src/main.rs`. Es gibt drei Startmodi:
+
+1. **Normaler Modus** (Standard)
+   - Start ohne Argumente: `cargo run --`
+   - Lädt `config.toml` (oder Default), baut Node/Flows/Processor/Consumer und
+     startet die Verarbeitung.
+
+2. **ALSA-Discovery** (`--discover`)
+   - `cargo run -- --discover`
+   - Listet verfügbare Audio-Devices als JSON und Log-Ausgabe.
+
+3. **Device-Test** (`--test-device <id>`)
+   - `cargo run -- --test-device hw:0,0`
+   - Führt einen Kurztest gegen das angegebene Device durch und gibt
+     Format-Informationen sowie JSON-Ausgabe zurück.
+
+## Test-Übersicht
+
+### Unit-Tests
+
+Unit-Tests sind direkt in den Modulen definiert (per `#[cfg(test)]`).
+Beispiele:
+
+- `src/core/mod.rs` (ProducerStatus-Validierung)
+- `src/core/node.rs` (Flow/AirliftNode-Tests)
+- `src/core/ringbuffer.rs` und `src/core/ringbuffer_lockfree.rs`
+- `src/core/logging.rs`
+- `src/processors/mixer.rs`
+
+### Integration-Tests
+
+Integration-Tests liegen unter `tests/` und `tests/integration/`:
+
+- `tests/integration/logging_test.rs`
+- `tests/integration_tests.rs`
+- `tests/run_logging_tests.rs`
+- `tests/standalone_test.rs`
+
+## API-Übersicht (geplant)
+
+Die API ist **noch nicht implementiert**. Zielbild:
+
+- **Remote-Steuerung** (Start/Stop/Status)
+- **Flow-CRUD** (Create/Update/Delete von Flows)
+- **Headless-Betrieb** (Betrieb ohne UI, komplett über API steuerbar)
 
 ## Einstiegspunkte
 
-- **Bootstrap & Runtime**: `src/main.rs`, `src/bootstrap.rs`
-- **Konfiguration**: `src/config.rs` (TOML)
-- **Module-Registry**: `src/api/registry.rs`
-
-## Konfiguration
-
-Die Konfiguration erfolgt über eine TOML-Datei (Default: `config.toml`). Beim
-Start kann eine alternative Datei als erstes Argument übergeben werden:
-
-```
-airlift-node ./config.vps.toml
-```
-
-Die **API ist der Core-Service** und kann auch ohne Graph-Konfiguration laufen.
-Alle weiteren Services (Audio-HTTP, Monitoring, Inputs/Outputs) sind optional
-und benötigen entsprechende Konfiguration.
-
-## Begriffe: Inputs, Outputs, Services
-
-Die Graph-Pipeline beschreibt den Datenfluss über **Inputs**, **Outputs** und
-**Services**. Die IDs der Einträge (`[inputs.<id>]`, `[outputs.<id>]`,
-`[services.<id>]`) sind frei wählbar und werden in Referenzen genutzt.
-
-- **Input**: Quelle, die Audioframes in einen Ringbuffer schreibt.
-  - Beispiel: `type = "srt"` mit `listen` + `latency_ms`, oder
-    `type = "http_stream"` mit `url`.
-- **Output**: Ziel, das Audioframes aus einem Input (und damit aus dem gleichen
-  Ringbuffer) konsumiert und über einen Codec ausgibt.
-  - Beispiel: `type = "icecast_out"` mit `codec_id = "opus_ogg"`.
-- **Service**: Hilfsdienste (Monitoring, Audio-HTTP, Peak-Analyzer), die den
-  Ringbuffer oder den Input lesen, aber keine Audio-Ausgabe erzeugen.
-  - Beispiel: `type = "monitoring"` oder `type = "audio_http"`.
-
-## IO-Typen-Katalog (Inputs/Outputs/Services)
-
-Ableitbar aus `InputConfig`, `OutputConfig`, `ServiceConfig` in
-`src/config.rs`. Pflichtfelder gelten zusätzlich zu `type` und `enabled`.
-
-### Inputs
-
-- **`srt`**: `buffer`, `listen`, `latency_ms` (`streamid` optional)
-- **`icecast` / `http_stream`**: `buffer`, `url`
-- **`alsa`**: `buffer`, `device`
-
-### Outputs
-
-Jeder Output benötigt **immer**: `input`, `buffer`, `codec_id`.
-
-- **`srt_out`**: `target`, `latency_ms`
-- **`icecast_out`**: `host`, `port`, `mount`, `user`, `password`, `name`,
-  `description`, `genre`, `public`, `bitrate`
-- **`udp_out`**: `target`
-- **`recorder`**: `wav_dir`, `retention_days`
-
-### Services
-
-- **`audio_http`**: `buffer`, `codec_id`
-- **`monitoring`**: keine zusätzlichen Pflichtfelder
-- **`peak_analyzer`**: `buffer`, `interval_ms`
-- **`influx_out`**: `url`, `db`, `interval_ms`
-- **`broadcast_http`**: `url`, `interval_ms`
-
-## Verbindliche Strukturregeln
-
-1. **Input → Ringbuffer**: Jeder Input muss einen `buffer` referenzieren.
-2. **Output → Input → Ringbuffer**: Jeder Output muss `input` setzen und
-   denselben `buffer` wie der referenzierte Input nutzen.
-3. **Codec-Pflicht**: Jeder Output benötigt `codec_id`.
-4. **Services**: Services referenzieren entweder `buffer` oder `input`; wenn
-   beides gesetzt ist, müssen Buffer und Input zueinander passen.
-
-## Legacy-Mapping & Übergangsphase
-
-Neben der Graph-Pipeline existieren Legacy-Felder auf Root-Ebene. Sobald
-`ringbuffers`, `inputs`, `outputs` oder `services` gesetzt sind, wird **nur**
-die Graph-Pipeline verwendet (Legacy-Felder werden ignoriert). Für die
-Übergangsphase gilt:
-
-- **`srt_in` → `inputs.*`** mit `type = "srt"`
-- **`alsa_in` → `inputs.*`** mit `type = "alsa"`
-- **`icecast`/`http_stream` Input → `inputs.*`** mit `type = "icecast"` bzw.
-  `type = "http_stream"`
-- **`srt_out` → `outputs.*`** mit `type = "srt_out"`
-- **`icecast_out` → `outputs.*`** mit `type = "icecast_out"`
-- **`udp_out` → `outputs.*`** mit `type = "udp_out"`
-- **`recorder` → `outputs.*`** mit `type = "recorder"`
-- **`audio_http_codec_id` → `services.*`** mit `type = "audio_http"` +
-  `codec_id`
-
-Empfehlung: neue Setups vollständig in der Graph-Pipeline pflegen und Legacy-
-Felder schrittweise entfernen.
-
-## Mehrere Outputs pro Typ (z. B. `icecast_out` mehrfach)
-
-Die Graph-Pipeline erlaubt mehrere Outputs desselben Typs, solange jede
-Konfiguration eine eigene ID besitzt (z. B. `[outputs.icecast_main]` und
-`[outputs.icecast_backup]`).
-
-### Beispielkonfiguration
-
-Die Datei `config.sample.toml` ist eine kommentierte Referenz für die aktuelle
-Graph-Pipeline. Wichtige Punkte:
-
-- **Graph aktivieren**: Sobald `ringbuffers`, `inputs`, `outputs` oder
-  `services` gesetzt sind, wird die Graph-Pipeline genutzt.
-- **Genau ein Ringbuffer & ein Input**: Aktuell ist genau ein Ringbuffer und
-  genau ein Input-Typ erlaubt.
-- **Input-Typen**:
-  - `srt` (Listener, benötigt `listen` + `latency_ms`)
-  - `http_stream`/`icecast` (benötigt `url`, erwartet Ogg/Opus)
-- **Buffer-Verknüpfung**: `buffer` muss exakt der Ringbuffer-ID entsprechen
-  (im Sample: `main`).
-- **Codecs**: Jeder Output benötigt ein `codec_id`, das in `[codecs.*]`
-  definiert ist.
-
-### VPS-Konfiguration (Icecast)
-
-Die Datei `config.vps.toml` ist für den Betrieb mit dem RFM-Icecast-Stream
-vorbereitet (`https://icecast.radiorfm.de/rfm.ogg`, 96 kbit/s Opus). Sie kann
-die lokale `config.toml` ersetzen oder direkt beim Start angegeben werden.
+- **Runtime/Bootstrap**: `src/main.rs`
+- **Core-Pipeline**: `src/core/node.rs`
+- **Processor-Implementierungen**: `src/core/processor/*`, `src/processors/*`
+- **Consumers**: `src/core/consumer/*`
+- **Tests**: `src/core/*.rs`, `src/processors/mixer.rs`, `tests/*`
