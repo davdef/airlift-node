@@ -5,6 +5,7 @@ use std::io::Read;
 use anyhow::{Result, anyhow};
 
 use crate::core::{Producer, ProducerStatus, AudioRingBuffer};
+use crate::producers::wait::StopWait;
 
 pub struct FileProducer {
     name: String,
@@ -13,6 +14,7 @@ pub struct FileProducer {
     config: crate::config::ProducerConfig,
     thread_handle: Option<std::thread::JoinHandle<()>>,
     ring_buffer: Option<Arc<AudioRingBuffer>>,
+    stop_wait: Arc<StopWait>,
 }
 
 impl FileProducer {
@@ -24,6 +26,7 @@ impl FileProducer {
             config: config.clone(),
             thread_handle: None,
             ring_buffer: None,
+            stop_wait: Arc::new(StopWait::new()),
         }
     }
     
@@ -65,6 +68,7 @@ impl Producer for FileProducer {
         let name = self.name.clone();
         let samples_processed = self.samples_processed.clone();
         let ring_buffer = self.ring_buffer.clone();
+        let stop_wait = self.stop_wait.clone();
         
         let handle = std::thread::spawn(move || {
             log::info!("FileProducer '{}': Playing {}", name, path);
@@ -109,7 +113,7 @@ impl Producer for FileProducer {
                     }
                 }
                 
-                std::thread::sleep(std::time::Duration::from_millis(100)); // 10 FPS
+                stop_wait.wait_timeout(std::time::Duration::from_millis(100)); // 10 FPS
                 
                 if !loop_audio {
                     break;
@@ -126,6 +130,7 @@ impl Producer for FileProducer {
     fn stop(&mut self) -> Result<()> {
         log::info!("FileProducer '{}': Stopping...", self.name);
         self.running.store(false, Ordering::SeqCst);
+        self.stop_wait.notify_all();
         
         if let Some(handle) = self.thread_handle.take() {
             if let Err(e) = handle.join() {

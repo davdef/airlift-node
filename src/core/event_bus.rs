@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::Result;
-use crossbeam_channel::{unbounded, Sender, Receiver, TryRecvError};
+use crossbeam_channel::{select, unbounded, Receiver, Sender};
 use super::events::{Event, EventPriority};
 use super::logging::{ComponentLogger, LogContext};
 
@@ -24,6 +24,8 @@ pub struct EventBus {
     name: String,
     event_tx: Sender<Event>,
     event_rx: Receiver<Event>,
+    stop_tx: Sender<()>,
+    stop_rx: Receiver<()>,
     handlers: Arc<RwLock<Vec<Arc<dyn EventHandler>>>>,
     running: Arc<AtomicBool>,
     thread_handle: Option<std::thread::JoinHandle<()>>,
@@ -33,11 +35,14 @@ pub struct EventBus {
 impl EventBus {
     pub fn new(name: &str) -> Self {
         let (tx, rx) = unbounded();
+        let (stop_tx, stop_rx) = unbounded();
         
         let bus = Self {
             name: name.to_string(),
             event_tx: tx,
             event_rx: rx,
+            stop_tx,
+            stop_rx,
             handlers: Arc::new(RwLock::new(Vec::new())),
             running: Arc::new(AtomicBool::new(false)),
             thread_handle: None,
@@ -62,9 +67,10 @@ impl EventBus {
         let running = self.running.clone();
         let name = self.name.clone();
         let event_count = self.event_count.clone();
+        let stop_rx = self.stop_rx.clone();
         
         let handle = std::thread::spawn(move || {
-            EventBus::processing_loop(event_rx, handlers, running, name, event_count);
+            EventBus::processing_loop(event_rx, stop_rx, handlers, running, name, event_count);
         });
         
         self.thread_handle = Some(handle);
@@ -77,6 +83,7 @@ impl EventBus {
     pub fn stop(&mut self) -> Result<()> {
         self.info("Stopping EventBus...");
         self.running.store(false, Ordering::SeqCst);
+        let _ = self.stop_tx.send(());
         
         // Sende Shutdown-Event
         self.publish(Event::new(
@@ -181,6 +188,7 @@ impl EventBus {
     
     fn processing_loop(
         event_rx: Receiver<Event>,
+        stop_rx: Receiver<()>,
         handlers: Arc<RwLock<Vec<Arc<dyn EventHandler>>>>,
         running: Arc<AtomicBool>,
         name: String,
@@ -189,14 +197,19 @@ impl EventBus {
         let bus_logger = EventBusLogger { name: name.clone() };
         bus_logger.info("EventBus processing thread started");
         
-        let mut consecutive_errors = 0;
-        let max_consecutive_errors = 10;
-        
         while running.load(Ordering::Relaxed) {
-            match event_rx.try_recv() {
-                Ok(event) => {
-                    consecutive_errors = 0;
-                    
+            select! {
+                recv(stop_rx) -> _ => {
+                    break;
+                }
+                recv(event_rx) -> msg => {
+                    let event = match msg {
+                        Ok(event) => event,
+                        Err(_) => {
+                            bus_logger.error("Event channel disconnected");
+                            break;
+                        }
+                    };
                     // Get handlers (with read lock)
                     let handlers_guard = match handlers.read() {
                         Ok(guard) => guard,
@@ -205,7 +218,7 @@ impl EventBus {
                             poisoned.into_inner()
                         }
                     };
-                    
+
                     // Distribute to handlers
                     for handler in handlers_guard.iter() {
                         // Check filters
@@ -214,13 +227,13 @@ impl EventBus {
                                 continue;
                             }
                         }
-                        
+
                         if let Some(allowed_types) = handler.event_type_filter() {
                             if !allowed_types.iter().any(|t| std::mem::discriminant(t) == std::mem::discriminant(&event.event_type)) {
                                 continue;
                             }
                         }
-                        
+
                         // Handle event
                         if let Err(e) = handler.handle_event(&event) {
                             bus_logger.error(&format!(
@@ -231,18 +244,6 @@ impl EventBus {
                             ));
                         }
                     }
-                    
-                    // Drop guard before sleep
-                    drop(handlers_guard);
-                }
-                
-                Err(TryRecvError::Empty) => {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                
-                Err(TryRecvError::Disconnected) => {
-                    bus_logger.error("Event channel disconnected");
-                    break;
                 }
             }
             

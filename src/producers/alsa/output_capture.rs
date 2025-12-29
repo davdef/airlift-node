@@ -3,6 +3,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use anyhow::{Context, Result};
 
+use crate::producers::wait::StopWait;
+
 pub struct AlsaOutputCapture {
     name: String,
     running: Arc<AtomicBool>,
@@ -10,6 +12,7 @@ pub struct AlsaOutputCapture {
     config: crate::config::ProducerConfig,
     thread_handle: Option<std::thread::JoinHandle<()>>,
     ring_buffer: Option<Arc<crate::core::AudioRingBuffer>>,
+    stop_wait: Arc<StopWait>,
 }
 
 impl AlsaOutputCapture {
@@ -21,6 +24,7 @@ impl AlsaOutputCapture {
             config: config.clone(),
             thread_handle: None,
             ring_buffer: None,
+            stop_wait: Arc::new(StopWait::new()),
         })
     }
 }
@@ -58,12 +62,14 @@ impl crate::core::Producer for AlsaOutputCapture {
         let samples_processed = self.samples_processed.clone();
         let name = self.name.clone();
         let ring_buffer = self.ring_buffer.clone();
+        let stop_wait = self.stop_wait.clone();
         
         let handle = std::thread::spawn(move || {
             if let Err(e) = Self::capture_output(
                 &device, sample_rate, channels, 
                 running.clone(), samples_processed.clone(),
                 ring_buffer,
+                stop_wait,
             ) {
                 log::error!("Output Capture '{}' error: {}", name, e);
             }
@@ -77,6 +83,7 @@ impl crate::core::Producer for AlsaOutputCapture {
     fn stop(&mut self) -> Result<()> {
         log::info!("Output Capture '{}' stopping...", self.name);
         self.running.store(false, Ordering::SeqCst);
+        self.stop_wait.notify_all();
         
         if let Some(handle) = self.thread_handle.take() {
             if let Err(e) = handle.join() {
@@ -110,6 +117,7 @@ impl AlsaOutputCapture {
         running: Arc<AtomicBool>,
         samples_processed: Arc<AtomicU64>,
         ring_buffer: Option<Arc<crate::core::AudioRingBuffer>>,
+        stop_wait: Arc<StopWait>,
     ) -> Result<()> {
         use alsa::{pcm::{Access, Format, HwParams, PCM}, Direction, ValueOr};
         
@@ -127,7 +135,14 @@ impl AlsaOutputCapture {
         if let Err(e) = format_result {
             log::warn!("No supported format for output capture: {}", e);
             // Fallback zu Demo-Modus
-            return Self::capture_demo(sample_rate, channels, running, samples_processed, ring_buffer);
+            return Self::capture_demo(
+                sample_rate,
+                channels,
+                running,
+                samples_processed,
+                ring_buffer,
+                stop_wait,
+            );
         }
         
         hwp.set_channels(channels)?;
@@ -142,11 +157,26 @@ impl AlsaOutputCapture {
         log::info!("Output capture started: {}Hz, {}ch", sample_rate, channels);
         
         if let Ok(io) = pcm.io_i16() {
-            Self::capture_i16(io, period_frames as usize, channels as usize, 
-                sample_rate, running, samples_processed, ring_buffer)?;
+            Self::capture_i16(
+                io,
+                period_frames as usize,
+                channels as usize,
+                sample_rate,
+                running,
+                samples_processed,
+                ring_buffer,
+                stop_wait.clone(),
+            )?;
         } else {
             log::warn!("i16 capture failed, using demo mode");
-            Self::capture_demo(sample_rate, channels, running, samples_processed, ring_buffer)?;
+            Self::capture_demo(
+                sample_rate,
+                channels,
+                running,
+                samples_processed,
+                ring_buffer,
+                stop_wait,
+            )?;
         }
         
         Ok(())
@@ -160,6 +190,7 @@ impl AlsaOutputCapture {
         running: Arc<AtomicBool>,
         samples_processed: Arc<AtomicU64>,
         ring_buffer: Option<Arc<crate::core::AudioRingBuffer>>,
+        stop_wait: Arc<StopWait>,
     ) -> Result<()> {
         let target_frames = sample_rate as usize / 10;
         let target_samples = target_frames * channels;
@@ -191,10 +222,10 @@ impl AlsaOutputCapture {
                         }
                     }
                 }
-                Ok(_) => std::thread::sleep(Duration::from_millis(1)),
+                Ok(_) => stop_wait.wait_timeout(Duration::from_millis(1)),
                 Err(e) => {
                     log::warn!("Output capture read error: {}", e);
-                    std::thread::sleep(Duration::from_millis(10));
+                    stop_wait.wait_timeout(Duration::from_millis(10));
                 }
             }
         }
@@ -208,6 +239,7 @@ impl AlsaOutputCapture {
         running: Arc<AtomicBool>,
         samples_processed: Arc<AtomicU64>,
         ring_buffer: Option<Arc<crate::core::AudioRingBuffer>>,
+        stop_wait: Arc<StopWait>,
     ) -> Result<()> {
         log::warn!("Output capture demo mode - simulating system audio");
         
@@ -216,7 +248,7 @@ impl AlsaOutputCapture {
         
         let mut tick = 0;
         while running.load(Ordering::Relaxed) {
-            std::thread::sleep(Duration::from_millis(100));
+            stop_wait.wait_timeout(Duration::from_millis(100));
             tick += 1;
             
             if tick % 10 == 0 {

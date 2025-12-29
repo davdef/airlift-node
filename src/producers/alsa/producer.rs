@@ -3,6 +3,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 
+use crate::producers::wait::StopWait;
+
 pub struct AlsaProducer {
     name: String,
     running: Arc<AtomicBool>,
@@ -10,6 +12,7 @@ pub struct AlsaProducer {
     config: crate::config::ProducerConfig,
     thread_handle: Option<std::thread::JoinHandle<()>>,
     ring_buffer: Option<Arc<crate::core::AudioRingBuffer>>,
+    stop_wait: Arc<StopWait>,
     sample_rate: u32,
     channels: u8,
 }
@@ -26,6 +29,7 @@ impl AlsaProducer {
             config: config.clone(),
             thread_handle: None,
             ring_buffer: None,
+            stop_wait: Arc::new(StopWait::new()),
             sample_rate,
             channels,
         })
@@ -65,12 +69,14 @@ impl crate::core::Producer for AlsaProducer {
         let ring_buffer = self.ring_buffer.clone();
         let sample_rate = self.sample_rate;
         let channels = self.channels;
+        let stop_wait = self.stop_wait.clone();
         
         let handle = std::thread::spawn(move || {
             if let Err(e) = Self::run_alsa_capture(
                 &device, sample_rate, channels as u32, 
                 running.clone(), samples_processed.clone(),
                 ring_buffer,
+                stop_wait,
             ) {
                 log::error!("ALSA producer '{}' error: {}", name, e);
             }
@@ -84,6 +90,7 @@ impl crate::core::Producer for AlsaProducer {
     fn stop(&mut self) -> Result<()> {
         log::info!("ALSA producer '{}' stopping...", self.name);
         self.running.store(false, Ordering::SeqCst);
+        self.stop_wait.notify_all();
         
         if let Some(handle) = self.thread_handle.take() {
             if let Err(e) = handle.join() {
@@ -117,6 +124,7 @@ impl AlsaProducer {
         running: Arc<AtomicBool>,
         samples_processed: Arc<AtomicU64>,
         ring_buffer: Option<Arc<crate::core::AudioRingBuffer>>,
+        stop_wait: Arc<StopWait>,
     ) -> Result<()> {
         use alsa::{pcm::{Access, Format, HwParams, PCM}, Direction, ValueOr};
         
@@ -150,11 +158,26 @@ impl AlsaProducer {
             sample_rate, channels, period_frames);
         
         if let Ok(io) = pcm.io_i16() {
-            Self::capture_i16(io, period_frames as usize, channels as usize, 
-                sample_rate, running, samples_processed, ring_buffer)?;
+            Self::capture_i16(
+                io,
+                period_frames as usize,
+                channels as usize,
+                sample_rate,
+                running,
+                samples_processed,
+                ring_buffer,
+                stop_wait.clone(),
+            )?;
         } else {
             log::warn!("i16 capture failed, using demo mode");
-            Self::capture_demo(sample_rate, channels, running, samples_processed, ring_buffer)?;
+            Self::capture_demo(
+                sample_rate,
+                channels,
+                running,
+                samples_processed,
+                ring_buffer,
+                stop_wait,
+            )?;
         }
         
         log::info!("ALSA capture stopped");
@@ -169,6 +192,7 @@ impl AlsaProducer {
         running: Arc<AtomicBool>,
         samples_processed: Arc<AtomicU64>,
         ring_buffer: Option<Arc<crate::core::AudioRingBuffer>>,
+        stop_wait: Arc<StopWait>,
     ) -> Result<()> {
         let target_frames = sample_rate as usize / 10; // 100ms
         let target_samples = target_frames * channels;
@@ -212,11 +236,11 @@ impl AlsaProducer {
                     }
                 }
                 Ok(_) => {
-                    std::thread::sleep(Duration::from_millis(1));
+                    stop_wait.wait_timeout(Duration::from_millis(1));
                 }
                 Err(e) => {
                     log::warn!("ALSA read error: {}", e);
-                    std::thread::sleep(Duration::from_millis(10));
+                    stop_wait.wait_timeout(Duration::from_millis(10));
                 }
             }
         }
@@ -229,6 +253,7 @@ impl AlsaProducer {
         running: Arc<AtomicBool>,
         samples_processed: Arc<AtomicU64>,
         ring_buffer: Option<Arc<crate::core::AudioRingBuffer>>,
+        stop_wait: Arc<StopWait>,
     ) -> Result<()> {
         log::warn!("Using demo mode - simulating audio");
         
@@ -237,7 +262,7 @@ impl AlsaProducer {
         
         let mut tick = 0;
         while running.load(Ordering::Relaxed) {
-            std::thread::sleep(Duration::from_millis(100));
+            stop_wait.wait_timeout(Duration::from_millis(100));
             tick += 1;
             
             if tick % 10 == 0 { // Alle Sekunde

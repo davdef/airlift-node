@@ -5,7 +5,6 @@ use std::sync::{
     mpsc, Arc,
 };
 use std::thread;
-use std::time::Duration;
 
 use log::{error, info, warn};
 use tiny_http::{Header, Method, Response, Server, StatusCode};
@@ -77,6 +76,7 @@ fn handle_live_simple(
 
     let stop = Arc::new(AtomicBool::new(false));
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let (stop_tx, stop_rx) = mpsc::channel::<()>();
 
     struct LiveReader {
         rx: mpsc::Receiver<Vec<u8>>,
@@ -97,7 +97,7 @@ fn handle_live_simple(
                 return Ok(0);
             }
 
-            match self.rx.recv_timeout(Duration::from_millis(100)) {
+            match self.rx.recv() {
                 Ok(chunk) => {
                     let n = chunk.len().min(buf.len());
                     buf[..n].copy_from_slice(&chunk[..n]);
@@ -106,8 +106,7 @@ fn handle_live_simple(
                     }
                     Ok(n)
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => Err(std::io::ErrorKind::WouldBlock.into()),
-                Err(mpsc::RecvTimeoutError::Disconnected) => Ok(0),
+                Err(mpsc::RecvError) => Ok(0),
             }
         }
     }
@@ -119,6 +118,7 @@ fn handle_live_simple(
     };
 
     let mut source = ring_factory();
+    let source_notifier = source.notifier();
     let first_frame = match wait_for_frame(&mut *source) {
         Ok(frame) => frame,
         Err(e) => {
@@ -148,53 +148,69 @@ fn handle_live_simple(
         None,
     );
 
-    thread::spawn({
-        let stop = stop.clone();
-        let feeder_tx = tx.clone();
-        move || {
-            let feeder_stop = stop.clone();
-            let feeder = thread::spawn(move || {
-                let mut ring = source;
-                info!("[audio] live feeder started");
+    let feeder_stop = stop.clone();
+    let initial_tx = tx.clone();
+    let feeder_tx = tx;
+    let feeder_stop_tx = stop_tx.clone();
+    let feeder = thread::spawn(move || {
+        let mut ring = source;
+        info!("[audio] live feeder started");
 
-                while !feeder_stop.load(Ordering::Relaxed) {
-                    match ring.poll() {
-                        Ok(EncodedRead::Frame(frame)) => {
-                            if feeder_tx.send(frame.payload).is_err() {
-                                break;
-                            }
-                        }
-                        Ok(EncodedRead::Gap { missed }) => {
-                            warn!("[audio] live GAP missed={}", missed);
-                        }
-                        Ok(EncodedRead::Empty) => {
-                            thread::sleep(Duration::from_millis(10));
-                        }
-                        Err(e) => {
-                            warn!("[audio] live source error: {}", e);
-                            break;
-                        }
+        while !feeder_stop.load(Ordering::Relaxed) {
+            let read = match ring.wait_for_read_or_stop(&feeder_stop) {
+                Ok(Some(read)) => read,
+                Ok(None) => break,
+                Err(e) => {
+                    warn!("[audio] live source error: {}", e);
+                    break;
+                }
+            };
+
+            match read {
+                EncodedRead::Frame(frame) => {
+                    if feeder_tx.send(frame.payload).is_err() {
+                        feeder_stop.store(true, Ordering::Relaxed);
+                        break;
                     }
                 }
-
-                info!("[audio] live feeder exiting");
-            });
-
-            while !stop.load(Ordering::Relaxed) {
-                thread::sleep(Duration::from_millis(100));
+                EncodedRead::Gap { missed } => {
+                    warn!("[audio] live GAP missed={}", missed);
+                }
+                EncodedRead::Empty => {}
             }
+        }
 
+        info!("[audio] live feeder exiting");
+        let _ = feeder_stop_tx.send(());
+    });
+
+    thread::spawn({
+        let source_notifier = source_notifier.clone();
+        move || {
+            let _ = stop_rx.recv();
+            if let Some(notifier) = source_notifier {
+                notifier.notify_all();
+            }
             info!("[audio] live cleaning up");
             let _ = feeder.join();
         }
     });
 
-    if tx.send(first_frame.payload).is_err() {
+    if initial_tx.send(first_frame.payload).is_err() {
         stop.store(true, Ordering::Relaxed);
+        if let Some(notifier) = &source_notifier {
+            notifier.notify_all();
+        }
+        let _ = stop_tx.send(());
+        return;
     }
 
     if req.respond(response).is_err() {
         stop.store(true, Ordering::Relaxed);
+        if let Some(notifier) = &source_notifier {
+            notifier.notify_all();
+        }
+        let _ = stop_tx.send(());
     }
 }
 
@@ -228,14 +244,12 @@ fn content_type_for_container(info: &CodecInfo) -> anyhow::Result<&'static str> 
 
 fn wait_for_frame(source: &mut dyn EncodedFrameSource) -> anyhow::Result<EncodedFrame> {
     loop {
-        match source.poll()? {
+        match source.wait_for_read()? {
             EncodedRead::Frame(frame) => return Ok(frame),
             EncodedRead::Gap { missed } => {
                 warn!("[audio] live gap while waiting for first frame: {}", missed);
             }
-            EncodedRead::Empty => {
-                thread::sleep(Duration::from_millis(10));
-            }
+            EncodedRead::Empty => {}
         }
     }
 }
