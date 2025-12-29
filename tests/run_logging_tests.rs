@@ -1,4 +1,7 @@
 // tests/run_logging_tests.rs
+use airlift_node::ComponentLogger;
+use airlift_node::LogContext;
+
 fn main() {
     // Setup logging für Tests
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
@@ -64,9 +67,17 @@ fn test_flow_logging() {
     use airlift_node::core::processor::basic::PassThrough;
     use airlift_node::core::{AirliftNode, Flow};
 
-    struct FlowLogger {
-        name: String,
+struct FlowLogger {
+    name: String,
+}
+
+impl FlowLogger {
+    fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+        }
     }
+}
 
     impl ComponentLogger for FlowLogger {
         fn log_context(&self) -> LogContext {
