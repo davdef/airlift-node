@@ -7,6 +7,7 @@ pub enum EventType {
     Error,
     BufferOverflow,
     ConfigChanged,
+    AudioPeak,
     #[cfg(feature = "debug-events")]
     Debug(DebugEventType),
 }
@@ -138,6 +139,7 @@ impl Event {
             EventType::Error => "Error",
             EventType::BufferOverflow => "BufferOverflow",
             EventType::ConfigChanged => "ConfigChanged",
+            EventType::AudioPeak => "AudioPeak",
             #[cfg(feature = "debug-events")]
             EventType::Debug(d) => d.event_type_str(),
         }

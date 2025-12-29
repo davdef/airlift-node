@@ -12,6 +12,7 @@ use super::processor::{Processor, ProcessorStatus};
 use super::ringbuffer::AudioRingBuffer;
 use super::BufferRegistry;
 use crate::core::logging::ComponentLogger;
+use crate::ring::PcmFrame;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum PipelineMode {
@@ -48,7 +49,91 @@ pub struct Flow {
     processor_links: Vec<ProcessorLink>,
     scratch_buffers: [Arc<AudioRingBuffer>; 2],
     running: Arc<AtomicBool>,
+    event_bus: Option<Arc<Mutex<EventBus>>>,
     thread_handle: Option<std::thread::JoinHandle<()>>,
+}
+
+const PEAK_EMIT_INTERVAL_NS: u64 = 100_000_000;
+const SILENCE_THRESHOLD: f32 = 0.001;
+
+struct PeakAccumulator {
+    peaks: [f32; 2],
+    has_samples: bool,
+    last_emit_ns: u64,
+}
+
+impl PeakAccumulator {
+    fn new() -> Self {
+        Self {
+            peaks: [0.0, 0.0],
+            has_samples: false,
+            last_emit_ns: 0,
+        }
+    }
+
+    fn update_from_frame(&mut self, frame: &PcmFrame) {
+        let channels = frame.channels as usize;
+        if channels == 0 {
+            return;
+        }
+
+        for (index, sample) in frame.samples.iter().enumerate() {
+            let channel = index % channels;
+            if channel > 1 {
+                continue;
+            }
+
+            let value = (*sample as f32).abs() / 32768.0;
+            if value > self.peaks[channel] {
+                self.peaks[channel] = value;
+            }
+        }
+
+        if channels == 1 {
+            self.peaks[1] = self.peaks[0];
+        }
+
+        self.has_samples = true;
+    }
+
+    fn emit_if_ready(&mut self, event_bus: &Arc<Mutex<EventBus>>, flow_name: &str) {
+        if !self.has_samples {
+            return;
+        }
+
+        let now = crate::core::timestamp::utc_ns_now();
+        if self.last_emit_ns != 0 && now.saturating_sub(self.last_emit_ns) < PEAK_EMIT_INTERVAL_NS {
+            return;
+        }
+
+        let silence = self.peaks.iter().all(|peak| *peak < SILENCE_THRESHOLD);
+        let payload = serde_json::json!({
+            "timestamp": now,
+            "peaks": [self.peaks[0], self.peaks[1]],
+            "silence": silence,
+        });
+
+        let event = Event::new(
+            EventType::AudioPeak,
+            EventPriority::Info,
+            "flow",
+            flow_name,
+            payload,
+        );
+
+        let bus = lock_mutex(event_bus, "flow.peak_event");
+        if let Err(error) = bus.publish(event) {
+            log::error!(
+                "Failed to publish audio peak event for flow '{}': {}",
+                flow_name,
+                error
+            );
+        }
+
+        self.peaks = [0.0, 0.0];
+        self.has_samples = false;
+        self.last_emit_ns = now;
+    }
 }
 
 impl Flow {
@@ -68,6 +153,7 @@ impl Flow {
                 Arc::new(AudioRingBuffer::new(1000)),
             ],
             running: Arc::new(AtomicBool::new(false)),
+            event_bus: None,
             thread_handle: None,
         };
 
@@ -228,6 +314,10 @@ impl Flow {
         self.info(&format!("Added consumer '{}'", consumer_name));
     }
 
+    pub fn attach_event_bus(&mut self, event_bus: Arc<Mutex<EventBus>>) {
+        self.event_bus = Some(event_bus);
+    }
+
     pub fn processor_names(&self) -> Vec<String> {
         self.processors
             .iter()
@@ -263,6 +353,7 @@ impl Flow {
         let scratch_buffers = self.scratch_buffers.clone();
         let flow_name = self.name.clone();
         let flow_reader_id = format!("flow:{}:input", self.name);
+        let event_bus = self.event_bus.clone();
 
         // Prozessoren für Thread vorbereiten
         let mut thread_processors: Vec<Box<dyn Processor>> = Vec::new();
@@ -281,6 +372,7 @@ impl Flow {
                     processor_buffers,
                     output_buffer,
                     thread_processors,
+                    event_bus,
                     &flow_name,
                     &flow_reader_id,
                 );
@@ -294,6 +386,7 @@ impl Flow {
                     scratch_buffers,
                     processor_links,
                     thread_processors,
+                    event_bus,
                     &flow_name,
                     &flow_reader_id,
                 );
@@ -352,6 +445,7 @@ impl Flow {
         processor_buffers: Vec<Arc<AudioRingBuffer>>,
         output_buffer: Arc<AudioRingBuffer>,
         mut processors: Vec<Box<dyn Processor>>,
+        event_bus: Option<Arc<Mutex<EventBus>>>,
         flow_name: &str,
         flow_reader_id: &str,
     ) {
@@ -364,6 +458,7 @@ impl Flow {
             input_buffers.len()
         ));
 
+        let mut peak_accumulator = PeakAccumulator::new();
         let mut iteration = 0;
         while running.load(Ordering::Relaxed) {
             iteration += 1;
@@ -377,9 +472,14 @@ impl Flow {
             let mut frames_collected = 0;
             for buffer in &input_buffers {
                 while let Some(frame) = buffer.pop_for_reader(flow_reader_id) {
+                    peak_accumulator.update_from_frame(&frame);
                     input_merge_buffer.push(frame);
                     frames_collected += 1;
                 }
+            }
+
+            if let Some(ref event_bus) = event_bus {
+                peak_accumulator.emit_if_ready(event_bus, flow_name);
             }
 
             // Log alle 100 Iterationen
@@ -433,6 +533,7 @@ impl Flow {
         scratch_buffers: [Arc<AudioRingBuffer>; 2],
         processor_links: Vec<ProcessorLink>,
         mut processors: Vec<Box<dyn Processor>>,
+        event_bus: Option<Arc<Mutex<EventBus>>>,
         flow_name: &str,
         flow_reader_id: &str,
     ) {
@@ -444,6 +545,7 @@ impl Flow {
             input_buffers.len()
         ));
 
+        let mut peak_accumulator = PeakAccumulator::new();
         let mut iteration = 0;
         while running.load(Ordering::Relaxed) {
             iteration += 1;
@@ -456,9 +558,14 @@ impl Flow {
             let mut frames_collected = 0;
             for buffer in &input_buffers {
                 while let Some(frame) = buffer.pop_for_reader(flow_reader_id) {
+                    peak_accumulator.update_from_frame(&frame);
                     input_merge_buffer.push(frame);
                     frames_collected += 1;
                 }
+            }
+
+            if let Some(ref event_bus) = event_bus {
+                peak_accumulator.emit_if_ready(event_bus, flow_name);
             }
 
             if iteration % 100 == 0 {
@@ -683,6 +790,10 @@ let event = Event::new(event_type, priority, "AirliftNode", "main", payload)
         self.buffer_registry.clone()
     }
 
+    pub fn event_bus(&self) -> Arc<Mutex<EventBus>> {
+        self.event_bus.clone()
+    }
+
     pub fn add_producer(&mut self, producer: Box<dyn super::Producer>) -> AudioResult<()> {
         let producer_name = producer.name().to_string();
         let buffer = Arc::new(AudioRingBuffer::new(1000));
@@ -724,7 +835,8 @@ let event = Event::new(event_type, priority, "AirliftNode", "main", payload)
         Ok(())
     }
 
-    pub fn add_flow(&mut self, flow: Flow) {
+    pub fn add_flow(&mut self, mut flow: Flow) {
+        flow.attach_event_bus(self.event_bus.clone());
         let flow_name = flow.name.clone();
         self.flows.push(flow);
 
