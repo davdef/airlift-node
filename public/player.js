@@ -1742,6 +1742,3 @@ window.addEventListener('load', () => {
     // Player starten
     window.player = new AircheckPlayer();
 });
-
-// Export für Module
-export { AircheckPlayer, TimeUtils, CONFIG };
