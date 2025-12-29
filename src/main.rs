@@ -286,6 +286,16 @@ match processor_cfg.processor_type.as_str() {
             if flow.name == *flow_name {
                 // Normale Producer-Verbindungen
                 for input_name in &flow_cfg.inputs {
+                    // Finde Producer mit diesem Namen
+                    for (producer_index, producer) in node.producers().iter().enumerate() {
+                        if producer.name() == input_name {
+                            let buffer_name = format!("producer:{}", input_name);
+                            if let Err(e) = node.connect_registered_buffer_to_flow(&buffer_name, flow_index) {
+                                log::error!("Failed to connect {} to flow {}: {}", 
+                                    input_name, flow_name, e);
+                            }
+                            break;
+                        }
                     if let Err(e) = node.connect_registry_to_flow(flow_index, input_name) {
                         log::error!("Failed to connect buffer {} to flow {}: {}", 
                             input_name, flow_name, e);
@@ -368,7 +378,7 @@ match processor_cfg.processor_type.as_str() {
         demo_flow.add_consumer(file_consumer);
         
         node.flows.push(demo_flow);
-        if let Err(e) = node.connect_registry_to_flow(0, "producer:demo") {
+        if let Err(e) = node.connect_registered_buffer_to_flow("producer:demo", 0) {
             log::error!("Failed to connect demo: {}", e);
         }
     }
