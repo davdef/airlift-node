@@ -1,5 +1,9 @@
 pub mod device_scanner;
 pub mod buffer_registry;
+#[cfg(feature = "lockfree")]
+#[path = "ringbuffer_lockfree.rs"]
+pub mod ringbuffer;
+#[cfg(not(feature = "lockfree"))]
 pub mod ringbuffer;
 pub mod timestamp;
 pub mod processor;
