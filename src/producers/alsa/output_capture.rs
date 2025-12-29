@@ -5,6 +5,12 @@ use anyhow::{Context, Result};
 
 use crate::producers::wait::StopWait;
 
+// Timing constants for output capture loops.
+const STOP_WAIT_IDLE_MS: u64 = 1;
+const STOP_WAIT_ERROR_MS: u64 = 10;
+const DEMO_TICK_INTERVAL_MS: u64 = 100;
+const DEMO_LOG_EVERY_TICKS: u64 = 10;
+
 pub struct AlsaOutputCapture {
     name: String,
     running: Arc<AtomicBool>,
@@ -222,10 +228,10 @@ impl AlsaOutputCapture {
                         }
                     }
                 }
-                Ok(_) => stop_wait.wait_timeout(Duration::from_millis(1)),
+                Ok(_) => stop_wait.wait_timeout(Duration::from_millis(STOP_WAIT_IDLE_MS)),
                 Err(e) => {
                     log::warn!("Output capture read error: {}", e);
-                    stop_wait.wait_timeout(Duration::from_millis(10));
+                    stop_wait.wait_timeout(Duration::from_millis(STOP_WAIT_ERROR_MS));
                 }
             }
         }
@@ -248,10 +254,10 @@ impl AlsaOutputCapture {
         
         let mut tick = 0;
         while running.load(Ordering::Relaxed) {
-            stop_wait.wait_timeout(Duration::from_millis(100));
+            stop_wait.wait_timeout(Duration::from_millis(DEMO_TICK_INTERVAL_MS));
             tick += 1;
             
-            if tick % 10 == 0 {
+            if tick % DEMO_LOG_EVERY_TICKS == 0 {
                 let chunk_samples = vec![0i16; target_samples];
                 samples_processed.fetch_add(target_samples as u64, Ordering::Relaxed);
                 

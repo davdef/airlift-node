@@ -7,6 +7,9 @@ use anyhow::{Result, anyhow};
 use crate::core::{Producer, ProducerStatus, AudioRingBuffer};
 use crate::producers::wait::StopWait;
 
+// Timing constants for file playback loop.
+const FRAME_INTERVAL_MS: u64 = 100; // 10 FPS
+
 pub struct FileProducer {
     name: String,
     running: Arc<AtomicBool>,
@@ -113,7 +116,7 @@ impl Producer for FileProducer {
                     }
                 }
                 
-                stop_wait.wait_timeout(std::time::Duration::from_millis(100)); // 10 FPS
+                stop_wait.wait_timeout(std::time::Duration::from_millis(FRAME_INTERVAL_MS));
                 
                 if !loop_audio {
                     break;

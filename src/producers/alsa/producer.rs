@@ -5,6 +5,13 @@ use anyhow::{Context, Result};
 
 use crate::producers::wait::StopWait;
 
+// Logging/idle timing constants to avoid magic numbers in capture loops.
+const BUFFER_LOG_EVERY_NS: u64 = 5_000_000_000;
+const STOP_WAIT_IDLE_MS: u64 = 1;
+const STOP_WAIT_ERROR_MS: u64 = 10;
+const DEMO_TICK_INTERVAL_MS: u64 = 100;
+const DEMO_LOG_EVERY_TICKS: u64 = 10;
+
 pub struct AlsaProducer {
     name: String,
     running: Arc<AtomicBool>,
@@ -227,7 +234,7 @@ impl AlsaProducer {
                             static mut LAST_LOG: u64 = 0;
                             unsafe {
                                 let now = crate::core::utc_ns_now();
-                                if now - LAST_LOG >= 5_000_000_000 {
+                                if now - LAST_LOG >= BUFFER_LOG_EVERY_NS {
                                     log::debug!("Pushed frame to buffer. Buffer size: {}", buffer_len);
                                     LAST_LOG = now;
                                 }
@@ -236,11 +243,11 @@ impl AlsaProducer {
                     }
                 }
                 Ok(_) => {
-                    stop_wait.wait_timeout(Duration::from_millis(1));
+                    stop_wait.wait_timeout(Duration::from_millis(STOP_WAIT_IDLE_MS));
                 }
                 Err(e) => {
                     log::warn!("ALSA read error: {}", e);
-                    stop_wait.wait_timeout(Duration::from_millis(10));
+                    stop_wait.wait_timeout(Duration::from_millis(STOP_WAIT_ERROR_MS));
                 }
             }
         }
@@ -262,10 +269,10 @@ impl AlsaProducer {
         
         let mut tick = 0;
         while running.load(Ordering::Relaxed) {
-            stop_wait.wait_timeout(Duration::from_millis(100));
+            stop_wait.wait_timeout(Duration::from_millis(DEMO_TICK_INTERVAL_MS));
             tick += 1;
             
-            if tick % 10 == 0 { // Alle Sekunde
+            if tick % DEMO_LOG_EVERY_TICKS == 0 { // Alle Sekunde
                 let chunk_samples = vec![0i16; target_samples];
                 samples_processed.fetch_add(target_samples as u64, Ordering::Relaxed);
                 
