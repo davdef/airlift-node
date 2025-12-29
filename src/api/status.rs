@@ -1,78 +1,93 @@
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tiny_http::{Header, Method, Request, Response, StatusCode};
 
-use crate::core::timestamp::utc_ns_now;
-use crate::core::{AirliftNode, ConsumerStatus, ProcessorStatus};
+use crate::core::AirliftNode;
 
 #[derive(Serialize)]
 pub struct StatusResponse {
-    pub timestamp_ns: u64,
     pub running: bool,
     pub uptime_seconds: u64,
-    pub producers: Vec<ProducerStatusResponse>,
-    pub flows: Vec<FlowStatusResponse>,
-    pub buffers: Vec<BufferStatusResponse>,
+    pub producers: Vec<ProducerInfo>,
+    pub flows: Vec<FlowInfo>,
+    pub ringbuffer: RingBufferInfo,
+    pub modules: Vec<ModuleInfo>,
+    pub inactive_modules: Vec<InactiveModule>,
+    pub configuration_issues: Vec<ConfigurationIssue>,
+    pub timestamp_ms: u64,
 }
 
 #[derive(Serialize)]
-pub struct ProducerStatusResponse {
+pub struct ProducerInfo {
     pub name: String,
     pub running: bool,
     pub connected: bool,
     pub samples_processed: u64,
     pub errors: u64,
-    pub buffer: Option<BufferStatsResponse>,
 }
 
 #[derive(Serialize)]
-pub struct FlowStatusResponse {
+pub struct FlowInfo {
     pub name: String,
     pub running: bool,
     pub input_buffer_levels: Vec<usize>,
     pub processor_buffer_levels: Vec<usize>,
     pub output_buffer_level: usize,
-    pub processors: Vec<ProcessorStatusResponse>,
-    pub consumers: Vec<ConsumerStatusResponse>,
 }
 
 #[derive(Serialize)]
-pub struct ProcessorStatusResponse {
-    pub name: String,
+pub struct RingBufferInfo {
+    pub fill: u64,
+    pub capacity: u64,
+}
+
+#[derive(Serialize)]
+pub struct ModuleInfo {
+    pub id: String,
+    pub label: String,
+    pub module_type: String,
+    pub runtime: ModuleRuntime,
+    pub controls: Vec<ModuleControl>,
+}
+
+#[derive(Serialize)]
+pub struct ModuleRuntime {
+    pub enabled: bool,
     pub running: bool,
-    pub processing_rate_hz: f32,
-    pub latency_ms: f32,
+    pub connected: Option<bool>,
+    pub counters: ModuleCounters,
+    pub last_activity_ms: u64,
+}
+
+#[derive(Serialize)]
+pub struct ModuleCounters {
+    pub rx: u64,
+    pub tx: u64,
     pub errors: u64,
 }
 
 #[derive(Serialize)]
-pub struct ConsumerStatusResponse {
-    pub name: String,
-    pub running: bool,
-    pub connected: bool,
-    pub frames_processed: u64,
-    pub bytes_written: u64,
-    pub errors: u64,
+pub struct ModuleControl {
+    pub action: String,
+    pub label: String,
+    pub enabled: bool,
+    pub reason: Option<String>,
 }
 
 #[derive(Serialize)]
-pub struct BufferStatusResponse {
-    pub name: String,
-    pub capacity: usize,
-    pub current_frames: usize,
-    pub dropped_frames: u64,
-    pub latest_timestamp: Option<u64>,
-    pub oldest_timestamp: Option<u64>,
+pub struct InactiveModule {
+    pub id: String,
+    pub label: String,
+    pub module_type: String,
+    pub reason: String,
 }
 
 #[derive(Serialize)]
-pub struct BufferStatsResponse {
-    pub capacity: usize,
-    pub current_frames: usize,
-    pub dropped_frames: u64,
-    pub latest_timestamp: Option<u64>,
-    pub oldest_timestamp: Option<u64>,
+pub struct ConfigurationIssue {
+    pub key: String,
+    pub message: String,
 }
 
 pub fn handle_status_request(req: &mut Request, node: Arc<Mutex<AirliftNode>>) {
@@ -103,13 +118,12 @@ fn build_status(node: &AirliftNode) -> StatusResponse {
         .iter()
         .map(|producer| {
             let status = producer.status();
-            ProducerStatusResponse {
+            ProducerInfo {
                 name: producer.name().to_string(),
                 running: status.running,
                 connected: status.connected,
                 samples_processed: status.samples_processed,
                 errors: status.errors,
-                buffer: status.buffer_stats.as_ref().map(map_buffer_stats),
             }
         })
         .collect::<Vec<_>>();
@@ -119,93 +133,44 @@ fn build_status(node: &AirliftNode) -> StatusResponse {
         .iter()
         .map(|flow| {
             let status = flow.status();
-            let processor_names = flow.processor_names();
-            let consumer_names = flow.consumer_names();
-
-            FlowStatusResponse {
+            FlowInfo {
                 name: flow.name.clone(),
                 running: status.running,
                 input_buffer_levels: status.input_buffer_levels,
                 processor_buffer_levels: status.processor_buffer_levels,
                 output_buffer_level: status.output_buffer_level,
-                processors: map_processor_statuses(&processor_names, status.processor_status),
-                consumers: map_consumer_statuses(&consumer_names, status.consumer_status),
             }
         })
         .collect::<Vec<_>>();
 
     let registry = node.buffer_registry();
-    let buffers = registry
-        .list()
-        .into_iter()
-        .filter_map(|name| {
-            registry.get(&name).map(|buffer| {
-                let stats = buffer.stats();
-                BufferStatusResponse {
-                    name,
-                    capacity: stats.capacity,
-                    current_frames: stats.current_frames,
-                    dropped_frames: stats.dropped_frames,
-                    latest_timestamp: stats.latest_timestamp,
-                    oldest_timestamp: stats.oldest_timestamp,
-                }
-            })
-        })
-        .collect::<Vec<_>>();
+    let mut ringbuffer_fill = 0_u64;
+    let mut ringbuffer_capacity = 0_u64;
+    for name in registry.list() {
+        if let Some(buffer) = registry.get(&name) {
+            let stats = buffer.stats();
+            ringbuffer_fill += stats.current_frames as u64;
+            ringbuffer_capacity += stats.capacity as u64;
+        }
+    }
+
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
 
     StatusResponse {
-        timestamp_ns: utc_ns_now(),
         running: node_status.running,
         uptime_seconds: node_status.uptime_seconds,
         producers,
         flows,
-        buffers,
+        ringbuffer: RingBufferInfo {
+            fill: ringbuffer_fill,
+            capacity: ringbuffer_capacity,
+        },
+        modules: Vec::new(),
+        inactive_modules: Vec::new(),
+        configuration_issues: Vec::new(),
+        timestamp_ms,
     }
-}
-
-fn map_buffer_stats(stats: &crate::core::RingBufferStats) -> BufferStatsResponse {
-    BufferStatsResponse {
-        capacity: stats.capacity,
-        current_frames: stats.current_frames,
-        dropped_frames: stats.dropped_frames,
-        latest_timestamp: stats.latest_timestamp,
-        oldest_timestamp: stats.oldest_timestamp,
-    }
-}
-
-fn map_processor_statuses(
-    names: &[String],
-    statuses: Vec<ProcessorStatus>,
-) -> Vec<ProcessorStatusResponse> {
-    names
-        .iter()
-        .cloned()
-        .zip(statuses.into_iter())
-        .map(|(name, status)| ProcessorStatusResponse {
-            name,
-            running: status.running,
-            processing_rate_hz: status.processing_rate_hz,
-            latency_ms: status.latency_ms,
-            errors: status.errors,
-        })
-        .collect()
-}
-
-fn map_consumer_statuses(
-    names: &[String],
-    statuses: Vec<ConsumerStatus>,
-) -> Vec<ConsumerStatusResponse> {
-    names
-        .iter()
-        .cloned()
-        .zip(statuses.into_iter())
-        .map(|(name, status)| ConsumerStatusResponse {
-            name,
-            running: status.running,
-            connected: status.connected,
-            frames_processed: status.frames_processed,
-            bytes_written: status.bytes_written,
-            errors: status.errors,
-        })
-        .collect()
 }
