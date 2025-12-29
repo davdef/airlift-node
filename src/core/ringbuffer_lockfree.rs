@@ -1,9 +1,7 @@
-use std::cell::UnsafeCell;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crate::core::logging::ComponentLogger;
 pub use crate::ring::PcmFrame;
@@ -12,11 +10,8 @@ use crate::ring::PcmSink;
 #[derive(Debug)]
 struct RingSlot {
     seq: AtomicU64,
-    frame: UnsafeCell<MaybeUninit<PcmFrame>>,
+    frame: RwLock<Option<PcmFrame>>,
 }
-
-unsafe impl Send for RingSlot {}
-unsafe impl Sync for RingSlot {}
 
 #[derive(Debug)]
 struct ReaderSlot {
@@ -99,7 +94,7 @@ impl AudioRingBuffer {
         for _ in 0..capacity {
             slots.push(RingSlot {
                 seq: AtomicU64::new(0),
-                frame: UnsafeCell::new(MaybeUninit::uninit()),
+                frame: RwLock::new(None),
             });
         }
 
@@ -131,18 +126,11 @@ impl AudioRingBuffer {
         let idx = (seq as usize) % self.capacity;
         let slot = &self.slots[idx];
 
-        let previous_seq = slot.seq.swap(0, Ordering::AcqRel);
-        if previous_seq != 0 {
-            unsafe {
-                std::ptr::drop_in_place((*slot.frame.get()).as_mut_ptr());
-            }
+        {
+            let mut guard = slot.frame.write().unwrap();
+            *guard = Some(frame);
+            slot.seq.store(seq, Ordering::Release);
         }
-
-        unsafe {
-            (*slot.frame.get()).write(frame);
-        }
-
-        slot.seq.store(seq, Ordering::Release);
         self.head_seq.store(seq, Ordering::Release);
 
         if seq > self.capacity as u64 {
@@ -200,6 +188,7 @@ impl AudioRingBuffer {
         }
 
         let slot = &self.slots[(position as usize) % self.capacity];
+        let guard = slot.frame.read().unwrap();
         let slot_seq = slot.seq.load(Ordering::Acquire);
         if slot_seq != position {
             self.dropped_frames.fetch_add(1, Ordering::Relaxed);
@@ -211,11 +200,10 @@ impl AudioRingBuffer {
             return None;
         }
 
-        let frame = unsafe { (*slot.frame.get()).assume_init_ref().clone() };
-        let confirm_seq = slot.seq.load(Ordering::Acquire);
-        if confirm_seq != position {
-            return None;
-        }
+        let frame = match guard.as_ref() {
+            Some(frame) => frame.clone(),
+            None => return None,
+        };
 
         reader_slot
             .position
@@ -237,12 +225,8 @@ impl AudioRingBuffer {
         self.info("Clearing buffer");
 
         for slot in self.slots.iter() {
-            let slot_seq = slot.seq.load(Ordering::Acquire);
-            if slot_seq != 0 {
-                unsafe {
-                    std::ptr::drop_in_place((*slot.frame.get()).as_mut_ptr());
-                }
-            }
+            let mut guard = slot.frame.write().unwrap();
+            *guard = None;
             slot.seq.store(0, Ordering::Release);
         }
 
@@ -360,17 +344,12 @@ impl AudioRingBuffer {
 
     fn read_by_seq(&self, seq: u64) -> Option<PcmFrame> {
         let slot = &self.slots[(seq as usize) % self.capacity];
+        let guard = slot.frame.read().unwrap();
         let seq_start = slot.seq.load(Ordering::Acquire);
         if seq_start != seq {
             return None;
         }
-        let frame = unsafe { (*slot.frame.get()).assume_init_ref().clone() };
-        let seq_end = slot.seq.load(Ordering::Acquire);
-        if seq_end == seq {
-            Some(frame)
-        } else {
-            None
-        }
+        guard.as_ref().cloned()
     }
 
     fn slot_timestamp(&self, seq: u64) -> Option<u64> {
