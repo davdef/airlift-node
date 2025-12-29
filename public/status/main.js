@@ -114,6 +114,10 @@ let wsMessageCount = 0;
 let autoRefreshInterval = null;
 let moduleDisplayFilter = 'all';
 let currentViewState = 'normal';
+let lastStatusRefreshAt = 0;
+let lastWsRenderAt = 0;
+let wsRenderTimer = null;
+let latestWsPayload = null;
 const MODULE_FILTER_STORAGE_KEY = 'moduleDisplayFilter';
 const panelIds = [
     'mainContent',
@@ -140,6 +144,9 @@ let pipelineValidationOk = false;
 
 // Canvas-State (wird von waveform.js verwaltet)
 let ringbufferCanvas, ringbufferCtx, recorderCanvas, recorderCtx;
+
+const WS_RENDER_MIN_INTERVAL = 80;
+const WS_STATUS_REFRESH_INTERVAL = 5000;
 
 // Initialisierung
 async function initializeAll() {
@@ -423,8 +430,9 @@ function updateSystemStatus(status) {
     if (status.ringbuffer) {
         const fill = status.ringbuffer.fill || 0;
         const capacity = status.ringbuffer.capacity || 0;
+        const percent = capacity ? Math.round((fill / capacity) * 100) : 0;
         document.getElementById('systemAudioBuffer').textContent = `${Math.round((capacity || 6000) * 0.1)}s`;
-        document.getElementById('ringbufferInfo').textContent = `Füllstand: ${fill}/${capacity || '–'}`;
+        document.getElementById('ringbufferInfo').textContent = `Füllstand: ${fill}/${capacity || '–'} (${percent}%)`;
     }
 }
 
@@ -454,41 +462,54 @@ function setupWebSocket() {
             const eventTimestamp = normalizeEventTimestamp(data?.timestamp);
             if (data && typeof eventTimestamp === 'number') {
                 wsMessageCount += 1;
-                latestStudioTime = eventTimestamp;
-                
-                // Update Studio-Zeit im Header
-                document.getElementById('studioTime').textContent = formatTime(latestStudioTime);
-                
-                // Update System Status
-                updateSystemStatus(currentStatus);
-                
-                // Extract peaks if available
-                let peaks = null;
-                let silence = false;
-                
-                if (Array.isArray(data.peaks)) {
-                    peaks = data.peaks;
-                }
-                
-                if (data.silence !== undefined) {
-                    silence = data.silence;
-                }
-                
-                // Update waveforms with new peak
-                if (peaks !== null || silence) {
-                    updateRingbufferPoint(eventTimestamp, peaks || [0, 0], silence);
-                    updateFileOutPoint(eventTimestamp, peaks, silence);
-                }
-                
-                // Auto-refresh data every 10 WS messages
+                latestWsPayload = {
+                    timestamp: eventTimestamp,
+                    peaks: Array.isArray(data.peaks) ? data.peaks : null,
+                    silence: data.silence !== undefined ? data.silence : false
+                };
+                scheduleWsRender();
                 if (wsMessageCount % 10 === 0) {
-                    refreshStatusData();
+                    scheduleStatusRefresh();
                 }
             }
         } catch (err) {
             // Silent error
         }
     };
+}
+
+function scheduleWsRender() {
+    if (wsRenderTimer) {
+        return;
+    }
+    const elapsed = performance.now() - lastWsRenderAt;
+    const delay = Math.max(0, WS_RENDER_MIN_INTERVAL - elapsed);
+    wsRenderTimer = setTimeout(() => {
+        wsRenderTimer = null;
+        if (!latestWsPayload) {
+            return;
+        }
+        const { timestamp, peaks, silence } = latestWsPayload;
+        latestWsPayload = null;
+        lastWsRenderAt = performance.now();
+
+        latestStudioTime = timestamp;
+        document.getElementById('studioTime').textContent = formatTime(latestStudioTime);
+        updateSystemStatus(currentStatus || {});
+
+        if (peaks !== null || silence) {
+            updateRingbufferPoint(timestamp, peaks || [0, 0], silence);
+            updateFileOutPoint(timestamp, peaks, silence);
+        }
+    }, delay);
+}
+
+function scheduleStatusRefresh(force = false) {
+    const now = Date.now();
+    if (force || now - lastStatusRefreshAt >= WS_STATUS_REFRESH_INTERVAL) {
+        lastStatusRefreshAt = now;
+        refreshStatusData();
+    }
 }
 
 // Auto-refresh
@@ -502,7 +523,11 @@ async function refreshStatusData() {
     try {
         const statusResponse = await fetch(API_ENDPOINTS.status);
         if (statusResponse.ok) {
-            currentStatus = normalizeStatusResponse(await statusResponse.json());
+            const nextStatus = normalizeStatusResponse(await statusResponse.json());
+            if (!currentStatus || currentStatus?.ringbuffer?.capacity !== nextStatus?.ringbuffer?.capacity) {
+                initializeRingbuffer(nextStatus);
+            }
+            currentStatus = nextStatus;
             latestStudioTime = currentStatus.timestamp_ms || latestStudioTime;
             updateUI(currentStatus);
         } else {
@@ -646,10 +671,16 @@ async function importPipelineConfig(tomlPayload) {
                 parameters: { toml: tomlPayload }
             })
         });
-        const data = await response.json();
+        let data = {};
+        const body = await response.text();
+        try {
+            data = body ? JSON.parse(body) : {};
+        } catch (error) {
+            data = { message: body };
+        }
         return {
             ok: response.ok && data?.ok !== false,
-            message: data?.message
+            message: data?.message || (!response.ok ? 'Import fehlgeschlagen.' : undefined)
         };
     } catch (error) {
         return {
@@ -867,6 +898,7 @@ function renderSetupGuide(status, localState) {
     const hasOutputs = resolvedState.hasOutputs;
     const hasCodecIssues = localIssues.some(issue => issue.type === 'codec-missing');
     const hasBufferIssues = localIssues.some(issue => issue.type === 'output-buffer-missing');
+    const hasModuleIssues = localIssues.some(issue => issue.type === 'module-missing' || issue.type === 'module-unsupported');
     const hasConnectionIssues = localIssues.some(issue => ['output-connection', 'service-connection', 'signal-compat', 'unconnected', 'input-start'].includes(issue.type));
 
     let nextStep = 'Konfiguration prüfen';
@@ -880,6 +912,8 @@ function renderSetupGuide(status, localState) {
         nextStep = 'Buffer verbinden';
     } else if (hasConnectionIssues) {
         nextStep = 'Verbindungen prüfen';
+    } else if (hasModuleIssues) {
+        nextStep = 'Module ergänzen';
     } else if (configurationIssues.length > 0) {
         nextStep = 'Backend-Sync prüfen';
     }
@@ -904,6 +938,9 @@ function renderSetupGuide(status, localState) {
     }
     if (hasConnectionIssues) {
         steps.push('Verbindungen zwischen Inputs, Buffern und Outputs prüfen.');
+    }
+    if (hasModuleIssues) {
+        steps.push('Fehlende Module im Backend ergänzen oder im Editor einen verfügbaren Typ wählen.');
     }
     if (configurationIssues.length > 0 && localIssues.length === 0) {
         steps.push('Backend-Konfiguration synchronisieren und Service neu laden.');
@@ -1848,6 +1885,27 @@ function buildPipelineGraphConfig(model) {
         outgoing.get(edge.from).push(edge.to);
     });
 
+    nodes.forEach(node => {
+        const resolvedType = resolveBackendType(node, null);
+        if (!resolvedType || node.kind === 'buffer') {
+            return;
+        }
+        const entry = findCatalogEntry(node.kind, resolvedType);
+        if (!entry) {
+            issues.push({
+                type: 'module-missing',
+                message: `Modultyp "${resolvedType}" für "${formatNodeLabel(node)}" ist im Backend nicht verfügbar.`
+            });
+            return;
+        }
+        if (entry.supported === false) {
+            issues.push({
+                type: 'module-unsupported',
+                message: `Modultyp "${resolvedType}" für "${formatNodeLabel(node)}" ist noch nicht verfügbar.`
+            });
+        }
+    });
+
     edges.forEach(edge => {
         const fromNode = nodesById.get(edge.from);
         const toNode = nodesById.get(edge.to);
@@ -2588,7 +2646,32 @@ function renderControls(status) {
     const container = document.getElementById('controlsGrid');
     const isMobile = window.innerWidth < 768;
     
-    const allControls = [];
+    const allControls = [
+        {
+            action: 'start',
+            label: 'Start',
+            enabled: !status?.running,
+            reason: status?.running ? 'Node läuft bereits.' : ''
+        },
+        {
+            action: 'stop',
+            label: 'Stop',
+            enabled: status?.running,
+            reason: status?.running ? '' : 'Node ist gestoppt.'
+        },
+        {
+            action: 'restart',
+            label: 'Restart',
+            enabled: true,
+            reason: ''
+        },
+        {
+            action: 'config.reload',
+            label: 'Config neu laden',
+            enabled: true,
+            reason: ''
+        }
+    ];
     if (status.modules) {
         status.modules.forEach(module => {
             if (module.controls) {
@@ -2599,11 +2682,6 @@ function renderControls(status) {
                 });
             }
         });
-    }
-    
-    if (allControls.length === 0) {
-        container.innerHTML = '<button class="btn" disabled>Keine Steuerung</button>';
-        return;
     }
     
     const visibleControls = isMobile ? allControls.slice(0, 4) : allControls;

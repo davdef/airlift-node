@@ -194,24 +194,19 @@ function drawRingbuffer() {
     
     // Update stats
     const statsContainer = document.getElementById('ringbufferStats');
-    if (currentStatus?.ring) {
-        const errorFills = currentStatus.ring.fill || 0;
-        const headSeq = currentStatus.ring.head_seq || 0;
-        
-        // Zähle gefüllte Slots
-        const filledSlots = ringbufferData.filter(p => p.hasData).length;
-        const fillPercentage = ((filledSlots / bufferCapacity) * 100).toFixed(1);
+    if (currentStatus?.ringbuffer) {
+        const ringbufferFill = currentStatus.ringbuffer.fill || 0;
+        const ringbufferCapacity = currentStatus.ringbuffer.capacity || bufferCapacity;
+        const filledSlots = Math.min(ringbufferFill, ringbufferCapacity);
+        const fillPercentage = ringbufferCapacity
+            ? ((filledSlots / ringbufferCapacity) * 100).toFixed(1)
+            : '0.0';
         
         statsContainer.innerHTML = `
             <div class="waveform-stat">
-                <div class="waveform-stat-label">Error-Fills</div>
-                <div class="waveform-stat-value">${errorFills}</div>
-                <div class="waveform-stat-sub">Gefüllte Lücken</div>
-            </div>
-            <div class="waveform-stat">
                 <div class="waveform-stat-label">Buffer-Füllung</div>
                 <div class="waveform-stat-value">${fillPercentage}%</div>
-                <div class="waveform-stat-sub">${filledSlots}/${bufferCapacity}</div>
+                <div class="waveform-stat-sub">${filledSlots}/${ringbufferCapacity}</div>
             </div>
             <div class="waveform-stat">
                 <div class="waveform-stat-label">Head</div>
@@ -222,11 +217,6 @@ function drawRingbuffer() {
                 <div class="waveform-stat-label">Tail</div>
                 <div class="waveform-stat-value">${bufferTailIndex}</div>
                 <div class="waveform-stat-sub">Wird überschrieben</div>
-            </div>
-            <div class="waveform-stat">
-                <div class="waveform-stat-label">Sequenzen</div>
-                <div class="waveform-stat-value">${headSeq}</div>
-                <div class="waveform-stat-sub">Buffer-Durchläufe</div>
             </div>
         `;
     }
