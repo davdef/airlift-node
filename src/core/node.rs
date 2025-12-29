@@ -51,6 +51,14 @@ impl Flow {
             buffer_addr, capacity
         ));
     }
+
+    pub fn add_input_from_registry(&mut self, registry: &BufferRegistry, buffer_name: &str) -> Result<()> {
+        let buffer = registry.get(buffer_name)
+            .ok_or_else(|| anyhow::anyhow!("Buffer '{}' not found in registry", buffer_name))?;
+        self.add_input_buffer(buffer);
+        self.info(&format!("Connected input buffer from registry '{}'", buffer_name));
+        Ok(())
+    }
     
     pub fn add_processor(&mut self, processor: Box<dyn Processor>) {
         let processor_name = processor.name().to_string();
@@ -424,6 +432,24 @@ impl AirliftNode {
             anyhow::bail!("Invalid producer or flow index");
         }
     }
+
+    pub fn connect_registry_to_flow(&mut self, flow_index: usize, buffer_name: &str) -> Result<()> {
+        if flow_index < self.flows.len() {
+            self.flows[flow_index].add_input_from_registry(&self.buffer_registry, buffer_name)?;
+            self.info(&format!(
+                "Connected registry buffer '{}' to flow {}",
+                buffer_name, flow_index
+            ));
+            Ok(())
+        } else {
+            self.error(&format!(
+                "Invalid flow index: {} (max flow={})",
+                flow_index,
+                self.flows.len()
+            ));
+            anyhow::bail!("Invalid flow index");
+        }
+    }
     
     /// Erstelle und füge einen Mixer mit Buffer-Registry hinzu
     pub fn create_and_add_mixer(&mut self, flow_index: usize, name: &str, config: crate::processors::MixerConfig) -> Result<()> {
@@ -661,8 +687,10 @@ mod tests {
         assert_eq!(flow.processors.len(), 1);
         
         // Add input buffer
+        let registry = BufferRegistry::new();
         let buffer = Arc::new(AudioRingBuffer::new(100));
-        flow.add_input_buffer(buffer);
+        registry.register("producer:test", buffer).unwrap();
+        flow.add_input_from_registry(&registry, "producer:test").unwrap();
         assert_eq!(flow.input_buffers.len(), 1);
     }
 
