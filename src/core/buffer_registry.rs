@@ -15,6 +15,22 @@ impl BufferRegistry {
             buffers: Arc::new(RwLock::new(HashMap::new())),
         }
     }
+
+    fn recover_poisoned_buffers(&self, context: &str) {
+        log::error!(
+            "Buffer registry lock poisoned in {}, clearing buffer registry",
+            context
+        );
+        match self.buffers.write() {
+            Ok(mut guard) => {
+                guard.clear();
+            }
+            Err(poisoned) => {
+                let mut guard = poisoned.into_inner();
+                guard.clear();
+            }
+        }
+    }
     
     /// Registriere einen Buffer unter einem Namen
     pub fn register(&self, name: &str, buffer: Arc<AudioRingBuffer>) -> Result<()> {
@@ -61,27 +77,23 @@ impl BufferRegistry {
     
     /// Liste aller registrierten Buffer-Namen
     pub fn list(&self) -> Vec<String> {
-        let buffers = match self.buffers.read() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                log::error!("Buffer registry lock poisoned, recovering");
-                poisoned.into_inner()
+        match self.buffers.read() {
+            Ok(guard) => guard.keys().cloned().collect(),
+            Err(_) => {
+                self.recover_poisoned_buffers("list");
+                Vec::new()
             }
-        };
-        
-        buffers.keys().cloned().collect()
+        }
     }
     
     /// Prüfe ob Buffer existiert
     pub fn exists(&self, name: &str) -> bool {
-        let buffers = match self.buffers.read() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                log::error!("Buffer registry lock poisoned, recovering");
-                poisoned.into_inner()
+        match self.buffers.read() {
+            Ok(guard) => guard.contains_key(name),
+            Err(_) => {
+                self.recover_poisoned_buffers("exists");
+                false
             }
-        };
-        
-        buffers.contains_key(name)
+        }
     }
 }
