@@ -72,7 +72,7 @@ Beispiele:
 
 - `src/core/mod.rs` (ProducerStatus-Validierung)
 - `src/core/node.rs` (Flow/AirliftNode-Tests)
-- `src/core/ringbuffer.rs` und `src/core/ringbuffer_lockfree.rs`
+- `src/core/ringbuffer.rs` (Default) und optional `src/core/ringbuffer_lockfree.rs` (via Feature `lockfree`)
 - `src/core/logging.rs`
 - `src/processors/mixer.rs`
 
@@ -98,5 +98,12 @@ Die API ist **noch nicht implementiert**. Zielbild:
 - **Runtime/Bootstrap**: `src/main.rs`
 - **Core-Pipeline**: `src/core/node.rs`
 - **Processor-Implementierungen**: `src/core/processor/*`, `src/processors/*`
+
+## Ringbuffer-Auswahl
+
+Standardmäßig wird `src/core/ringbuffer.rs` verwendet. Die Lockfree-Variante
+`src/core/ringbuffer_lockfree.rs` ist nur aktiv, wenn das Feature
+`lockfree` gesetzt ist. Externe Nutzung importiert immer
+`crate::core::ringbuffer`, unabhängig vom Feature-Flag.
 - **Consumers**: `src/core/consumer/*`
 - **Tests**: `src/core/*.rs`, `src/processors/mixer.rs`, `tests/*`
