@@ -1,0 +1,222 @@
+Aktuelle Architektur-Analyse
+Stärken:
+Modularität: Producer → Processors → Consumer Pipeline
+
+Buffer-Registry: Zentrale Buffer-Verwaltung
+
+Event-Bus: Event-basierte Kommunikation
+
+Konfigurationsbasiert: TOML-basierte Setup
+
+Schwächen für deine Vision:
+Statische Flows: Flows sind bei Start fixiert
+
+Keine dynamische Rekonfiguration: Nodes können nicht "on-the-fly" verbunden/getrennt werden
+
+Fehlende Visualisierung: Keine API für Graph-Struktur
+
+Begrenzte Buffer-Konnektivität: Einfache 1:1 Verbindungen
+
+🎯 Vision: Visueller Audio-Graph-Editor
+text
+┌─────────────────────────────────────────────────┐
+│            Visual Audio Graph Editor            │
+│                                                 │
+│  ┌─────────┐    ┌─────────┐    ┌─────────┐    │
+│  │  ALSA   │────│  Mixer  │────│  File   │    │
+│  │ Input   │    │         │    │ Writer  │    │
+│  └─────────┘    └─────────┘    └─────────┘    │
+│        │            │                          │
+│        └────────────┼──────────┐               │
+│                     │          │               │
+│                ┌────▼────┐ ┌──▼───┐           │
+│                │   EQ    │ │ Comp │           │
+│                └────┬────┘ └──┬───┘           │
+│                     │          │               │
+│                ┌────▼──────────▼────┐         │
+│                │   Icecast     │    │         │
+│                │   Streamer    │    │         │
+│                └────────────────┘    │         │
+│                                      │         │
+│                                 ┌────▼────┐   │
+│                                 │  RTMP   │   │
+│                                 │  Output │   │
+│                                 └─────────┘   │
+└─────────────────────────────────────────────────┘
+🔄 Erforderliche Architektur-Änderungen
+1. Dynamisches Graph-Modell
+rust
+// src/core/graph.rs
+pub struct AudioGraph {
+    nodes: HashMap<String, GraphNode>,
+    connections: HashMap<String, GraphConnection>,
+    running: bool,
+}
+
+pub enum GraphNode {
+    Producer(Arc<dyn Producer>),
+    Processor(Arc<dyn Processor>),
+    Consumer(Arc<dyn Consumer>),
+}
+
+pub struct GraphConnection {
+    id: String,
+    source_node: String,
+    source_port: String,  // z.B. "output", "mono_out", "left_channel"
+    target_node: String,
+    target_port: String,  // z.B. "input", "stereo_in", "right_channel"
+    buffer: Arc<AudioRingBuffer>,
+}
+2. Port-basierte Verbindungen
+rust
+pub trait Connectable: Send + Sync {
+    fn input_ports(&self) -> Vec<Port>;
+    fn output_ports(&self) -> Vec<Port>;
+    fn connect_input(&mut self, port: &str, buffer: Arc<AudioRingBuffer>) -> Result<()>;
+    fn disconnect_input(&mut self, port: &str) -> Result<()>;
+}
+
+pub struct Port {
+    name: String,
+    data_type: PortType,  // Audio, Control, MIDI
+    channels: u8,
+    sample_rate: Option<u32>,
+}
+3. Live-Reconfigurations-API
+rust
+pub struct GraphAPI {
+    // Dynamische Operationen
+    fn add_node(&mut self, node_type: NodeType, config: serde_json::Value) -> Result<String>;
+    fn remove_node(&mut self, node_id: &str, disconnect_strategy: DisconnectStrategy) -> Result<()>;
+    
+    fn connect(&mut self, source: &str, source_port: &str, 
+               target: &str, target_port: &str) -> Result<String>;
+    fn disconnect(&mut self, connection_id: &str) -> Result<()>;
+    
+    fn reconfigure_node(&mut self, node_id: &str, config: serde_json::Value) -> Result<()>;
+    
+    // Hot-Swap (ohne Flow-Neustart)
+    fn replace_node(&mut self, old_node_id: &str, new_node_type: NodeType, 
+                    config: serde_json::Value) -> Result<String>;
+}
+🚀 HTTP API Design für deine Vision
+Layer 1: Graph-Management API
+rust
+// REST Endpoints für visuellen Editor
+GET    /api/graph                   # Gesamten Graph holen
+POST   /api/graph/nodes            # Node hinzufügen
+DELETE /api/graph/nodes/{id}       # Node entfernen
+POST   /api/graph/connections      # Verbindung erstellen
+DELETE /api/graph/connections/{id} # Verbindung trennen
+PATCH  /api/graph/nodes/{id}       # Node live rekonfigurieren
+POST   /api/graph/validate         # Graph-Validierung
+POST   /api/graph/clone            # Graph kopieren/templaten
+Layer 2: Real-Time WebSocket API
+rust
+// WebSocket für Echtzeit-Interaktion
+WS /api/ws/graph
+Messages:
+- node_added(node_data)
+- node_removed(node_id)
+- connection_added(conn_data)
+- connection_removed(conn_id)
+- node_moved(node_id, x, y)
+- parameter_changed(node_id, param, value)
+Layer 3: Node-Templates & Library
+rust
+GET    /api/nodes/templates        # Verfügbare Node-Typen
+GET    /api/nodes/{type}/schema    # Config-Schema für Node-Typ
+POST   /api/nodes/{type}/test      # Node-Test (z.B. Audio-Output testen)
+Layer 4: Runtime-Control
+rust
+POST   /api/runtime/start         # Graph starten
+POST   /api/runtime/stop          # Graph stoppen
+POST   /api/runtime/pause         # Graph pausieren
+POST   /api/runtime/step          # Einzelnen Step ausführen (Debug)
+GET    /api/runtime/status        # Detaillierten Status
+GET    /api/runtime/performance   # Performance-Metriken
+Layer 5: Monitoring & Debugging
+rust
+WS     /api/ws/monitoring         # Live-Metriken-Stream
+GET    /api/debug/buffers/{id}    # Buffer-Inhalt inspizieren
+POST   /api/debug/inject/{node}   # Test-Daten injizieren
+GET    /api/debug/trace/{node}    # Processing-Trace
+🛠️ Implementierungs-Strategie
+Phase 1: Foundation (2-3 Wochen)
+Graph-Modell mit dynamischen Verbindungen
+
+Port-basierte Connectable-Traits für alle Komponenten
+
+Live-Reconfiguration Core ohne Neustarts
+
+Phase 2: HTTP API (2 Wochen)
+rust
+// Beispiel: Axum-basierte API
+use axum::{
+    routing::{get, post, delete, patch},
+    Router, extract::{State, Path, Json},
+    response::IntoResponse,
+};
+Phase 3: WebSocket & Real-Time (1-2 Wochen)
+rust
+use tokio_tungstenite::WebSocketStream;
+use futures_util::{SinkExt, StreamExt};
+Phase 4: Frontend-Integration (ongoing)
+React/Vue.js Editor
+
+SVG/Canvas basierte Visualisierung
+
+Drag & Drop mit Konnektor-Ports
+
+🔧 Kritische Technische Herausforderungen
+1. Buffer-Hot-Swapping
+rust
+// Wie wechselt man Buffer ohne Datenverlust?
+impl AudioRingBuffer {
+    fn hot_swap(&self, new_buffer: Arc<Self>) -> Result<()> {
+        // 1. Neue Buffer anbinden
+        // 2. Alten Buffer auslaufen lassen
+        // 3. Leser auf neuen Buffer umleiten
+        // 4. Alten Buffer entsorgen
+    }
+}
+2. State-Preservation bei Reconfiguration
+rust
+// Wie behält ein EQ seine Filter-Koeffizienten?
+trait StatefulProcessor: Processor {
+    fn save_state(&self) -> serde_json::Value;
+    fn restore_state(&mut self, state: serde_json::Value) -> Result<()>;
+}
+3. Zyklische Graphen verhindern
+rust
+impl AudioGraph {
+    fn validate_acyclic(&self) -> Result<()> {
+        // Topologische Sortierung
+        // Zyklus-Erkennung
+    }
+}
+💡 Empfehlung für nächste Schritte:
+Sofort umsetzbar:
+Graph-Modell implementieren (src/core/graph.rs)
+
+Connectable-Trait für alle Komponenten
+
+Einfache HTTP API für Graph-Management (ohne WebSocket)
+
+Danach:
+Live-Reconfiguration Logic
+
+WebSocket für Echtzeit-Updates
+
+Frontend-Prototyp
+
+❓ Wichtige Entscheidungen:
+Graph-Speicherung: In-Memory vs. Persistent?
+
+Undo/Redo: Soll die API History unterstützen?
+
+Collaboration: Mehrere Benutzer gleichzeitig?
+
+Export/Import: Graph als JSON/YAML?
+
+Meine Empfehlung: Beginne mit dem Graph-Modell und Connectable-Trait, dann die HTTP API Layer 1. Das gibt dir eine solide Basis für den visuellen Editor, ohne zu viel auf einmal zu implementieren.
