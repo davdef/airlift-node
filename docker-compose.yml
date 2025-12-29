@@ -1,0 +1,25 @@
+version: "3.9"
+
+services:
+  airlift-node:
+    build: .
+    container_name: airlift-node
+    environment:
+      - RUST_LOG=info
+    ports:
+      - "8087:8087"
+    volumes:
+      - ./config/docker.toml:/app/config.toml:ro
+      - ./data:/data
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: airlift-prometheus
+    depends_on:
+      - airlift-node
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    restart: unless-stopped

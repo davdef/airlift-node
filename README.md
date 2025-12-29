@@ -71,6 +71,75 @@ Der Einstiegspunkt ist `src/main.rs`. Es gibt drei Startmodi:
    - Führt einen Kurztest gegen das angegebene Device durch und gibt
      Format-Informationen sowie JSON-Ausgabe zurück.
 
+## Konfigurationen
+
+Für verschiedene Umgebungen liegen fertige Konfigurationsdateien unter
+`config/`:
+
+- `config/development.toml` – lokale Entwicklung mit Sine-Generator.
+- `config/production.toml` – Beispiel für ALSA-Input (anpassen!).
+- `config/docker.toml` – Docker-Setup (Sine-Generator + Datei-Output).
+
+Der Node lädt immer `config.toml` im aktuellen Working Directory. Für lokale
+Starts kann die passende Konfiguration kopiert werden:
+
+```bash
+cp config/development.toml config.toml
+```
+
+## Lokaler Start (Development)
+
+```bash
+mkdir -p data
+cp config/development.toml config.toml
+cargo run --release
+```
+
+Monitoring: `http://localhost:8087/metrics` und `http://localhost:8087/health`.
+
+## Docker-Start (Node + Monitoring)
+
+```bash
+mkdir -p data
+docker compose up --build
+```
+
+- Airlift Node: `http://localhost:8087/metrics`
+- Prometheus: `http://localhost:9090`
+
+Die Datei-Ausgabe landet unter `./data/output.wav`.
+
+## Systemd-Deployment (Production)
+
+1. Binary installieren (Beispielpfade):
+
+   ```bash
+   sudo install -m 0755 target/release/airlift-node /opt/airlift-node/airlift-node
+   sudo install -d -m 0755 /etc/airlift-node /var/lib/airlift-node
+   sudo cp config/production.toml /etc/airlift-node/config.toml
+   ```
+
+2. Service-User anlegen:
+
+   ```bash
+   sudo useradd --system --no-create-home --shell /usr/sbin/nologin airlift
+   sudo chown -R airlift:airlift /var/lib/airlift-node
+   ```
+
+3. Systemd-Unit installieren und starten:
+
+   ```bash
+   sudo cp deploy/airlift-node.service /etc/systemd/system/airlift-node.service
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now airlift-node
+   ```
+
+4. Status prüfen:
+
+   ```bash
+   sudo systemctl status airlift-node
+   ```
+
 ## Examples
 
 Die Beispielprogramme nutzen die bestehenden `AirliftNode`/`Flow`-Strukturen
