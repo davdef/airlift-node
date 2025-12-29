@@ -91,6 +91,13 @@ Integration-Tests liegen unter `tests/` und `tests/integration/`:
 - `tests/run_logging_tests.rs`
 - `tests/standalone_test.rs`
 
+## Testausführung
+
+- **Alle Tests:** `cargo test`
+- **Nur Integration-Tests:** `cargo test --tests`
+- **E2E-Flow-Test:** `cargo test --test flow_e2e`
+- **Benchmarks (Mixer/Ringbuffer):** `cargo bench`
+
 ## API-Übersicht (geplant)
 
 Aktuell verfügbar:
