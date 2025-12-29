@@ -4,7 +4,6 @@ use airlift_node::{
     config,
     core,
     producers,
-    monitoring,
 };
 
 use airlift_node::app::init::build_plugin_registry;
@@ -139,16 +138,17 @@ fn run_normal_mode() -> anyhow::Result<()> {
 
     let node = Arc::new(Mutex::new(core::AirliftNode::new()));
 
-    let api_bind =
-        std::env::var("AIRLIFT_CONFIG_API_BIND").unwrap_or_else(|_| "127.0.0.1:3008".to_string());
-    api::start_api_server(&api_bind, config.clone(), node.clone())?;
-
     let config_snapshot = config
         .lock()
         .map_err(|_| anyhow::anyhow!("config lock poisoned"))?
         .clone();
 
     log::info!("Node: {}", config_snapshot.node_name);
+
+    let api_bind = std::env::var("AIRLIFT_CONFIG_API_BIND").unwrap_or_else(|_| {
+        format!("0.0.0.0:{}", config_snapshot.monitoring.http_port)
+    });
+    api::start_api_server(&api_bind, config.clone(), node.clone())?;
 
     use airlift_node::app::init::{build_plugin_registry, PluginRegistry};
 
@@ -426,9 +426,6 @@ if let Err(e) = node.connect_flow_input(flow_index, &buffer_name) {
         log::info!("\nShutdown requested (Ctrl+C)");
         shutdown_clone.store(true, Ordering::SeqCst);
     })?;
-
-    let monitoring_bind = format!("0.0.0.0:{}", config_snapshot.monitoring.http_port);
-    monitoring::start_monitoring_server(&monitoring_bind, node.clone())?;
 
     {
         let mut node = node

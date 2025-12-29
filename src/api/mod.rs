@@ -5,6 +5,7 @@ use tiny_http::{Method, Response, Server, StatusCode};
 
 use crate::config::Config;
 use crate::core::AirliftNode;
+use crate::monitoring;
 
 pub mod catalog;
 pub mod config;
@@ -28,21 +29,26 @@ pub fn start_api_server(
             }
 
             match (req.method(), req.url()) {
-
-
-(&Method::Post, "/api/config") => {
-    config::handle_config_request(req, config.clone());
-    continue;
-}
-(&Method::Get, "/api/status") => {
-    status::handle_status_request(req, node.clone());
-    continue;
-}
-(&Method::Post, "/api/control") => {
-    control::handle_control_request(req, config.clone(), node.clone());
-    continue;
-}
-
+                (&Method::Get, "/health") => {
+                    monitoring::handle_health_request(req, node.clone());
+                    continue;
+                }
+                (&Method::Get, "/metrics") => {
+                    monitoring::handle_metrics_request(req, node.clone());
+                    continue;
+                }
+                (&Method::Post, "/api/config") => {
+                    config::handle_config_request(req, config.clone());
+                    continue;
+                }
+                (&Method::Get, "/api/status") => {
+                    status::handle_status_request(req, node.clone());
+                    continue;
+                }
+                (&Method::Post, "/api/control") => {
+                    control::handle_control_request(req, config.clone(), node.clone());
+                    continue;
+                }
                 (&Method::Get, "/api/catalog") => {
                     catalog::handle_catalog_request(req, node.clone());
                 }
