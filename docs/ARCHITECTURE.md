@@ -17,8 +17,9 @@ Processor-Schritte ausführt und den Output an Consumer weiterreicht.
 
 - **AirliftNode** (`src/core/node.rs`): Orchestriert die Pipeline, verwaltet
   Producer/Flows und startet/stoppt sie.
-- **Flow** (`src/core/node.rs`): Besitzt Input-/Merge-/Processor-/Output-Buffer
-  und eine Processor-Kette.
+- **Flow** (`src/core/node.rs`): Besitzt Input-/Merge-/Output-Buffer, eine
+  Processor-Kette und optionale Teilstrecken-Buffer zwischen einzelnen
+  Processors.
 - **Producer**: Schreiben Frames in Ringbuffer, die in der Registry des Nodes
   geführt werden.
 - **Processor** (`src/processors/*`): Transformieren den Audiostream (z. B.
@@ -45,7 +46,7 @@ flowchart LR
       direction LR
       IN1[(input_buffers)]
       MERGE[(input_merge_buffer)]
-      PBUF[(processor_buffers)]
+      PBUF[(segment_buffers?)]
       OUT[(output_buffer)]
       PROC[Processor-Kette]
     end
@@ -75,12 +76,29 @@ flowchart LR
    `input_merge_buffer`.
 3. **Processor-Kette** verarbeitet den Stream schrittweise:
    - Jeder Processor liest aus dem vorherigen Buffer.
-   - Das Ergebnis wird in den nächsten `processor_buffers` geschrieben.
+   - Zwischen den Processors können optionale **Segment-Buffer** liegen.
+   - Wenn kein Segment-Buffer gesetzt ist, verwendet der Flow
+     interne Scratch-Buffer (Ping-Pong), um die Kette ohne
+     zusätzliche Ringbuffer zu verbinden.
 4. **Output**: Der letzte Processor schreibt in den `output_buffer`.
 5. **Consumer** lesen aus dem `output_buffer` (multi-reader-fähig über
    `pop_for_reader` in `src/core/ringbuffer.rs`).
 6. **Ringbuffer-Verhalten**: Der Buffer überschreibt bei Volllauf ältere
    Frames; `dropped_frames` steigt, wenn Sequenzen nicht mehr verfügbar sind.
+
+## Pipeline-Modi (Legacy vs. Simplified)
+
+Der Flow unterstützt zwei Pipeline-Modi:
+
+- **Legacy**: Identisch zum bisherigen Verhalten. Jeder Processor besitzt
+  einen eigenen `processor_buffer`, der stets zwischen zwei Processors liegt.
+- **Simplified**: Zwischen Processors sind Buffer optional. Der Flow nutzt
+  zwei interne Scratch-Buffer, um unbuffered Abschnitte zu verketten. Optional
+  kann je Processor ein Segment-Buffer aktiviert werden, z. B. für Debugging
+  oder das Entkoppeln teurer Stufen.
+
+Aktivierung erfolgt pro Flow (z. B. `Flow::use_simplified_pipeline`) oder
+via Feature-Flag `simplified-pipeline`, das den Default für neue Flows setzt.
 
 ## Threading-Modell
 

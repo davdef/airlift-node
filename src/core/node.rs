@@ -10,6 +10,29 @@ use super::lock::lock_mutex;
 use super::BufferRegistry;
 use crate::core::logging::ComponentLogger;
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum PipelineMode {
+    Legacy,
+    Simplified,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ProcessorBuffering {
+    Enabled,
+    Disabled,
+}
+
+#[derive(Clone, Debug)]
+struct ProcessorLink {
+    buffer: Option<Arc<AudioRingBuffer>>,
+}
+
+#[cfg(feature = "simplified-pipeline")]
+const DEFAULT_PIPELINE_MODE: PipelineMode = PipelineMode::Simplified;
+
+#[cfg(not(feature = "simplified-pipeline"))]
+const DEFAULT_PIPELINE_MODE: PipelineMode = PipelineMode::Legacy;
+
 pub struct Flow {
     pub name: String,
     pub input_buffers: Vec<Arc<AudioRingBuffer>>,
@@ -18,6 +41,9 @@ pub struct Flow {
     pub output_buffer: Arc<AudioRingBuffer>,
     processors: Vec<Box<dyn Processor>>,
     consumers: Vec<Box<dyn Consumer>>,
+    pipeline_mode: PipelineMode,
+    processor_links: Vec<ProcessorLink>,
+    scratch_buffers: [Arc<AudioRingBuffer>; 2],
     running: Arc<AtomicBool>,
     thread_handle: Option<std::thread::JoinHandle<()>>,
 }
@@ -32,12 +58,53 @@ impl Flow {
             output_buffer: Arc::new(AudioRingBuffer::new(1000)),
             processors: Vec::new(),
             consumers: Vec::new(),
+            pipeline_mode: DEFAULT_PIPELINE_MODE,
+            processor_links: Vec::new(),
+            scratch_buffers: [
+                Arc::new(AudioRingBuffer::new(1000)),
+                Arc::new(AudioRingBuffer::new(1000)),
+            ],
             running: Arc::new(AtomicBool::new(false)),
             thread_handle: None,
         };
         
         flow.info(&format!("Flow '{}' created", name));
         flow
+    }
+
+    pub fn pipeline_mode(&self) -> PipelineMode {
+        self.pipeline_mode
+    }
+
+    pub fn use_simplified_pipeline(&mut self) {
+        if self.pipeline_mode == PipelineMode::Simplified {
+            return;
+        }
+
+        self.pipeline_mode = PipelineMode::Simplified;
+        self.processor_links = self.processor_buffers
+            .iter()
+            .cloned()
+            .map(|buffer| ProcessorLink { buffer: Some(buffer) })
+            .collect();
+    }
+
+    pub fn use_legacy_pipeline(&mut self) {
+        if self.pipeline_mode == PipelineMode::Legacy {
+            return;
+        }
+
+        self.pipeline_mode = PipelineMode::Legacy;
+        self.rebuild_legacy_buffers();
+    }
+
+    fn rebuild_legacy_buffers(&mut self) {
+        self.processor_buffers.clear();
+        for link in &mut self.processor_links {
+            let buffer = link.buffer.clone().unwrap_or_else(|| Arc::new(AudioRingBuffer::new(1000)));
+            link.buffer = Some(buffer.clone());
+            self.processor_buffers.push(buffer);
+        }
     }
     
     #[deprecated(note = "Use add_input_from_registry to connect buffers by registry name.")]
@@ -81,12 +148,41 @@ impl Flow {
     }
     
     pub fn add_processor(&mut self, processor: Box<dyn Processor>) {
+        self.add_processor_with_buffering(processor, ProcessorBuffering::Enabled);
+    }
+
+    pub fn add_processor_unbuffered(&mut self, processor: Box<dyn Processor>) {
+        self.add_processor_with_buffering(processor, ProcessorBuffering::Disabled);
+    }
+
+    pub fn add_processor_with_buffering(
+        &mut self,
+        processor: Box<dyn Processor>,
+        buffering: ProcessorBuffering,
+    ) {
         let processor_name = processor.name().to_string();
-        let buffer = Arc::new(AudioRingBuffer::new(1000));
-        
-        self.processor_buffers.push(buffer);
+
+        match self.pipeline_mode {
+            PipelineMode::Legacy => {
+                let buffer = Arc::new(AudioRingBuffer::new(1000));
+                self.processor_buffers.push(buffer.clone());
+                self.processor_links.push(ProcessorLink { buffer: Some(buffer) });
+            }
+            PipelineMode::Simplified => {
+                let buffer = match buffering {
+                    ProcessorBuffering::Enabled => {
+                        let buffer = Arc::new(AudioRingBuffer::new(1000));
+                        self.processor_buffers.push(buffer.clone());
+                        Some(buffer)
+                    }
+                    ProcessorBuffering::Disabled => None,
+                };
+                self.processor_links.push(ProcessorLink { buffer });
+            }
+        }
+
         self.processors.push(processor);
-        
+
         // Logging nach mutable borrow
         self.info(&format!("Added processor '{}'", processor_name));
     }
@@ -117,6 +213,9 @@ impl Flow {
         let input_merge_buffer = self.input_merge_buffer.clone();
         let processor_buffers = self.processor_buffers.clone();
         let output_buffer = self.output_buffer.clone();
+        let processor_links = self.processor_links.clone();
+        let pipeline_mode = self.pipeline_mode;
+        let scratch_buffers = self.scratch_buffers.clone();
         let flow_name = self.name.clone();
         let flow_reader_id = format!("flow:{}:input", self.name);
         
@@ -127,16 +226,33 @@ impl Flow {
         }
         
         let handle = std::thread::spawn(move || {
-            Self::processing_loop(
-                running,
-                input_buffers,
-                input_merge_buffer,
-                processor_buffers,
-                output_buffer,
-                thread_processors,
-                &flow_name,
-                &flow_reader_id,
-            );
+            match pipeline_mode {
+                PipelineMode::Legacy => {
+                    Self::processing_loop_legacy(
+                        running,
+                        input_buffers,
+                        input_merge_buffer,
+                        processor_buffers,
+                        output_buffer,
+                        thread_processors,
+                        &flow_name,
+                        &flow_reader_id,
+                    );
+                }
+                PipelineMode::Simplified => {
+                    Self::processing_loop_simplified(
+                        running,
+                        input_buffers,
+                        input_merge_buffer,
+                        output_buffer,
+                        scratch_buffers,
+                        processor_links,
+                        thread_processors,
+                        &flow_name,
+                        &flow_reader_id,
+                    );
+                }
+            }
         });
         
         self.thread_handle = Some(handle);
@@ -171,7 +287,7 @@ impl Flow {
         Ok(())
     }
     
-    fn processing_loop(
+    fn processing_loop_legacy(
         running: Arc<AtomicBool>,
         input_buffers: Vec<Arc<AudioRingBuffer>>,
         input_merge_buffer: Arc<AudioRingBuffer>,
@@ -241,6 +357,89 @@ impl Flow {
         
         flow_logger.info("Processing thread stopped");
     }
+
+    fn processing_loop_simplified(
+        running: Arc<AtomicBool>,
+        input_buffers: Vec<Arc<AudioRingBuffer>>,
+        input_merge_buffer: Arc<AudioRingBuffer>,
+        output_buffer: Arc<AudioRingBuffer>,
+        scratch_buffers: [Arc<AudioRingBuffer>; 2],
+        processor_links: Vec<ProcessorLink>,
+        mut processors: Vec<Box<dyn Processor>>,
+        flow_name: &str,
+        flow_reader_id: &str,
+    ) {
+        let flow_logger = FlowLogger { name: flow_name.to_string() };
+        flow_logger.info(&format!(
+            "Processing thread started (simplified) with {} input buffers",
+            input_buffers.len()
+        ));
+
+        let mut iteration = 0;
+        while running.load(Ordering::Relaxed) {
+            iteration += 1;
+
+            if input_buffers.is_empty() {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
+            }
+
+            let mut frames_collected = 0;
+            for buffer in &input_buffers {
+                while let Some(frame) = buffer.pop_for_reader(flow_reader_id) {
+                    input_merge_buffer.push(frame);
+                    frames_collected += 1;
+                }
+            }
+
+            if iteration % 100 == 0 {
+                let total_frames: usize = input_buffers.iter().map(|b| b.len()).sum();
+                let total_available: usize = input_buffers
+                    .iter()
+                    .map(|b| b.available_for_reader(flow_reader_id))
+                    .sum();
+
+                flow_logger.debug(&format!(
+                    "Iteration {}: collected={}, total_frames={}, available={}, processors={} (simplified)",
+                    iteration,
+                    frames_collected,
+                    total_frames,
+                    total_available,
+                    processors.len()
+                ));
+            }
+
+            let mut current_input = input_merge_buffer.clone();
+            let mut scratch_index = 0;
+
+            for (i, processor) in processors.iter_mut().enumerate() {
+                let is_last = i + 1 == processors.len();
+                let link_buffer = processor_links
+                    .get(i)
+                    .and_then(|link| link.buffer.clone());
+
+                let output = if is_last {
+                    output_buffer.clone()
+                } else if let Some(buffer) = link_buffer {
+                    buffer
+                } else {
+                    let buffer = scratch_buffers[scratch_index].clone();
+                    scratch_index = (scratch_index + 1) % scratch_buffers.len();
+                    buffer
+                };
+
+                if let Err(e) = processor.process(&current_input, &output) {
+                    flow_logger.error(&format!("Processor '{}' error: {}", processor.name(), e));
+                }
+
+                current_input = output;
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        flow_logger.info("Processing thread stopped (simplified)");
+    }
     
     pub fn stop(&mut self) -> AudioResult<()> {
         self.info("Stopping flow...");
@@ -292,8 +491,15 @@ impl Flow {
         let input_buffer_levels: Vec<usize> = 
             self.input_buffers.iter().map(|b| b.len()).collect();
         
-        let processor_buffer_levels: Vec<usize> = 
-            self.processor_buffers.iter().map(|b| b.len()).collect();
+        let processor_buffer_levels: Vec<usize> = match self.pipeline_mode {
+            PipelineMode::Legacy => self.processor_buffers.iter().map(|b| b.len()).collect(),
+            PipelineMode::Simplified => self
+                .processor_links
+                .iter()
+                .filter_map(|link| link.buffer.as_ref())
+                .map(|buffer| buffer.len())
+                .collect(),
+        };
         
         FlowStatus {
             running: self.running.load(Ordering::Relaxed),
@@ -765,6 +971,23 @@ mod tests {
         let processor = Box::new(PassThrough::new("test_processor"));
         flow.add_processor(processor);
         assert_eq!(flow.processors.len(), 1);
+    }
+
+    #[test]
+    fn test_flow_simplified_pipeline_buffering() {
+        let mut flow = Flow::new("simplified_flow");
+        flow.use_simplified_pipeline();
+
+        let processor = Box::new(PassThrough::new("unbuffered"));
+        flow.add_processor_unbuffered(processor);
+
+        let processor = Box::new(PassThrough::new("buffered"));
+        flow.add_processor(processor);
+
+        assert_eq!(flow.pipeline_mode(), PipelineMode::Simplified);
+        assert_eq!(flow.processors.len(), 2);
+        assert_eq!(flow.processor_links.len(), 2);
+        assert_eq!(flow.processor_buffers.len(), 1);
     }
 
     #[test]

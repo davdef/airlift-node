@@ -39,6 +39,7 @@ thiserror = "1"
 
 [features]
 lockfree = []
+simplified-pipeline = []
 
 [[bench]]
 name = "mixer_bench"
