@@ -11,6 +11,12 @@ Eine detaillierte Beschreibung der Pipeline, des Datenflusses, des
 Buffer-Lifecycles und des Threading-Modells findet sich in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
+## TLS/HTTPS
+
+Für produktiven Betrieb mit HTTPS ist eine TLS-Terminierung über einen
+Reverse-Proxy vorgesehen. Details siehe
+[`docs/TLS.md`](docs/TLS.md).
+
 ## Aktuelle Pipeline-Struktur (AirliftNode → Flow → Producer/Processor/Consumer)
 
 Die zentrale Pipeline besteht aus:

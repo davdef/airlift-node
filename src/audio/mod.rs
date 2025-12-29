@@ -6,7 +6,10 @@ use crate::ring::{EncodedRingRead, EncodedSource};
 
 pub mod http;
 pub mod live;
+pub mod path;
 pub mod timeshift;
+
+pub use path::sanitize_audio_path;
 
 pub enum EncodedRead {
     Frame(EncodedFrame),
