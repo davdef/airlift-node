@@ -8,8 +8,9 @@ pub mod audio;
 pub mod producers;
 pub mod processors;
 pub mod ring;
+pub mod types;
 
 // Re-export die wichtigsten Typen
 pub use core::{AirliftNode, Flow, AudioRingBuffer, ComponentLogger, LogContext};
-pub use ring::PcmFrame;
+pub use types::PcmFrame;
 pub use core::timestamp::utc_ns_now;

@@ -1,8 +1,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::codecs::EncodedFrame;
 use crate::ring::{EncodedFramePacket, EncodedSink, EncodedSource, RingStats};
+use crate::types::EncodedFrame;
 
 #[derive(Clone)]
 pub struct EncodedSlot {

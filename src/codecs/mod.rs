@@ -1,45 +1,12 @@
-use serde::Serialize;
-
 pub mod pcm;
+
+pub use crate::types::{CodecInfo, CodecKind, ContainerKind, EncodedFrame};
 
 pub const PCM_SAMPLE_RATE: u32 = 48_000;
 pub const PCM_CHANNELS: u8 = 2;
 pub const PCM_FRAME_MS: u32 = 100;
 pub const PCM_SAMPLES_PER_CH: usize = (PCM_SAMPLE_RATE as usize / 1000) * PCM_FRAME_MS as usize;
 pub const PCM_I16_SAMPLES: usize = PCM_SAMPLES_PER_CH * PCM_CHANNELS as usize;
-
-#[derive(Clone, Debug, Serialize)]
-pub struct CodecInfo {
-    pub kind: CodecKind,
-    pub sample_rate: u32,
-    pub channels: u8,
-    pub container: ContainerKind,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct EncodedFrame {
-    pub payload: Vec<u8>,
-    pub info: CodecInfo,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub enum CodecKind {
-    Pcm,
-    OpusOgg,
-    OpusWebRtc,
-    Mp3,
-    Vorbis,
-    AacLc,
-    Flac,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub enum ContainerKind {
-    Raw,
-    Ogg,
-    Mpeg,
-    Rtp,
-}
 
 pub trait AudioCodec: Send {
     fn info(&self) -> &CodecInfo;
