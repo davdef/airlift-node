@@ -1176,8 +1176,6 @@ class AircheckPlayer {
         this.serverTime = null;
         this.lastWsUpdate = null;
         this.bufferInfo = { start: null, end: null };
-        this.isDragging = false;
-        this.dragStart = { x: 0, left: 0 };
         this.cacheValid = false;
         
         // Performance
@@ -1186,7 +1184,8 @@ class AircheckPlayer {
         
         // Initialisierung
         this.initWebSocket();
-        this.initInteraction();
+        this.input = new PlayerInputHandler(this, this.canvas);
+        this.input.attach();
         this.fetchPipelineState();
         this.fetchBufferInfo();
         this.startRenderLoop();
@@ -1294,160 +1293,6 @@ class AircheckPlayer {
         if (this.viewport.followLive) {
             this.viewport.setLive(eventTimestamp);
         }
-    }
-    
-    initInteraction() {
-        // Mouse Events
-        this.canvas.addEventListener('mousedown', this.handleMouseDown.bind(this));
-        window.addEventListener('mousemove', this.handleMouseMove.bind(this));
-        window.addEventListener('mouseup', this.handleMouseUp.bind(this));
-        
-        // Touch Events
-        this.canvas.addEventListener('touchstart', this.handleTouchStart.bind(this), { passive: false });
-        this.canvas.addEventListener('touchmove', this.handleTouchMove.bind(this), { passive: false });
-        this.canvas.addEventListener('touchend', this.handleTouchEnd.bind(this));
-        
-        // Wheel (Zoom)
-        this.canvas.addEventListener('wheel', this.handleWheel.bind(this), { passive: false });
-        
-        // Keyboard
-        document.addEventListener('keydown', this.handleKeyDown.bind(this));
-    }
-    
-    handleMouseDown(e) {
-        this.isDragging = false;
-        this.dragStart.x = e.clientX;
-        this.dragStart.left = this.viewport.left;
-        this.viewport.followLive = false;
-    }
-    
-    handleMouseMove(e) {
-        if (this.dragStart.x === null) return;
-        
-        const dx = e.clientX - this.dragStart.x;
-        
-        if (!this.isDragging && Math.abs(dx) > 3) {
-            this.isDragging = true;
-        }
-        
-        if (this.isDragging) {
-            const w = this.canvas.clientWidth;
-            this.viewport.pan(dx, w);
-            this.dragStart.x = e.clientX;
-            this.dragStart.left = this.viewport.left;
-            this.cacheValid = false;
-        }
-    }
-    
-    handleMouseUp(e) {
-        if (!this.isDragging && this.dragStart.x !== null) {
-            // Click = Seek
-            const rect = this.canvas.getBoundingClientRect();
-            const x = e.clientX - rect.left;
-            this.handleSeek(x);
-        }
-        
-        this.isDragging = false;
-        this.dragStart.x = null;
-    }
-    
-    handleTouchStart(e) {
-        e.preventDefault();
-        
-        if (e.touches.length === 1) {
-            // Single touch = drag
-            this.dragStart.x = e.touches[0].clientX;
-            this.dragStart.left = this.viewport.left;
-            this.viewport.followLive = false;
-        } else if (e.touches.length === 2) {
-            // Pinch zoom
-            const dx = e.touches[0].clientX - e.touches[1].clientX;
-            const dy = e.touches[0].clientY - e.touches[1].clientY;
-            const distance = Math.sqrt(dx * dx + dy * dy);
-            this.viewport.startPinch(distance);
-        }
-    }
-    
-    handleTouchMove(e) {
-        e.preventDefault();
-        
-        if (e.touches.length === 2 && this.viewport.pinchStart !== null) {
-            // Pinch zoom
-            const dx = e.touches[0].clientX - e.touches[1].clientX;
-            const dy = e.touches[0].clientY - e.touches[1].clientY;
-            const distance = Math.sqrt(dx * dx + dy * dy);
-            this.viewport.updatePinch(distance);
-            this.cacheValid = false;
-        } else if (e.touches.length === 1 && this.dragStart.x !== null) {
-            // Drag
-            const dx = e.touches[0].clientX - this.dragStart.x;
-            const w = this.canvas.clientWidth;
-            
-            if (!this.isDragging && Math.abs(dx) > 5) {
-                this.isDragging = true;
-            }
-            
-            if (this.isDragging) {
-                this.viewport.pan(dx, w);
-                this.dragStart.x = e.touches[0].clientX;
-                this.dragStart.left = this.viewport.left;
-                this.cacheValid = false;
-            }
-        }
-    }
-    
-    handleTouchEnd(e) {
-        if (!this.isDragging && this.dragStart.x !== null && e.changedTouches.length === 1) {
-            // Tap = Seek
-            const rect = this.canvas.getBoundingClientRect();
-            const touch = e.changedTouches[0];
-            const x = touch.clientX - rect.left;
-            this.handleSeek(x);
-        }
-        
-        this.isDragging = false;
-        this.dragStart.x = null;
-        this.viewport.endPinch();
-    }
-    
-    handleWheel(e) {
-        e.preventDefault();
-        
-        const factor = e.deltaY > 0 ? 1.25 : 0.8;
-        const rect = this.canvas.getBoundingClientRect();
-        const centerX = e.clientX - rect.left;
-        const w = this.canvas.clientWidth;
-        
-        this.viewport.zoom(factor, centerX, w);
-        this.cacheValid = false;
-    }
-    
-    handleKeyDown(e) {
-        // Space = Play/Pause
-        if (e.code === 'Space' && !e.target.matches('input, textarea')) {
-            e.preventDefault();
-            this.togglePlayback();
-        }
-        
-        // Arrow keys = Seek
-        if (e.code.startsWith('Arrow')) {
-            e.preventDefault();
-            const step = e.shiftKey ? 30000 : 5000; // Shift = 30s, normal = 5s
-            
-            if (e.code === 'ArrowLeft') {
-                this.seekRelative(-step);
-            } else if (e.code === 'ArrowRight') {
-                this.seekRelative(step);
-            }
-        }
-    }
-    
-    handleSeek(x) {
-        const w = this.canvas.clientWidth;
-        const { left, duration } = this.viewport.visibleRange;
-        
-        const targetTime = left + (x / w) * duration;
-        this.seekTo(targetTime);
     }
     
     seekTo(serverTime) {
@@ -1576,10 +1421,11 @@ class AircheckPlayer {
         if (this.animationFrame) {
             cancelAnimationFrame(this.animationFrame);
         }
-        
+
         this.wsManager?.disconnect();
         this.history?.clear();
         this.renderer?.resizeObserver?.disconnect();
+        this.input?.detach();
         
         // Event-Listener entfernen
         // (müsste für jedes Modul implementiert werden)
