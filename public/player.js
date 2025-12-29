@@ -229,6 +229,19 @@ class WebSocketManager {
     }
 }
 
+function normalizeEventTimestamp(timestamp) {
+    if (!Number.isFinite(timestamp)) {
+        return null;
+    }
+    if (timestamp > 1e15) {
+        return Math.round(timestamp / 1_000_000);
+    }
+    if (timestamp > 1e12) {
+        return Math.round(timestamp / 1_000);
+    }
+    return timestamp;
+}
+
 // ============================================================================
 //  HISTORY MANAGER
 // ============================================================================
@@ -1224,8 +1237,8 @@ class AircheckPlayer {
                 throw new Error('Status API nicht erreichbar');
             }
             const status = await response.json();
-            const hasGraph = (status?.graph?.nodes || []).length > 0;
-            if (!hasGraph) {
+            const hasPipeline = (status?.flows || []).length > 0 || (status?.producers || []).length > 0;
+            if (!hasPipeline) {
                 this.ui.setIdleState({
                     active: true,
                     title: 'Keine Pipeline vorhanden',
@@ -1254,18 +1267,22 @@ class AircheckPlayer {
     }
     
     handleWsMessage(data) {
-        this.serverTime = data.timestamp;
+        const eventTimestamp = normalizeEventTimestamp(data?.timestamp);
+        if (!eventTimestamp) {
+            return;
+        }
+        this.serverTime = eventTimestamp;
         this.lastWsUpdate = performance.now();
         
         // Buffer-Ende aktualisieren
-        if (data.timestamp > (this.bufferInfo.end || 0)) {
-            this.bufferInfo.end = data.timestamp;
+        if (eventTimestamp > (this.bufferInfo.end || 0)) {
+            this.bufferInfo.end = eventTimestamp;
             this.viewport.updateBuffer(this.bufferInfo.start, this.bufferInfo.end);
         }
         
         // History-Eintrag hinzufügen
         const entry = {
-            ts: data.timestamp,
+            ts: eventTimestamp,
             peaks: [data.peaks[0], data.peaks[1]],
             amp: (data.peaks[0] + data.peaks[1]) / 2,
             silence: !!data.silence
@@ -1275,7 +1292,7 @@ class AircheckPlayer {
         
         // Viewport aktualisieren wenn Live-Modus
         if (this.viewport.followLive) {
-            this.viewport.setLive(data.timestamp);
+            this.viewport.setLive(eventTimestamp);
         }
     }
     

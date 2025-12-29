@@ -1,3 +1,110 @@
+/**
+ * @typedef {Object} StatusResponse
+ * @property {boolean} running
+ * @property {number} uptime_seconds
+ * @property {Array<ProducerInfo>} producers
+ * @property {Array<FlowInfo>} flows
+ * @property {RingBufferInfo} ringbuffer
+ * @property {Array<ModuleInfo>} modules
+ * @property {Array<InactiveModule>} inactive_modules
+ * @property {Array<ConfigurationIssue>} configuration_issues
+ * @property {number} timestamp_ms
+ */
+
+/**
+ * @typedef {Object} ProducerInfo
+ * @property {string} name
+ * @property {boolean} running
+ * @property {boolean} connected
+ * @property {number} samples_processed
+ * @property {number} errors
+ */
+
+/**
+ * @typedef {Object} FlowInfo
+ * @property {string} name
+ * @property {boolean} running
+ * @property {Array<number>} input_buffer_levels
+ * @property {Array<number>} processor_buffer_levels
+ * @property {number} output_buffer_level
+ */
+
+/**
+ * @typedef {Object} RingBufferInfo
+ * @property {number} fill
+ * @property {number} capacity
+ */
+
+/**
+ * @typedef {Object} ModuleInfo
+ * @property {string} id
+ * @property {string} label
+ * @property {string} module_type
+ * @property {ModuleRuntime} runtime
+ * @property {Array<ModuleControl>} controls
+ */
+
+/**
+ * @typedef {Object} ModuleRuntime
+ * @property {boolean} enabled
+ * @property {boolean} running
+ * @property {boolean | null} connected
+ * @property {ModuleCounters} counters
+ * @property {number} last_activity_ms
+ */
+
+/**
+ * @typedef {Object} ModuleCounters
+ * @property {number} rx
+ * @property {number} tx
+ * @property {number} errors
+ */
+
+/**
+ * @typedef {Object} ModuleControl
+ * @property {string} action
+ * @property {string} label
+ * @property {boolean} enabled
+ * @property {string | null} reason
+ */
+
+/**
+ * @typedef {Object} InactiveModule
+ * @property {string} id
+ * @property {string} label
+ * @property {string} module_type
+ * @property {string} reason
+ */
+
+/**
+ * @typedef {Object} ConfigurationIssue
+ * @property {string} key
+ * @property {string} message
+ */
+
+/**
+ * @typedef {Object} CatalogResponse
+ * @property {Array<CatalogItem>} inputs
+ * @property {Array<CatalogItem>} buffers
+ * @property {Array<CatalogItem>} processing
+ * @property {Array<CatalogItem>} services
+ * @property {Array<CatalogItem>} outputs
+ */
+
+/**
+ * @typedef {Object} CatalogItem
+ * @property {string} name
+ * @property {string} type
+ * @property {string | undefined} flow
+ */
+
+const API_ENDPOINTS = {
+    status: '/api/status',
+    catalog: '/api/catalog',
+    control: '/api/control',
+    ws: '/ws'
+};
+
 // Haupt-State
 let currentStatus = null;
 let latestStudioTime = null;
@@ -229,16 +336,13 @@ function calculateRate(moduleId, currentCounters, timestamp) {
 // API Calls
 async function fetchAllData() {
     try {
-        const [statusResponse, codecsResponse] = await Promise.all([
-            fetch('/api/status'),
-            fetch('/api/codecs')
-        ]);
+        const statusResponse = await fetch(API_ENDPOINTS.status);
         if (!statusResponse.ok) {
             throw new Error('Status API nicht erreichbar');
         }
 
-        const status = await statusResponse.json();
-        const codecs = codecsResponse.ok ? await codecsResponse.json() : [];
+        const status = normalizeStatusResponse(await statusResponse.json());
+        latestStudioTime = status.timestamp_ms || Date.now();
 
         await loadPipelineCatalog();
         
@@ -246,7 +350,7 @@ async function fetchAllData() {
         currentStatus = status;
         
         // Update UI
-        updateUI(status, codecs);
+        updateUI(status, []);
         
         // Initialize waveforms with history
         await Promise.all([
@@ -262,14 +366,12 @@ async function fetchAllData() {
 
 async function loadPipelineCatalog() {
     try {
-        const response = await fetch('/api/catalog');
+        const response = await fetch(API_ENDPOINTS.catalog);
         if (!response.ok) {
             return;
         }
-        const catalog = await response.json();
-        if (Array.isArray(catalog) && catalog.length > 0) {
-            pipelineCatalog = normalizePipelineCatalog(catalog);
-        }
+        const catalog = /** @type {CatalogResponse} */ (await response.json());
+        pipelineCatalog = normalizePipelineCatalog(catalog);
     } catch (error) {
         // Keep fallback catalog
     }
@@ -277,7 +379,8 @@ async function loadPipelineCatalog() {
 
 function updateUI(status, codecs = []) {
     // Update timestamp
-    document.getElementById('updateTime').textContent = formatTime(Date.now());
+    const statusTimestamp = status?.timestamp_ms || Date.now();
+    document.getElementById('updateTime').textContent = formatTime(statusTimestamp);
 
     const localState = getLocalPipelineState(status);
     const viewState = determineViewState(status, localState);
@@ -318,16 +421,17 @@ function updateSystemStatus(status) {
     
     // Update Buffer stats
     if (status.ringbuffer) {
-        const errorFills = status.ringbuffer.fill || 0;
-        document.getElementById('systemAudioBuffer').textContent = `${Math.round((status.ringbuffer.capacity || 6000) * 0.1)}s`;
-        document.getElementById('ringbufferInfo').textContent = `Error-Fills: ${errorFills}`;
+        const fill = status.ringbuffer.fill || 0;
+        const capacity = status.ringbuffer.capacity || 0;
+        document.getElementById('systemAudioBuffer').textContent = `${Math.round((capacity || 6000) * 0.1)}s`;
+        document.getElementById('ringbufferInfo').textContent = `Füllstand: ${fill}/${capacity || '–'}`;
     }
 }
 
 // WebSocket
 function setupWebSocket() {
     const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
-    const wsUrl = proto + window.location.host + '/ws';
+    const wsUrl = proto + window.location.host + API_ENDPOINTS.ws;
     
     websocket = new WebSocket(wsUrl);
     
@@ -347,9 +451,10 @@ function setupWebSocket() {
     websocket.onmessage = (e) => {
         try {
             const data = JSON.parse(e.data);
-            if (data && typeof data.timestamp === 'number') {
+            const eventTimestamp = normalizeEventTimestamp(data?.timestamp);
+            if (data && typeof eventTimestamp === 'number') {
                 wsMessageCount += 1;
-                latestStudioTime = data.timestamp;
+                latestStudioTime = eventTimestamp;
                 
                 // Update Studio-Zeit im Header
                 document.getElementById('studioTime').textContent = formatTime(latestStudioTime);
@@ -371,8 +476,8 @@ function setupWebSocket() {
                 
                 // Update waveforms with new peak
                 if (peaks !== null || silence) {
-                    updateRingbufferPoint(data.timestamp, peaks || [0, 0], silence);
-                    updateFileOutPoint(data.timestamp, peaks, silence);
+                    updateRingbufferPoint(eventTimestamp, peaks || [0, 0], silence);
+                    updateFileOutPoint(eventTimestamp, peaks, silence);
                 }
                 
                 // Auto-refresh data every 10 WS messages
@@ -395,9 +500,10 @@ function startAutoRefresh() {
 
 async function refreshStatusData() {
     try {
-        const statusResponse = await fetch('/api/status');
+        const statusResponse = await fetch(API_ENDPOINTS.status);
         if (statusResponse.ok) {
-            currentStatus = await statusResponse.json();
+            currentStatus = normalizeStatusResponse(await statusResponse.json());
+            latestStudioTime = currentStatus.timestamp_ms || latestStudioTime;
             updateUI(currentStatus);
         } else {
             updateConnectionState(false);
@@ -412,7 +518,7 @@ async function refreshStatusData() {
 // Control actions
 async function sendControl(action) {
     try {
-        const response = await fetch('/api/control', {
+        const response = await fetch(API_ENDPOINTS.control, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ action })
@@ -442,18 +548,116 @@ async function refreshAllData() {
 document.addEventListener('DOMContentLoaded', () => {
     const minimalConfigButton = document.getElementById('generateMinimalConfig');
     if (minimalConfigButton) {
-        minimalConfigButton.addEventListener('click', () => {
+        minimalConfigButton.addEventListener('click', async () => {
             const result = window.renderPipelineConfigPreview?.();
-            if (result?.issues?.length) {
-                showMessage('Konfiguration generiert (Validierungswarnungen vorhanden).', 'warning');
+            if (!result?.config) {
+                showMessage('Konfiguration konnte nicht generiert werden.', 'error');
+                return;
+            }
+            const tomlPayload = formatConfigAsToml(result.config);
+            const importResult = await importPipelineConfig(tomlPayload);
+            if (importResult.ok) {
+                showMessage(importResult.message || 'Konfiguration importiert.', 'success');
             } else {
-                showMessage('Konfiguration generiert.', 'success');
+                showMessage(importResult.message || 'Import fehlgeschlagen.', 'error');
             }
         });
     }
     initializeModuleFilterControls();
     initializeAll();
 });
+
+function normalizeEventTimestamp(timestamp) {
+    if (!Number.isFinite(timestamp)) {
+        return null;
+    }
+    if (timestamp > 1e15) {
+        return Math.round(timestamp / 1_000_000);
+    }
+    if (timestamp > 1e12) {
+        return Math.round(timestamp / 1_000);
+    }
+    return timestamp;
+}
+
+function normalizeStatusResponse(payload) {
+    if (!payload || typeof payload !== 'object') {
+        return {
+            running: false,
+            uptime_seconds: 0,
+            producers: [],
+            flows: [],
+            ringbuffer: { fill: 0, capacity: 0 },
+            modules: [],
+            inactive_modules: [],
+            configuration_issues: [],
+            timestamp_ms: Date.now()
+        };
+    }
+    return {
+        running: Boolean(payload.running),
+        uptime_seconds: Number(payload.uptime_seconds || 0),
+        producers: Array.isArray(payload.producers) ? payload.producers : [],
+        flows: Array.isArray(payload.flows) ? payload.flows : [],
+        ringbuffer: payload.ringbuffer || { fill: 0, capacity: 0 },
+        modules: Array.isArray(payload.modules) ? payload.modules : [],
+        inactive_modules: Array.isArray(payload.inactive_modules) ? payload.inactive_modules : [],
+        configuration_issues: Array.isArray(payload.configuration_issues)
+            ? payload.configuration_issues
+            : [],
+        timestamp_ms: Number(payload.timestamp_ms || Date.now())
+    };
+}
+
+function normalizePipelineCatalog(catalog) {
+    if (!catalog || typeof catalog !== 'object') {
+        return [];
+    }
+    const buildGroup = (kind, title, items) => ({
+        kind,
+        title,
+        items: (items || []).map((item) => {
+            const typeValue = item.type || pipelineDefaultTypes[kind] || 'unknown';
+            return {
+                label: item.name,
+                type: typeValue,
+                backendType: typeValue,
+                supported: true,
+                configFields: []
+            };
+        })
+    });
+    return [
+        buildGroup('input', 'Inputs', catalog.inputs),
+        buildGroup('buffer', 'Buffers', catalog.buffers),
+        buildGroup('processing', 'Processing', catalog.processing),
+        buildGroup('service', 'Services', catalog.services),
+        buildGroup('output', 'Outputs', catalog.outputs)
+    ];
+}
+
+async function importPipelineConfig(tomlPayload) {
+    try {
+        const response = await fetch(API_ENDPOINTS.control, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                action: 'config.import',
+                parameters: { toml: tomlPayload }
+            })
+        });
+        const data = await response.json();
+        return {
+            ok: response.ok && data?.ok !== false,
+            message: data?.message
+        };
+    } catch (error) {
+        return {
+            ok: false,
+            message: error.message
+        };
+    }
+}
 
 function determineViewState(status, localState) {
     if (!status) {
@@ -757,279 +961,13 @@ const pipelineEditorState = {
     eventsBound: false
 };
 
-const defaultPipelineCatalog = [
-    {
-        title: 'Inputs',
-        kind: 'input',
-        items: [
-            {
-                type: 'srt',
-                backendType: 'srt',
-                label: 'SRT Input',
-                supported: true,
-                configFields: [
-                    { key: 'listen', required: true, example: '0.0.0.0:9000' },
-                    { key: 'latency_ms', required: true, example: '200' },
-                    { key: 'streamid', required: false, example: 'airlift' }
-                ]
-            },
-            {
-                type: 'icecast',
-                backendType: 'icecast',
-                label: 'Icecast Input',
-                supported: true,
-                configFields: [{ key: 'url', required: true, example: 'https://example.com/stream.ogg' }]
-            },
-            {
-                type: 'http_stream',
-                backendType: 'http_stream',
-                label: 'HTTP Stream Input',
-                supported: true,
-                configFields: [{ key: 'url', required: true, example: 'https://example.com/stream.ogg' }]
-            },
-            {
-                type: 'alsa',
-                backendType: 'alsa',
-                label: 'ALSA Input',
-                supported: true,
-                configFields: [{ key: 'device', required: true, example: 'hw:0,0' }]
-            },
-            {
-                type: 'file_in',
-                backendType: 'file_in',
-                label: 'File Input',
-                supported: true,
-                configFields: [{ key: 'path', required: true, example: '/path/to/audio.wav' }]
-            }
-        ]
-    },
-    {
-        title: 'Buffers',
-        kind: 'buffer',
-        items: [
-            {
-                type: 'ringbuffer',
-                backendType: 'ringbuffer',
-                label: 'Ringbuffer',
-                supported: true,
-                configFields: [
-                    { key: 'slots', required: true, example: '6000' },
-                    { key: 'prealloc_samples', required: true, example: '9600' }
-                ]
-            }
-        ]
-    },
-    {
-        title: 'Codecs',
-        kind: 'processing',
-        items: [
-            {
-                type: 'pcm',
-                backendType: 'pcm',
-                label: 'PCM',
-                supported: true,
-                configFields: [
-                    { key: 'sample_rate', required: false, example: '48000' },
-                    { key: 'channels', required: false, example: '2' }
-                ]
-            },
-            {
-                type: 'opus_ogg',
-                backendType: 'opus_ogg',
-                label: 'Opus OGG',
-                supported: true,
-                configFields: [
-                    { key: 'sample_rate', required: false, example: '48000' },
-                    { key: 'channels', required: false, example: '2' },
-                    { key: 'frame_size_ms', required: false, example: '20' },
-                    { key: 'bitrate', required: false, example: '128000' },
-                    { key: 'application', required: false, example: 'audio' }
-                ]
-            },
-            {
-                type: 'opus_webrtc',
-                backendType: 'opus_webrtc',
-                label: 'Opus WebRTC',
-                supported: true,
-                configFields: [
-                    { key: 'sample_rate', required: false, example: '48000' },
-                    { key: 'channels', required: false, example: '2' },
-                    { key: 'bitrate', required: false, example: '128000' },
-                    { key: 'application', required: false, example: 'audio' }
-                ]
-            },
-            {
-                type: 'mp3',
-                backendType: 'mp3',
-                label: 'MP3',
-                supported: true,
-                configFields: [
-                    { key: 'sample_rate', required: false, example: '48000' },
-                    { key: 'channels', required: false, example: '2' },
-                    { key: 'bitrate', required: false, example: '128000' }
-                ]
-            },
-            {
-                type: 'vorbis',
-                backendType: 'vorbis',
-                label: 'Vorbis',
-                supported: true,
-                configFields: [
-                    { key: 'sample_rate', required: false, example: '48000' },
-                    { key: 'channels', required: false, example: '2' },
-                    { key: 'quality', required: false, example: '0.4' }
-                ]
-            },
-            {
-                type: 'aac_lc',
-                backendType: 'aac_lc',
-                label: 'AAC-LC',
-                supported: false,
-                configFields: []
-            },
-            {
-                type: 'flac',
-                backendType: 'flac',
-                label: 'FLAC',
-                supported: false,
-                configFields: []
-            }
-        ]
-    },
-    {
-        title: 'Services',
-        kind: 'service',
-        items: [
-            {
-                type: 'audio_http',
-                backendType: 'audio_http',
-                label: 'Audio HTTP',
-                supported: true,
-                configFields: [
-                    { key: 'buffer', required: true, example: 'main' },
-                    { key: 'codec_id', required: true, example: 'codec_opus_ogg' }
-                ]
-            },
-            {
-                type: 'monitor',
-                backendType: 'monitor',
-                label: 'Monitor',
-                supported: true,
-                configFields: []
-            },
-            {
-                type: 'monitoring',
-                backendType: 'monitoring',
-                label: 'Monitoring',
-                supported: true,
-                configFields: []
-            },
-            {
-                type: 'peak_analyzer',
-                backendType: 'peak_analyzer',
-                label: 'Peak Analyzer',
-                supported: true,
-                configFields: [
-                    { key: 'buffer', required: true, example: 'main' },
-                    { key: 'interval_ms', required: true, example: '30000' }
-                ]
-            },
-            {
-                type: 'influx_out',
-                backendType: 'influx_out',
-                label: 'InfluxDB',
-                supported: true,
-                configFields: [
-                    { key: 'url', required: true, example: 'https://influx.example' },
-                    { key: 'db', required: true, example: 'airlift' },
-                    { key: 'interval_ms', required: true, example: '30000' }
-                ]
-            },
-            {
-                type: 'broadcast_http',
-                backendType: 'broadcast_http',
-                label: 'Broadcast HTTP',
-                supported: true,
-                configFields: [
-                    { key: 'url', required: true, example: 'https://example.com/notify' },
-                    { key: 'interval_ms', required: true, example: '30000' }
-                ]
-            },
-            {
-                type: 'file_out',
-                backendType: 'file_out',
-                label: 'File-Out Service',
-                supported: true,
-                configFields: [
-                    { key: 'codec_id', required: true, example: 'codec_opus_ogg' },
-                    { key: 'wav_dir', required: true, example: '/opt/rfm/airlift-node/aircheck/wav' },
-                    { key: 'retention_days', required: true, example: '7' }
-                ]
-            }
-        ]
-    },
-    {
-        title: 'Outputs',
-        kind: 'output',
-        items: [
-            {
-                type: 'srt_out',
-                backendType: 'srt_out',
-                label: 'SRT Output',
-                supported: true,
-                configFields: [
-                    { key: 'target', required: true, example: 'example.com:9000' },
-                    { key: 'latency_ms', required: true, example: '200' },
-                    { key: 'codec_id', required: true, example: 'codec_opus_ogg' }
-                ]
-            },
-            {
-                type: 'icecast_out',
-                backendType: 'icecast_out',
-                label: 'Icecast Output',
-                supported: true,
-                configFields: [
-                    { key: 'host', required: true, example: 'icecast.local' },
-                    { key: 'port', required: true, example: '8000' },
-                    { key: 'mount', required: true, example: '/airlift' },
-                    { key: 'user', required: true, example: 'source' },
-                    { key: 'password', required: true, example: 'hackme' },
-                    { key: 'bitrate', required: true, example: '128000' },
-                    { key: 'name', required: true, example: 'Airlift Node' },
-                    { key: 'description', required: true, example: 'Live-Stream' },
-                    { key: 'genre', required: true, example: 'news' },
-                    { key: 'public', required: true, example: 'false' },
-                    { key: 'codec_id', required: true, example: 'codec_opus_ogg' }
-                ]
-            },
-            {
-                type: 'udp_out',
-                backendType: 'udp_out',
-                label: 'UDP Output',
-                supported: true,
-                configFields: [
-                    { key: 'target', required: true, example: '239.0.0.1:1234' },
-                    { key: 'codec_id', required: true, example: 'codec_opus_webrtc' }
-                ]
-            },
-            {
-                type: 'file_out',
-                backendType: 'file_out',
-                label: 'File Output',
-                supported: true,
-                configFields: [
-                    { key: 'wav_dir', required: true, example: '/opt/rfm/airlift-node/aircheck/wav' },
-                    { key: 'retention_days', required: true, example: '7' },
-                    { key: 'codec_id', required: true, example: 'codec_opus_ogg' }
-                ]
-            }
-        ]
-    }
-];
-
-let pipelineCatalog = defaultPipelineCatalog;
+let pipelineCatalog = [];
 const pipelineDefaultTypes = {
-    buffer: 'ringbuffer'
+    input: 'producer',
+    buffer: 'buffer',
+    processing: 'processor',
+    service: 'flow',
+    output: 'consumer'
 };
 
 const pipelineSignalTypes = {
@@ -2233,25 +2171,6 @@ function buildCodecDefaults(codecType) {
         config.quality = 0.4;
     }
     return config;
-}
-
-function normalizePipelineCatalog(catalog) {
-    return catalog.map(group => {
-        if (group.kind !== 'buffer' || !Array.isArray(group.items)) {
-            return group;
-        }
-        return {
-            ...group,
-            items: group.items.map(item => {
-                const resolvedType = item.type ?? item.backendType ?? pipelineDefaultTypes.buffer;
-                return {
-                    ...item,
-                    type: resolvedType,
-                    backendType: item.backendType ?? resolvedType
-                };
-            })
-        };
-    });
 }
 
 function getCatalogTypesForKind(kind) {

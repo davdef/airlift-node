@@ -29,65 +29,15 @@ async function initializeRingbuffer(status) {
     try {
         const ring = status.ringbuffer || {};
         bufferCapacity = ring.capacity || 6000;
-        bufferHeadIndex = ring.head_index || 0;
-        bufferTailIndex = ring.tail_index || 0;
-        
-        // Hole History für den gesamten Buffer (10min)
-        const currentTime = latestStudioTime || Date.now();
-        const bufferDuration = bufferCapacity * 100; // 10min in ms
-        const historyStart = currentTime - bufferDuration;
-        
-        const response = await fetch(`/api/history?from=${historyStart}&to=${currentTime}`);
-        if (response.ok) {
-            const data = await response.json();
-            const points = Array.isArray(data) 
-                ? data.map(normalizeHistoryPoint).filter(Boolean)
-                : [];
-            
-            // Initialize ALLE Buffer-Positionen
-            ringbufferData = new Array(bufferCapacity).fill(null).map(() => ({
-                l: 0, r: 0, silence: false,
-                hasData: false
-            }));
-            
-            if (points.length > 0) {
-                // Sortiere nach Zeit (älteste zuerst)
-                points.sort((a, b) => a.ts - b.ts);
-                
-                // Berechne Zeit-Offset vom ältesten Punkt
-                const oldestTime = points[0].ts;
-                
-                // Ordne JEDEN Punkt einem Buffer-Slot zu
-                points.forEach(point => {
-                    // Zeitdifferenz vom ältesten Punkt in 100ms-Slots
-                    const timeDiff = point.ts - oldestTime;
-                    const slotsFromStart = Math.round(timeDiff / 100);
-                    
-                    // Berechne Position relativ zu Head
-                    // Head ist der NEUESTE Punkt, also am RECHTEN Ende
-                    const bufferPos = (bufferHeadIndex - slotsFromStart + bufferCapacity) % bufferCapacity;
-                    
-                    // Sicherstellen, dass wir im Buffer bleiben
-                    const safePos = bufferPos % bufferCapacity;
-                    
-                    ringbufferData[safePos].l = point.peaks[0] || 0;
-                    ringbufferData[safePos].r = point.peaks[1] || 0;
-                    ringbufferData[safePos].silence = point.silence;
-                    ringbufferData[safePos].hasData = true;
-                });
-            }
-            
-            // Start animation loop
-            startDrawLoop();
-            
-        } else {
-            // Initialize empty buffer
-            ringbufferData = new Array(bufferCapacity).fill(null).map(() => ({
-                l: 0, r: 0, silence: false,
-                hasData: false
-            }));
-            startDrawLoop();
-        }
+        bufferHeadIndex = 0;
+        bufferTailIndex = 0;
+
+        ringbufferData = new Array(bufferCapacity).fill(null).map(() => ({
+            l: 0, r: 0, silence: false,
+            hasData: false
+        }));
+
+        startDrawLoop();
         
     } catch (error) {
         // Silent error
@@ -101,20 +51,7 @@ async function initializeRingbuffer(status) {
 // File-Out Initialization (bleibt gleich)
 async function initializeFileOut(status) {
     try {
-        // Aktuelle Stunde berechnen
-        const currentHour = Math.floor(Date.now() / 1000 / 3600);
-        const hourStart = currentHour * 3600 * 1000;
-        const hourEnd = hourStart + 3600 * 1000;
-        
-        // History für aktuelle Stunde
-        const response = await fetch(`/api/history?from=${hourStart}&to=${Math.min(latestStudioTime || Date.now(), hourEnd)}`);
-        if (response.ok) {
-            const data = await response.json();
-            fileOutData = Array.isArray(data) 
-                ? data.map(normalizeHistoryPoint).filter(Boolean)
-                : [];
-        }
-        
+        fileOutData = [];
         // File-Out files vom Status
         if (status.file_out && status.file_out.current_files) {
             fileOutFiles = status.file_out.current_files;
