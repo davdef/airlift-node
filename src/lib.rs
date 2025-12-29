@@ -9,6 +9,7 @@ pub mod producers;
 pub mod processors;
 pub mod ring;
 pub mod types;
+pub mod testing;
 
 // Re-export die wichtigsten Typen
 pub use core::{AirliftNode, Flow, AudioRingBuffer, ComponentLogger, LogContext};

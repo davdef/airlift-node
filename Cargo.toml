@@ -38,3 +38,11 @@ bytemuck = "1.14"
 
 [features]
 lockfree = []
+
+[[bench]]
+name = "mixer_bench"
+harness = false
+
+[[bench]]
+name = "ringbuffer_bench"
+harness = false
