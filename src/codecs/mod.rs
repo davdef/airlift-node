@@ -8,7 +8,7 @@ pub const PCM_FRAME_MS: u32 = 100;
 pub const PCM_SAMPLES_PER_CH: usize = (PCM_SAMPLE_RATE as usize / 1000) * PCM_FRAME_MS as usize;
 pub const PCM_I16_SAMPLES: usize = PCM_SAMPLES_PER_CH * PCM_CHANNELS as usize;
 
-pub trait AudioCodec: Send {
+pub trait AudioCodec: Send + Sync {
     fn info(&self) -> &CodecInfo;
     fn encode(&mut self, pcm: &[i16]) -> anyhow::Result<Vec<EncodedFrame>>;
 }

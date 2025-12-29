@@ -1,17 +1,18 @@
+use crate::impl_connectable_processor;
+use crate::core::logging::{ComponentLogger, LogContext};
 use crate::core::processor::{Processor, ProcessorStatus};
 use crate::core::ringbuffer::{AudioRingBuffer, PcmFrame};
-use crate::core::logging::{ComponentLogger, LogContext};
 use crate::core::BufferRegistry;
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MixerInputConfig {
-    pub name: String,           // Interne Name im Mixer (z.B. "mic", "system")
-    pub source: String,         // Buffer-Name in der Registry (z.B. "alsa_input", "file_output")
-    pub gain: f32,              // Gain für diesen Input (0.0 - 1.0 oder mehr)
-    pub enabled: Option<bool>,  // Optional: Input deaktivieren
+    pub name: String,          // Interne Name im Mixer (z.B. "mic", "system")
+    pub source: String,        // Buffer-Name in der Registry (z.B. "alsa_input", "file_output")
+    pub gain: f32,             // Gain für diesen Input (0.0 - 1.0 oder mehr)
+    pub enabled: Option<bool>, // Optional: Input deaktivieren
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,7 +21,7 @@ pub struct MixerConfig {
     pub output_sample_rate: Option<u32>,
     pub output_channels: Option<u8>,
     pub master_gain: Option<f32>,
-    pub auto_connect: Option<bool>,  // Automatisch Buffers aus Registry verbinden
+    pub auto_connect: Option<bool>, // Automatisch Buffers aus Registry verbinden
 }
 
 pub struct Mixer {
@@ -52,7 +53,7 @@ impl Mixer {
             master_gain: None,
             auto_connect: Some(true),
         };
-        
+
         Self {
             name: name.to_string(),
             config,
@@ -64,13 +65,13 @@ impl Mixer {
             connected: false,
         }
     }
-    
+
     pub fn from_config(name: &str, config: MixerConfig) -> Self {
         let inputs_len = config.inputs.len();
         let output_sample_rate = config.output_sample_rate.unwrap_or(48000);
         let output_channels = config.output_channels.unwrap_or(2);
         let master_gain = config.master_gain.unwrap_or(1.0);
-        
+
         let mixer = Self {
             name: name.to_string(),
             config,
@@ -81,30 +82,33 @@ impl Mixer {
             buffer_registry: None,
             connected: false,
         };
-        
-        mixer.info(&format!("Created mixer '{}' with {} inputs", name, inputs_len));
+
+        mixer.info(&format!(
+            "Created mixer '{}' with {} inputs",
+            name, inputs_len
+        ));
         mixer
     }
-    
+
     /// Setze die Buffer-Registry für automatisches Verbinden
     pub fn set_buffer_registry(&mut self, registry: Arc<BufferRegistry>) {
         self.buffer_registry = Some(registry);
         self.info("Buffer registry set");
     }
-    
+
     /// Verbinde Mixer-Inputs mit Buffers aus der Registry
     pub fn connect_from_registry(&mut self) -> Result<()> {
         if let Some(registry) = &self.buffer_registry {
             self.input_buffers.clear();
             let mut connection_errors = Vec::new();
-            
+
             for input_config in &self.config.inputs {
                 // Prüfe ob Input enabled ist (default: true)
                 if let Some(false) = input_config.enabled {
                     self.debug(&format!("Input '{}' disabled, skipping", input_config.name));
                     continue;
                 }
-                
+
                 if let Some(buffer) = registry.get(&input_config.source) {
                     self.input_buffers.push(MixerInputBuffer {
                         source_name: input_config.source.clone(),
@@ -112,7 +116,7 @@ impl Mixer {
                         gain: input_config.gain,
                         buffer,
                     });
-                    
+
                     self.info(&format!(
                         "Connected input '{}' to source '{}' (gain: {})",
                         input_config.name, input_config.source, input_config.gain
@@ -126,17 +130,21 @@ impl Mixer {
                     self.error(&error);
                 }
             }
-            
+
             self.connected = connection_errors.is_empty() || !self.input_buffers.is_empty();
-            
+
             if !connection_errors.is_empty() {
                 self.warn(&format!(
                     "Mixer connected with {} error(s), {} input(s) active",
-                    connection_errors.len(), self.input_buffers.len()
+                    connection_errors.len(),
+                    self.input_buffers.len()
                 ));
                 bail!("Failed to connect some inputs: {:?}", connection_errors);
             } else {
-                self.info(&format!("Mixer fully connected with {} inputs", self.input_buffers.len()));
+                self.info(&format!(
+                    "Mixer fully connected with {} inputs",
+                    self.input_buffers.len()
+                ));
                 Ok(())
             }
         } else {
@@ -144,11 +152,12 @@ impl Mixer {
             bail!("Buffer registry not set")
         }
     }
-    
+
     /// Manuell einen Input verbinden (überschreibt Config)
     pub fn connect_input(&mut self, source_name: &str, gain: f32, buffer: Arc<AudioRingBuffer>) {
         // Entferne existierenden Eintrag für diese Source
-        self.input_buffers.retain(|input| input.source_name != source_name);
+        self.input_buffers
+            .retain(|input| input.source_name != source_name);
 
         self.input_buffers.push(MixerInputBuffer {
             source_name: source_name.to_string(),
@@ -157,20 +166,27 @@ impl Mixer {
             buffer,
         });
         self.connected = true;
-        
-        self.info(&format!("Manually connected source '{}' (gain: {})", source_name, gain));
+
+        self.info(&format!(
+            "Manually connected source '{}' (gain: {})",
+            source_name, gain
+        ));
     }
-    
+
     /// Aktualisiere Mixer-Konfiguration zur Laufzeit
-pub fn update_config(&mut self, config: &MixerConfig) -> Result<()> {  // &MixerConfig
-    self.config = config.clone();  // Clone
-    
-    self.output_sample_rate = config.output_sample_rate.unwrap_or(self.output_sample_rate);
-    self.output_channels = config.output_channels.unwrap_or(self.output_channels);
-    self.master_gain = config.master_gain.unwrap_or(self.master_gain);
-    
-    self.info(&format!("Updated mixer config with {} inputs", config.inputs.len()));
-        
+    pub fn update_config(&mut self, config: &MixerConfig) -> Result<()> {
+        // &MixerConfig
+        self.config = config.clone(); // Clone
+
+        self.output_sample_rate = config.output_sample_rate.unwrap_or(self.output_sample_rate);
+        self.output_channels = config.output_channels.unwrap_or(self.output_channels);
+        self.master_gain = config.master_gain.unwrap_or(self.master_gain);
+
+        self.info(&format!(
+            "Updated mixer config with {} inputs",
+            config.inputs.len()
+        ));
+
         // Bei auto_connect neu verbinden
         if config.auto_connect.unwrap_or(true) {
             if self.buffer_registry.is_some() {
@@ -183,17 +199,18 @@ pub fn update_config(&mut self, config: &MixerConfig) -> Result<()> {  // &Mixer
             self.input_buffers.clear();
             self.connected = false;
         }
-        
+
         Ok(())
     }
-    
+
     /// Mixing-Logik
     fn mix_batch(&self, batch_size: usize) -> Vec<PcmFrame> {
         if !self.connected || self.input_buffers.is_empty() {
             return Vec::new();
         }
 
-        let target_samples = (self.output_sample_rate as usize / 10) * self.output_channels as usize;
+        let target_samples =
+            (self.output_sample_rate as usize / 10) * self.output_channels as usize;
         let mut mixed_frames = Vec::with_capacity(batch_size);
 
         for _ in 0..batch_size {
@@ -228,30 +245,35 @@ pub fn update_config(&mut self, config: &MixerConfig) -> Result<()> {  // &Mixer
         let samples_to_mix = input_samples.len().min(mixed_samples.len());
         for i in 0..samples_to_mix {
             let sample = input_samples[i] as f32 * gain;
-            mixed_samples[i] = (mixed_samples[i] as f32 + sample)
-                .clamp(-32768.0, 32767.0) as i16;
+            mixed_samples[i] = (mixed_samples[i] as f32 + sample).clamp(-32768.0, 32767.0) as i16;
         }
     }
 
     fn apply_master_gain(&self, samples: &mut [i16]) {
         if self.master_gain != 1.0 {
             for sample in samples.iter_mut() {
-                *sample = (*sample as f32 * self.master_gain)
-                    .clamp(-32768.0, 32767.0) as i16;
+                *sample = (*sample as f32 * self.master_gain).clamp(-32768.0, 32767.0) as i16;
             }
         }
     }
-    
+
     pub fn is_connected(&self) -> bool {
         self.connected
     }
-    
+
     pub fn get_active_inputs(&self) -> Vec<(String, String, f32)> {
-        self.input_buffers.iter()
-            .map(|input| (input.source_name.clone(), input.reader_id.clone(), input.gain))
+        self.input_buffers
+            .iter()
+            .map(|input| {
+                (
+                    input.source_name.clone(),
+                    input.reader_id.clone(),
+                    input.gain,
+                )
+            })
             .collect()
     }
-    
+
     pub fn get_config(&self) -> &MixerConfig {
         &self.config
     }
@@ -261,8 +283,12 @@ impl Processor for Mixer {
     fn name(&self) -> &str {
         &self.name
     }
-    
-    fn process(&mut self, _input_buffer: &AudioRingBuffer, output_buffer: &AudioRingBuffer) -> Result<()> {
+
+    fn process(
+        &mut self,
+        _input_buffer: &AudioRingBuffer,
+        output_buffer: &AudioRingBuffer,
+    ) -> Result<()> {
         if !self.connected {
             // Versuche automatisch zu verbinden, falls Registry verfügbar
             if self.buffer_registry.is_some() && self.config.auto_connect.unwrap_or(true) {
@@ -271,13 +297,13 @@ impl Processor for Mixer {
                     return Ok(()); // Nicht fatal, einfach überspringen
                 }
             }
-            
+
             if !self.connected {
                 self.warn("Mixer not connected, skipping processing");
                 return Ok(());
             }
         }
-        
+
         let mut max_available = 0;
         for input in &self.input_buffers {
             max_available = max_available.max(input.buffer.available_for_reader(&input.reader_id));
@@ -303,54 +329,63 @@ impl Processor for Mixer {
         unsafe {
             FRAME_COUNT += mixed_count as u64;
             if FRAME_COUNT % 200 == 0 {
-                let avg_buffer: f32 = self.input_buffers.iter()
+                let avg_buffer: f32 = self
+                    .input_buffers
+                    .iter()
                     .map(|input| input.buffer.len() as f32)
-                    .sum::<f32>() / self.input_buffers.len() as f32;
+                    .sum::<f32>()
+                    / self.input_buffers.len() as f32;
 
                 self.info(&format!(
                     "Processed {} frames, avg input buffer: {:.1}, active inputs: {}",
-                    FRAME_COUNT, avg_buffer, self.input_buffers.len()
+                    FRAME_COUNT,
+                    avg_buffer,
+                    self.input_buffers.len()
                 ));
             }
         }
-        
+
         Ok(())
     }
-    
+
     fn status(&self) -> ProcessorStatus {
-        let buffer_levels: Vec<usize> = self.input_buffers.iter()
+        let buffer_levels: Vec<usize> = self
+            .input_buffers
+            .iter()
             .map(|input| input.buffer.len())
             .collect();
-        
+
         let avg_buffer = if !buffer_levels.is_empty() {
             buffer_levels.iter().sum::<usize>() as f32 / buffer_levels.len() as f32
-        } else { 0.0 };
-        
+        } else {
+            0.0
+        };
+
         ProcessorStatus {
             running: self.connected && !self.input_buffers.is_empty(),
-            processing_rate_hz: 10.0, // 100ms frames = 10Hz
+            processing_rate_hz: 10.0,       // 100ms frames = 10Hz
             latency_ms: avg_buffer * 100.0, // ~100ms pro Frame
             errors: 0,
         }
     }
-    
-fn update_config(&mut self, config: serde_json::Value) -> Result<()> {
-    match serde_json::from_value::<MixerConfig>(config) {
-        Ok(mixer_config) => {
-            self.update_config(&mixer_config)  // Referenz übergeben
-        }
-        Err(e) => {
-            self.error(&format!("Failed to parse mixer config: {}", e));
-            bail!("Invalid mixer config: {}", e)
+
+    fn update_config(&mut self, config: serde_json::Value) -> Result<()> {
+        match serde_json::from_value::<MixerConfig>(config) {
+            Ok(mixer_config) => {
+                self.update_config(&mixer_config) // Referenz übergeben
+            }
+            Err(e) => {
+                self.error(&format!("Failed to parse mixer config: {}", e));
+                bail!("Invalid mixer config: {}", e)
+            }
         }
     }
-}
-    
+
     // Typ-Casting Methoden
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
-    
+
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
     }
@@ -378,22 +413,20 @@ mod tests {
     #[test]
     fn test_mixer_from_config() {
         let config = MixerConfig {
-            inputs: vec![
-                MixerInputConfig {
-                    name: "mic".to_string(),
-                    gain: 0.8,
-                    source: "mic_producer".to_string(),
-                    enabled: Some(true),
-                },
-            ],
+            inputs: vec![MixerInputConfig {
+                name: "mic".to_string(),
+                gain: 0.8,
+                source: "mic_producer".to_string(),
+                enabled: Some(true),
+            }],
             output_sample_rate: Some(44100),
             output_channels: Some(1),
             master_gain: Some(0.9),
             auto_connect: Some(true),
         };
-        
+
         let mixer = Mixer::from_config("test_mixer", config);
-        
+
         assert_eq!(mixer.name(), "test_mixer");
         assert_eq!(mixer.output_sample_rate, 44100);
         assert_eq!(mixer.output_channels, 1);
@@ -401,3 +434,5 @@ mod tests {
         assert!(!mixer.is_connected());
     }
 }
+
+impl_connectable_processor!(Mixer);

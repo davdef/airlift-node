@@ -1,11 +1,13 @@
-use std::sync::{Arc, Mutex};
+use crate::impl_connectable_producer;
+use crate::impl_connectable_consumer;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 
 use crate::core::consumer::{Consumer, ConsumerStatus};
-use crate::core::{Producer, ProducerStatus};
 use crate::core::ringbuffer::{AudioRingBuffer, PcmFrame};
+use crate::core::{Producer, ProducerStatus};
 
 pub struct MockProducer {
     name: String,
@@ -169,7 +171,10 @@ impl Consumer for MockConsumer {
                 if let Some(frame) = buffer.pop_for_reader(&reader_id) {
                     bytes_written.fetch_add((frame.samples.len() * 2) as u64, Ordering::Relaxed);
                     frames_processed.fetch_add(1, Ordering::Relaxed);
-                    received_frames.lock().expect("lock received_frames").push(frame);
+                    received_frames
+                        .lock()
+                        .expect("lock received_frames")
+                        .push(frame);
                 } else {
                     std::thread::sleep(std::time::Duration::from_millis(5));
                 }
@@ -207,3 +212,7 @@ impl Consumer for MockConsumer {
         self.input_buffer = Some(buffer);
     }
 }
+
+impl_connectable_producer!(MockProducer);
+
+impl_connectable_consumer!(MockConsumer);

@@ -12,7 +12,11 @@ pub struct PluginInfo {
 }
 
 impl PluginInfo {
-    pub fn new(name: impl Into<String>, version: impl Into<String>, description: impl Into<String>) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        version: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
         Self {
             name: name.into(),
             version: version.into(),

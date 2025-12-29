@@ -44,7 +44,7 @@ pub struct FlowConfig {
     pub inputs: Vec<String>,
     pub processors: Vec<String>,
     pub outputs: Vec<String>,
-    
+
     #[serde(default)]
     pub config: HashMap<String, serde_json::Value>,
 }
@@ -72,7 +72,7 @@ impl Config {
         config.validate().context("config validation failed")?;
         Ok(config)
     }
-    
+
     pub fn save(&self, path: &str) -> anyhow::Result<()> {
         let content = toml::to_string_pretty(self)?;
         fs::write(path, content)?;
@@ -105,7 +105,11 @@ impl Config {
             }
             for processor in &flow.processors {
                 if !self.processors.contains_key(processor) {
-                    bail!("flow '{}' references missing processor '{}'", name, processor);
+                    bail!(
+                        "flow '{}' references missing processor '{}'",
+                        name,
+                        processor
+                    );
                 }
             }
             for output in &flow.outputs {
@@ -289,15 +293,16 @@ impl ConfigPatch {
 
         if let Some(ref processors) = self.processors {
             for (name, patch) in processors {
-                let mut next = config
-                    .processors
-                    .get(name)
-                    .cloned()
-                    .unwrap_or_else(|| ProcessorConfig {
-                        processor_type: "unknown".to_string(),
-                        enabled: true,
-                        config: HashMap::new(),
-                    });
+                let mut next =
+                    config
+                        .processors
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_else(|| ProcessorConfig {
+                            processor_type: "unknown".to_string(),
+                            enabled: true,
+                            config: HashMap::new(),
+                        });
                 patch.apply_to(&mut next)?;
                 next.validate(name)?;
                 config.processors.insert(name.clone(), next);
@@ -306,17 +311,18 @@ impl ConfigPatch {
 
         if let Some(ref consumers) = self.consumers {
             for (name, patch) in consumers {
-                let mut next = config
-                    .consumers
-                    .get(name)
-                    .cloned()
-                    .unwrap_or_else(|| ConsumerConfig {
-                        consumer_type: "file".to_string(),
-                        enabled: true,
-                        path: None,
-                        url: None,
-                        config: HashMap::new(),
-                    });
+                let mut next =
+                    config
+                        .consumers
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_else(|| ConsumerConfig {
+                            consumer_type: "file".to_string(),
+                            enabled: true,
+                            path: None,
+                            url: None,
+                            config: HashMap::new(),
+                        });
                 patch.apply_to(&mut next)?;
                 next.validate(name)?;
                 config.consumers.insert(name.clone(), next);

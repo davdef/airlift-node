@@ -2,12 +2,12 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use airlift_node::{AirliftNode, Flow};
 use airlift_node::core::consumer::encoded_output::EncodedOutputConsumer;
 use airlift_node::encoders::{PcmCodec, PCM_CHANNELS, PCM_I16_SAMPLES, PCM_SAMPLE_RATE};
 use airlift_node::producers::sine::SineProducer;
 use airlift_node::ring::{EncodedRing, EncodedRingRead};
 use airlift_node::types::{CodecInfo, CodecKind, ContainerKind, EncodedFrame};
+use airlift_node::{AirliftNode, Flow};
 
 fn main() -> anyhow::Result<()> {
     let _ = env_logger::builder().is_test(false).try_init();

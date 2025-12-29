@@ -27,7 +27,8 @@ pub fn start_config_api(bind: &str, config: Arc<Mutex<Config>>) -> anyhow::Resul
             let mut body = String::new();
             if let Err(err) = req.as_reader().read_to_string(&mut body) {
                 error!("[config] failed to read request body: {}", err);
-                let _ = req.respond(Response::from_string("invalid request body").with_status_code(400));
+                let _ = req
+                    .respond(Response::from_string("invalid request body").with_status_code(400));
                 continue;
             }
 
@@ -35,7 +36,9 @@ pub fn start_config_api(bind: &str, config: Arc<Mutex<Config>>) -> anyhow::Resul
                 Ok(patch) => patch,
                 Err(err) => {
                     error!("[config] invalid JSON payload: {}", err);
-                    let _ = req.respond(Response::from_string("invalid JSON payload").with_status_code(400));
+                    let _ = req.respond(
+                        Response::from_string("invalid JSON payload").with_status_code(400),
+                    );
                     continue;
                 }
             };
@@ -43,7 +46,9 @@ pub fn start_config_api(bind: &str, config: Arc<Mutex<Config>>) -> anyhow::Resul
             let mut guard = match config.lock() {
                 Ok(guard) => guard,
                 Err(_) => {
-                    let _ = req.respond(Response::from_string("config lock poisoned").with_status_code(500));
+                    let _ = req.respond(
+                        Response::from_string("config lock poisoned").with_status_code(500),
+                    );
                     continue;
                 }
             };

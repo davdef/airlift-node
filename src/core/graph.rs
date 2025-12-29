@@ -4,7 +4,6 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::core::connectable::Port;
 use crate::core::ringbuffer::AudioRingBuffer;
 use crate::core::timestamp::utc_ns_now;
 
@@ -23,8 +22,6 @@ pub struct GraphNode {
     pub class: NodeClass,
     pub node_type: String,
     pub config: serde_json::Value,
-    pub input_ports: Vec<Port>,
-    pub output_ports: Vec<Port>,
 }
 
 impl GraphNode {
@@ -34,8 +31,6 @@ impl GraphNode {
         class: NodeClass,
         node_type: String,
         config: serde_json::Value,
-        input_ports: Vec<Port>,
-        output_ports: Vec<Port>,
     ) -> Self {
         Self {
             id,
@@ -43,17 +38,7 @@ impl GraphNode {
             class,
             node_type,
             config,
-            input_ports,
-            output_ports,
         }
-    }
-
-    pub fn has_input_port(&self, port: &str) -> bool {
-        self.input_ports.iter().any(|p| p.name == port)
-    }
-
-    pub fn has_output_port(&self, port: &str) -> bool {
-        self.output_ports.iter().any(|p| p.name == port)
     }
 }
 
@@ -137,7 +122,7 @@ impl AudioGraph {
         }
 
         self.connections
-            .retain(|_, conn| conn.source_node != node_id && conn.target_node != node_id);
+            .retain(|_, c| c.source_node != node_id && c.target_node != node_id);
         Ok(())
     }
 
@@ -148,28 +133,11 @@ impl AudioGraph {
         target_node: &str,
         target_port: &str,
     ) -> Result<String> {
-        let source = self
-            .nodes
-            .get(source_node)
-            .ok_or_else(|| anyhow!("source node '{}' not found", source_node))?;
-        let target = self
-            .nodes
-            .get(target_node)
-            .ok_or_else(|| anyhow!("target node '{}' not found", target_node))?;
-
-        if !source.has_output_port(source_port) {
-            return Err(anyhow!(
-                "source node '{}' missing output port '{}'",
-                source_node,
-                source_port
-            ));
+        if !self.nodes.contains_key(source_node) {
+            return Err(anyhow!("source node '{}' not found", source_node));
         }
-        if !target.has_input_port(target_port) {
-            return Err(anyhow!(
-                "target node '{}' missing input port '{}'",
-                target_node,
-                target_port
-            ));
+        if !self.nodes.contains_key(target_node) {
+            return Err(anyhow!("target node '{}' not found", target_node));
         }
 
         let connection_id = format!("conn-{}", utc_ns_now());
@@ -181,6 +149,7 @@ impl AudioGraph {
             target_port: target_port.to_string(),
             buffer: Arc::new(AudioRingBuffer::new(1000)),
         };
+
         self.connections.insert(connection_id.clone(), connection);
         Ok(connection_id)
     }
@@ -218,7 +187,6 @@ impl AudioGraph {
                 self.visit(node_id, &mut visited, &mut stack)?;
             }
         }
-
         Ok(())
     }
 
@@ -231,12 +199,12 @@ impl AudioGraph {
         visited.insert(node_id.to_string());
         stack.insert(node_id.to_string());
 
-        for connection in self.connections.values() {
-            if connection.source_node != node_id {
+        for conn in self.connections.values() {
+            if conn.source_node != node_id {
                 continue;
             }
 
-            let target = &connection.target_node;
+            let target = &conn.target_node;
             if stack.contains(target) {
                 return Err(anyhow!("cycle detected: '{}' -> '{}'", node_id, target));
             }

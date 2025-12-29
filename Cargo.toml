@@ -48,3 +48,7 @@ harness = false
 [[bench]]
 name = "ringbuffer_bench"
 harness = false
+
+[lib]
+name = "airlift_node"
+path = "src/lib.rs"

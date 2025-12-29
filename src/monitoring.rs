@@ -14,11 +14,12 @@ pub fn start_monitoring_server(bind: &str, node: Arc<Mutex<AirliftNode>>) -> any
         for req in server.incoming_requests() {
             match (req.method(), req.url()) {
                 (&Method::Get, "/health") => {
-                    let running = node
-                        .lock()
-                        .map(|node| node.is_running())
-                        .unwrap_or(false);
-                    let status = if running { StatusCode(200) } else { StatusCode(503) };
+                    let running = node.lock().map(|node| node.is_running()).unwrap_or(false);
+                    let status = if running {
+                        StatusCode(200)
+                    } else {
+                        StatusCode(503)
+                    };
                     let body = if running { "ok" } else { "not_running" };
                     let response = Response::from_string(body)
                         .with_status_code(status)

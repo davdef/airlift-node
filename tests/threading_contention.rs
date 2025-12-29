@@ -1,5 +1,5 @@
-use std::sync::{Arc, Barrier};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Barrier};
 
 use airlift_node::core::ringbuffer::{AudioRingBuffer, PcmFrame};
 
@@ -41,7 +41,10 @@ fn test_ringbuffer_threading_contention() {
         handles.push(std::thread::spawn(move || {
             start.wait();
             for _ in 0..400 {
-                if buffer.pop_for_reader(&format!("reader-{}", reader_id)).is_some() {
+                if buffer
+                    .pop_for_reader(&format!("reader-{}", reader_id))
+                    .is_some()
+                {
                     popped.fetch_add(1, Ordering::Relaxed);
                 } else {
                     std::thread::yield_now();

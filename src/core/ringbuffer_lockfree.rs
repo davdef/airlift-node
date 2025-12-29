@@ -4,11 +4,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use crate::core::lock::{lock_rwlock_read_with_timeout, lock_rwlock_write_with_timeout};
 use crate::core::logging::ComponentLogger;
-use crate::core::lock::{
-    lock_rwlock_read_with_timeout,
-    lock_rwlock_write_with_timeout,
-};
 pub use crate::ring::PcmFrame;
 use crate::ring::PcmSink;
 
@@ -233,9 +230,7 @@ impl AudioRingBuffer {
             None => return None,
         };
 
-        reader_slot
-            .position
-            .store(position + 1, Ordering::Release);
+        reader_slot.position.store(position + 1, Ordering::Release);
 
         if position % LOG_EVERY_N_POP == 0 {
             self.debug(&format!(
@@ -367,7 +362,10 @@ impl AudioRingBuffer {
             }
         }
 
-        RingBufferIter { buffer: snapshot, index: 0 }
+        RingBufferIter {
+            buffer: snapshot,
+            index: 0,
+        }
     }
 
     fn oldest_seq(&self, head: u64) -> u64 {
@@ -449,7 +447,11 @@ fn hash_reader_id(reader_id: &str) -> u64 {
     let mut hasher = DefaultHasher::new();
     reader_id.hash(&mut hasher);
     let hash = hasher.finish();
-    if hash == 0 { 1 } else { hash }
+    if hash == 0 {
+        1
+    } else {
+        hash
+    }
 }
 
 // Unit Tests

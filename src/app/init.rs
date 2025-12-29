@@ -47,12 +47,19 @@ impl PluginRegistry {
             )))
         });
 
-        self.register_processor("mixer", |name, cfg| {
-            let mut mixer = processors::Mixer::new(name);
-            let config_value = serde_json::to_value(&cfg.config)?;
-            mixer.update_config(config_value)?;
-            Ok(Box::new(mixer))
-        });
+self.register_processor("mixer", |name, cfg| {
+    let mut mixer = processors::Mixer::new(name);
+
+let mixer_cfg: processors::mixer::MixerConfig =
+    serde_json::from_value(serde_json::Value::Object(
+        cfg.config.clone().into_iter().collect()
+    ))
+    .map_err(|e| anyhow::anyhow!("invalid mixer config: {}", e))?;
+
+    mixer.update_config(&mixer_cfg)?;
+    Ok(Box::new(mixer))
+});
+
     }
 
     pub fn create_processor(

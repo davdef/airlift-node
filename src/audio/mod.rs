@@ -49,11 +49,13 @@ where
     }
 
     fn wait_for_read_or_stop(&mut self, stop: &AtomicBool) -> anyhow::Result<Option<EncodedRead>> {
-        Ok(EncodedSource::wait_for_read_or_stop(self, stop).map(|read| match read {
-            EncodedRingRead::Frame { frame, .. } => EncodedRead::Frame(frame),
-            EncodedRingRead::Gap { missed } => EncodedRead::Gap { missed },
-            EncodedRingRead::Empty => EncodedRead::Empty,
-        }))
+        Ok(
+            EncodedSource::wait_for_read_or_stop(self, stop).map(|read| match read {
+                EncodedRingRead::Frame { frame, .. } => EncodedRead::Frame(frame),
+                EncodedRingRead::Gap { missed } => EncodedRead::Gap { missed },
+                EncodedRingRead::Empty => EncodedRead::Empty,
+            }),
+        )
     }
 
     fn notifier(&self) -> Option<Arc<std::sync::Condvar>> {

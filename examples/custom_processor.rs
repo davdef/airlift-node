@@ -1,10 +1,10 @@
 use std::thread;
 use std::time::Duration;
 
-use airlift_node::{AirliftNode, AudioRingBuffer, Flow};
 use airlift_node::core::consumer::file_writer::FileConsumer;
 use airlift_node::core::processor::{Processor, ProcessorStatus};
 use airlift_node::producers::sine::SineProducer;
+use airlift_node::{AirliftNode, AudioRingBuffer, Flow};
 
 struct ScaleProcessor {
     name: String,
@@ -25,11 +25,15 @@ impl Processor for ScaleProcessor {
         &self.name
     }
 
-    fn process(&mut self, input_buffer: &AudioRingBuffer, output_buffer: &AudioRingBuffer) -> anyhow::Result<()> {
+    fn process(
+        &mut self,
+        input_buffer: &AudioRingBuffer,
+        output_buffer: &AudioRingBuffer,
+    ) -> anyhow::Result<()> {
         while let Some(mut frame) = input_buffer.pop() {
             for sample in frame.samples.iter_mut() {
-                *sample = (*sample as f32 * self.scale)
-                    .clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                *sample =
+                    (*sample as f32 * self.scale).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
             }
             output_buffer.push(frame);
         }

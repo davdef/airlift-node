@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use crate::core::logging::ComponentLogger;
 use crate::core::lock::lock_mutex_with_timeout;
+use crate::core::logging::ComponentLogger;
 pub use crate::ring::PcmFrame;
 use crate::ring::PcmSink;
 
@@ -14,6 +14,7 @@ struct RingSlot {
     frame: Mutex<Option<PcmFrame>>,
 }
 
+#[derive(Debug)]
 pub struct AudioRingBuffer {
     slots: Arc<Vec<RingSlot>>,
     capacity: usize,
@@ -49,22 +50,24 @@ impl AudioRingBuffer {
     /// Returns the current number of frames in the buffer.
     pub fn push(&self, frame: PcmFrame) -> u64 {
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
-        
+
         // Logging: Nur alle 50 Frames oder wenn interessant
         if seq % 50 == 0 || seq <= 5 {
             self.debug(&format!(
                 "push[seq={}] samples={} rate={} ch={}",
-                seq, 
+                seq,
                 frame.samples.len(),
                 frame.sample_rate,
                 frame.channels
             ));
         }
-        
+
         let idx = (seq as usize) % self.capacity;
         let slot = &self.slots[idx];
 
-        if let Some(mut guard) = lock_mutex_with_timeout(&slot.frame, "ringbuffer.push.slot", BUFFER_LOCK_TIMEOUT) {
+        if let Some(mut guard) =
+            lock_mutex_with_timeout(&slot.frame, "ringbuffer.push.slot", BUFFER_LOCK_TIMEOUT)
+        {
             *guard = Some(frame);
         } else {
             self.dropped_frames.fetch_add(1, Ordering::Relaxed);
@@ -77,17 +80,19 @@ impl AudioRingBuffer {
 
         if seq > self.capacity as u64 {
             self.dropped_frames.fetch_add(1, Ordering::Relaxed);
-            self.warn(&format!("Frame dropped! Total dropped: {}", 
-                self.dropped_frames.load(Ordering::Relaxed)));
+            self.warn(&format!(
+                "Frame dropped! Total dropped: {}",
+                self.dropped_frames.load(Ordering::Relaxed)
+            ));
         }
 
         let new_len = self.len() as u64;
-        
+
         // Warnung bei hoher Auslastung
         if new_len as f32 / self.capacity as f32 > 0.8 {
             self.warn(&format!("Buffer >80% full: {}/{}", new_len, self.capacity));
         }
-        
+
         new_len
     }
 
@@ -104,7 +109,8 @@ impl AudioRingBuffer {
 
         let oldest = self.oldest_seq(head);
         let target_seq = {
-            let mut read_positions = match lock_mutex_with_timeout(
+            let mut read_positions: MutexGuard<'_, HashMap<String, u64>> =
+              match lock_mutex_with_timeout(
                 &self.read_positions,
                 "ringbuffer.pop.read_positions",
                 BUFFER_LOCK_TIMEOUT,
@@ -115,7 +121,9 @@ impl AudioRingBuffer {
                     return None;
                 }
             };
-            let position = read_positions.entry(reader_id.to_string()).or_insert(oldest);
+            let position = read_positions
+                .entry(reader_id.to_string())
+                .or_insert(oldest);
             if *position < oldest {
                 *position = oldest;
             }
@@ -127,10 +135,11 @@ impl AudioRingBuffer {
 
         let slot = &self.slots[(target_seq as usize) % self.capacity];
         let slot_seq = slot.seq.load(Ordering::Acquire);
-        
+
         if slot_seq != target_seq {
             self.dropped_frames.fetch_add(1, Ordering::Relaxed);
-            let mut read_positions = match lock_mutex_with_timeout(
+            let mut read_positions: MutexGuard<'_, HashMap<String, u64>> =
+              match lock_mutex_with_timeout(
                 &self.read_positions,
                 "ringbuffer.pop.sequence_mismatch.read_positions",
                 BUFFER_LOCK_TIMEOUT,
@@ -144,9 +153,11 @@ impl AudioRingBuffer {
             if let Some(pos) = read_positions.get_mut(reader_id) {
                 *pos = oldest;
             }
-            
-            self.warn(&format!("Sequence mismatch for reader '{}': expected {}, got {}", 
-                reader_id, target_seq, slot_seq));
+
+            self.warn(&format!(
+                "Sequence mismatch for reader '{}': expected {}, got {}",
+                reader_id, target_seq, slot_seq
+            ));
             return None;
         }
 
@@ -155,14 +166,18 @@ impl AudioRingBuffer {
             "ringbuffer.pop.slot",
             BUFFER_LOCK_TIMEOUT,
         ) {
-            Some(guard) => guard.clone(),
+Some(guard) => {
+    let guard: std::sync::MutexGuard<'_, Option<PcmFrame>> = guard;
+    guard.as_ref().cloned()
+}
             None => {
                 self.warn("Pop aborted: slot lock timeout");
                 return None;
             }
         };
         if frame.is_some() {
-            let mut read_positions = match lock_mutex_with_timeout(
+            let mut read_positions: MutexGuard<'_, HashMap<String, u64>> =
+              match lock_mutex_with_timeout(
                 &self.read_positions,
                 "ringbuffer.pop.advance.read_positions",
                 BUFFER_LOCK_TIMEOUT,
@@ -176,12 +191,13 @@ impl AudioRingBuffer {
             if let Some(pos) = read_positions.get_mut(reader_id) {
                 *pos = target_seq + 1;
             }
-            
+
             // Debug logging für interessante Frames
             if target_seq % 100 == 0 {
                 self.debug(&format!(
                     "pop[reader={}] seq={} samples={}",
-                    reader_id, target_seq, 
+                    reader_id,
+                    target_seq,
                     frame.as_ref().unwrap().samples.len()
                 ));
             }
@@ -192,13 +208,11 @@ impl AudioRingBuffer {
 
     pub fn clear(&self) {
         self.info("Clearing buffer");
-        
+
         for slot in self.slots.iter() {
-            if let Some(mut guard) = lock_mutex_with_timeout(
-                &slot.frame,
-                "ringbuffer.clear.slot",
-                BUFFER_LOCK_TIMEOUT,
-            ) {
+            if let Some(mut guard) =
+                lock_mutex_with_timeout(&slot.frame, "ringbuffer.clear.slot", BUFFER_LOCK_TIMEOUT)
+            {
                 *guard = None;
             } else {
                 self.warn("Clear aborted: slot lock timeout");
@@ -211,15 +225,15 @@ impl AudioRingBuffer {
         self.next_seq.store(1, Ordering::Release);
         self.dropped_frames.store(0, Ordering::Relaxed);
 
-        if let Some(mut read_positions) = lock_mutex_with_timeout(
-            &self.read_positions,
-            "ringbuffer.clear.read_positions",
-            BUFFER_LOCK_TIMEOUT,
-        ) {
-            read_positions.clear();
-        } else {
-            self.warn("Clear aborted: read_positions lock timeout");
-        }
+if let Some(mut read_positions) = lock_mutex_with_timeout(
+    &self.read_positions,
+    "ringbuffer.clear.read_positions",
+    BUFFER_LOCK_TIMEOUT,
+) {
+    read_positions.clear();
+} else {
+    self.warn("Clear aborted: read_positions lock timeout");
+}
     }
 
     pub fn len(&self) -> usize {
@@ -241,28 +255,30 @@ impl AudioRingBuffer {
         if head == 0 {
             return 0;
         }
-        
+
         let oldest = self.oldest_seq(head);
-        let read_positions = match lock_mutex_with_timeout(
-            &self.read_positions,
-            "ringbuffer.available.read_positions",
-            BUFFER_LOCK_TIMEOUT,
-        ) {
-            Some(guard) => guard,
-            None => {
-                self.warn("available_for_reader aborted: read_positions lock timeout");
-                return 0;
-            }
-        };
+
+let read_positions: MutexGuard<'_, HashMap<String, u64>> =
+    match lock_mutex_with_timeout(
+        &self.read_positions,
+        "ringbuffer.available.read_positions",
+        BUFFER_LOCK_TIMEOUT,
+    ) {
+        Some(guard) => guard,
+        None => {
+            self.warn("available_for_reader aborted: read_positions lock timeout");
+            return 0;
+        }
+    };
         let reader_pos = read_positions.get(reader_id).copied().unwrap_or(oldest);
-        
+
         if reader_pos > head {
             0
         } else {
             (head - reader_pos + 1) as usize
         }
     }
-    
+
     /// Anzahl der für den "default" Reader verfügbaren Frames
     pub fn available(&self) -> usize {
         self.available_for_reader("default")
@@ -311,7 +327,10 @@ impl AudioRingBuffer {
             }
         }
 
-        RingBufferIter { buffer: snapshot, index: 0 }
+        RingBufferIter {
+            buffer: snapshot,
+            index: 0,
+        }
     }
 
     fn oldest_seq(&self, head: u64) -> u64 {
@@ -325,8 +344,12 @@ impl AudioRingBuffer {
     fn read_by_seq(&self, seq: u64) -> Option<PcmFrame> {
         let slot = &self.slots[(seq as usize) % self.capacity];
         if slot.seq.load(Ordering::Acquire) == seq {
-            lock_mutex_with_timeout(&slot.frame, "ringbuffer.read_by_seq.slot", BUFFER_LOCK_TIMEOUT)
-                .and_then(|guard| guard.clone())
+            lock_mutex_with_timeout(
+                &slot.frame,
+                "ringbuffer.read_by_seq.slot",
+                BUFFER_LOCK_TIMEOUT,
+            )
+            .and_then(|guard: std::sync::MutexGuard<'_, Option<PcmFrame>>| guard.clone())
         } else {
             None
         }
@@ -389,26 +412,26 @@ mod tests {
         let buffer = AudioRingBuffer::new(10);
         assert_eq!(buffer.len(), 0);
         assert_eq!(buffer.available(), 0);
-        
+
         let frame = PcmFrame {
             utc_ns: 123456789,
             samples: vec![1, 2, 3, 4, 5, 6],
             sample_rate: 48000,
             channels: 2,
         };
-        
+
         let new_len = buffer.push(frame);
         assert_eq!(new_len, 1);
         assert_eq!(buffer.len(), 1);
         assert_eq!(buffer.available(), 1);
-        
+
         let popped = buffer.pop();
         assert!(popped.is_some());
-        
+
         // Frame ist noch im Buffer, aber nicht mehr verfügbar für "default"
         assert_eq!(buffer.len(), 1);
         assert_eq!(buffer.available(), 0);
-        
+
         // Für anderen Reader verfügbar
         assert_eq!(buffer.available_for_reader("other"), 1);
     }
@@ -417,33 +440,33 @@ mod tests {
     fn test_basic_buffer_operations() {
         let buffer = AudioRingBuffer::new(10);
         assert_eq!(buffer.len(), 0);
-        
+
         let frame = PcmFrame {
             utc_ns: 123456789,
             samples: vec![1, 2, 3, 4, 5, 6],
             sample_rate: 48000,
             channels: 2,
         };
-        
+
         let new_len = buffer.push(frame);
         assert_eq!(new_len, 1);
         assert_eq!(buffer.len(), 1);
-        
+
         // Reader "default" liest den Frame
         let popped = buffer.pop();
         assert!(popped.is_some());
-        
+
         // Buffer hat immer noch 1 Frame (nur Leseposition geändert)
         assert_eq!(buffer.len(), 1);
-        
+
         // Zweiter Versuch von "default" sollte nichts liefern
         let popped2 = buffer.pop();
         assert!(popped2.is_none());
-        
+
         // Aber anderer Reader kann lesen
         let popped_by_other = buffer.pop_for_reader("other_reader");
         assert!(popped_by_other.is_some());
-        
+
         // Jetzt haben beide Reader gelesen, Buffer immer noch da
         assert_eq!(buffer.len(), 1);
     }
@@ -451,7 +474,7 @@ mod tests {
     #[test]
     fn test_multi_reader() {
         let buffer = AudioRingBuffer::new(20);
-        
+
         // Push 3 frames
         for i in 0..3 {
             let frame = PcmFrame {
@@ -462,22 +485,22 @@ mod tests {
             };
             buffer.push(frame);
         }
-        
+
         assert_eq!(buffer.len(), 3);
-        
+
         // Two different readers should both get the first frame
         let frame1 = buffer.pop_for_reader("reader1");
         let frame2 = buffer.pop_for_reader("reader2");
-        
+
         assert!(frame1.is_some());
         assert!(frame2.is_some());
         assert_eq!(frame1.unwrap().samples[0], 0);
         assert_eq!(frame2.unwrap().samples[0], 0);
-        
+
         // Now reader1 should get frame 1, reader2 should get frame 2
         let frame1_2 = buffer.pop_for_reader("reader1");
         let frame2_2 = buffer.pop_for_reader("reader2");
-        
+
         assert!(frame1_2.is_some());
         assert!(frame2_2.is_some());
         assert_eq!(frame1_2.unwrap().samples[0], 1);
@@ -487,7 +510,7 @@ mod tests {
     #[test]
     fn test_buffer_wrap_around() {
         let buffer = AudioRingBuffer::new(3);
-        
+
         // Push mehr Frames als Capacity
         for i in 0..5 {
             let frame = PcmFrame {
@@ -498,10 +521,10 @@ mod tests {
             };
             buffer.push(frame);
         }
-        
+
         // Should only have 3 frames (wrapped around)
         assert_eq!(buffer.len(), 3);
-        
+
         let stats = buffer.stats();
         assert!(stats.dropped_frames > 0);
     }
@@ -509,18 +532,18 @@ mod tests {
     #[test]
     fn test_buffer_logging_integration() {
         use crate::core::logging::ComponentLogger;
-        
+
         let buffer = AudioRingBuffer::new(5);
-        
+
         // Teste, dass Logging-Methoden verfügbar sind
         buffer.debug("Test debug message");
         buffer.info("Test info message");
         buffer.warn("Test warning message");
         buffer.error("Test error message");
-        
+
         // Teste buffer tracing
         buffer.trace_buffer(&buffer);
-        
+
         // Fülle Buffer und trace
         for i in 0..3 {
             let frame = PcmFrame {
@@ -531,16 +554,16 @@ mod tests {
             };
             buffer.push(frame);
         }
-        
+
         buffer.trace_buffer(&buffer);
-        
+
         // Teste multi-reader mit logging
         let r1 = buffer.pop_for_reader("test_reader1");
         let r2 = buffer.pop_for_reader("test_reader2");
-        
+
         assert!(r1.is_some());
         assert!(r2.is_some());
-        
+
         buffer.trace_buffer(&buffer);
     }
 }

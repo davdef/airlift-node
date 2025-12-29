@@ -28,15 +28,15 @@ impl AudioError {
         }
     }
 
-    pub fn with_context<E>(context: impl Into<String>, source: E) -> Self
-    where
-        E: StdError + Send + Sync + 'static,
-    {
-        Self::Context {
-            context: context.into(),
-            source: Box::new(source),
-        }
+pub fn with_context(
+    context: impl Into<String>,
+    source: impl Into<anyhow::Error>,
+) -> Self {
+    AudioError::Context {
+        context: context.into(),
+        source: source.into().into(),
     }
+}
 }
 
 #[derive(Debug, Error)]

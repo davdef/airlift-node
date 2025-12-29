@@ -24,66 +24,68 @@ impl LogContext {
             timestamp_ns: utc_ns_now(),
         }
     }
-    
+
     pub fn with_flow(mut self, flow_id: &str) -> Self {
         self.flow_id = Some(flow_id.to_string());
         self
     }
-    
+
     pub fn format(&self, level: &str, message: &str) -> String {
         let flow_info = match &self.flow_id {
             Some(flow) => format!(" flow={}", flow),
             None => String::new(),
         };
-        
+
         format!(
             "[{}][seq={:06}][{}:{}{}] {}",
-            level,
-            self.sequence,
-            self.component,
-            self.instance_id,
-            flow_info,
-            message
+            level, self.sequence, self.component, self.instance_id, flow_info, message
         )
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "component": self.component,
+            "instance_id": self.instance_id,
+            "flow_id": self.flow_id,
+            "sequence": self.sequence,
+            "timestamp_ns": self.timestamp_ns,
+        })
     }
 }
 
 // Helper Trait für einheitliches Logging
 pub trait ComponentLogger {
     fn log_context(&self) -> LogContext;
-    
+
     fn debug(&self, message: &str) {
         let ctx = self.log_context();
         log::debug!("{}", ctx.format("DEBUG", message));
     }
-    
+
     fn info(&self, message: &str) {
         let ctx = self.log_context();
         log::info!("{}", ctx.format("INFO", message));
     }
-    
+
     fn warn(&self, message: &str) {
         let ctx = self.log_context();
         log::warn!("{}", ctx.format("WARN", message));
     }
-    
+
     fn error(&self, message: &str) {
         let ctx = self.log_context();
         log::error!("{}", ctx.format("ERROR", message));
     }
-    
+
     fn trace_buffer(&self, buffer: &super::ringbuffer::AudioRingBuffer) {
         let stats = buffer.stats();
         let ctx = self.log_context();
-        
+
         let buffer_info = format!(
             "buffer[addr={:?}] frames={}/{} dropped={}",
-            buffer as *const _,
-            stats.current_frames,
-            stats.capacity,
-            stats.dropped_frames
+            buffer as *const _, stats.current_frames, stats.capacity, stats.dropped_frames
         );
-        
+
         log::debug!("{}", ctx.format("TRACE", &buffer_info));
     }
 }
@@ -105,7 +107,7 @@ mod tests {
     #[test]
     fn test_log_context_creation() {
         let ctx = LogContext::new("Producer", "alsa:default");
-        
+
         assert_eq!(ctx.component, "Producer");
         assert_eq!(ctx.instance_id, "alsa:default");
         assert!(ctx.sequence > 0);
@@ -115,9 +117,8 @@ mod tests {
 
     #[test]
     fn test_log_context_with_flow() {
-        let ctx = LogContext::new("Flow", "main")
-            .with_flow("recording_flow");
-            
+        let ctx = LogContext::new("Flow", "main").with_flow("recording_flow");
+
         assert_eq!(ctx.flow_id, Some("recording_flow".to_string()));
     }
 
@@ -125,15 +126,15 @@ mod tests {
     fn test_log_formatting() {
         let ctx = LogContext::new("Test", "001");
         let formatted = ctx.format("INFO", "Starting up");
-        
+
         assert!(formatted.contains("[INFO]"));
         assert!(formatted.contains("[Test:001]"));
         assert!(formatted.contains("Starting up"));
-        
+
         // Mit Flow
         let ctx_with_flow = ctx.with_flow("main_flow");
         let formatted_with_flow = ctx_with_flow.format("DEBUG", "Processing");
-        
+
         assert!(formatted_with_flow.contains("flow=main_flow"));
     }
 
@@ -142,22 +143,22 @@ mod tests {
         struct MockComponent {
             id: String,
         }
-        
+
         impl MockComponent {
             fn new(id: &str) -> Self {
                 Self { id: id.to_string() }
             }
         }
-        
+
         impl ComponentLogger for MockComponent {
             fn log_context(&self) -> LogContext {
                 LogContext::new("Mock", &self.id)
             }
         }
-        
+
         let component = MockComponent::new("test_001");
         let ctx = component.log_context();
-        
+
         assert_eq!(ctx.component, "Mock");
         assert_eq!(ctx.instance_id, "test_001");
     }

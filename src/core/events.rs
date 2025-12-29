@@ -1,6 +1,5 @@
 // src/core/events.rs
 use serde::{Deserialize, Serialize};
-use super::logging::LogContext;
 
 /// Event-Typen im System
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,7 +23,18 @@ pub enum DebugEventType {
 }
 
 /// Event-Priorität
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize
+)]
 pub enum EventPriority {
     Debug,
     Info,
@@ -33,17 +43,27 @@ pub enum EventPriority {
     Critical,
 }
 
-/// Event-Struktur mit Metadaten
+/// **Serialisierbares Event**
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     pub id: u64,
     pub timestamp: u64,
     pub event_type: EventType,
     pub priority: EventPriority,
+
+    /// logische Quelle (z. B. "flow", "producer", "ringbuffer")
     pub source: String,
+
+    /// konkrete Instanz (z. B. "flow_main", "icecast_in")
     pub source_instance: String,
+
+    /// strukturierte Nutzdaten
     pub payload: serde_json::Value,
-    pub context: Option<LogContext>,
+
+    /// **serialisierter Kontext**, kein LogContext!
+    pub context: Option<serde_json::Value>,
+
+    /// optionale Korrelation (z. B. Request-ID)
     pub correlation_id: Option<String>,
 }
 
@@ -55,8 +75,9 @@ impl Event {
         source_instance: &str,
         payload: serde_json::Value,
     ) -> Self {
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        
+        static COUNTER: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+
         Self {
             id: COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
             timestamp: crate::core::timestamp::utc_ns_now(),
@@ -69,37 +90,39 @@ impl Event {
             correlation_id: None,
         }
     }
-    
-    pub fn with_context(mut self, context: LogContext) -> Self {
+
+    /// Kontext als **JSON**, z. B. aus Logging, Request-Metadaten etc.
+    pub fn with_context(mut self, context: serde_json::Value) -> Self {
         self.context = Some(context);
         self
     }
-    
+
     pub fn with_correlation(mut self, correlation_id: &str) -> Self {
         self.correlation_id = Some(correlation_id.to_string());
         self
     }
-    
+
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".to_string())
     }
-    
+
     pub fn format_message(&self) -> String {
-        let corr_info = match &self.correlation_id {
-            Some(cid) => format!("[corr={}] ", cid),
-            None => String::new(),
-        };
-        
+        let corr = self
+            .correlation_id
+            .as_deref()
+            .map(|c| format!("[corr={}] ", c))
+            .unwrap_or_default();
+
         format!(
             "[{}][{}] {}{}: {}",
             self.priority_str(),
             self.source,
-            corr_info,
+            corr,
             self.event_type_str(),
             self.payload_str()
         )
     }
-    
+
     fn priority_str(&self) -> &str {
         match self.priority {
             EventPriority::Debug => "DEBUG",
@@ -109,18 +132,18 @@ impl Event {
             EventPriority::Critical => "CRITICAL",
         }
     }
-    
+
     fn event_type_str(&self) -> &str {
         match &self.event_type {
             EventType::Error => "Error",
             EventType::BufferOverflow => "BufferOverflow",
             EventType::ConfigChanged => "ConfigChanged",
             #[cfg(feature = "debug-events")]
-            EventType::Debug(debug_event) => debug_event.event_type_str(),
+            EventType::Debug(d) => d.event_type_str(),
         }
     }
-    
-    pub fn payload_str(&self) -> String {
+
+    fn payload_str(&self) -> String {
         match &self.payload {
             serde_json::Value::String(s) => s.clone(),
             serde_json::Value::Null => "null".to_string(),
@@ -129,7 +152,7 @@ impl Event {
     }
 }
 
-// Event-Builder für häufige Event-Typen
+/// Komfort-Builder
 pub struct EventBuilder {
     source: String,
     source_instance: String,
@@ -142,8 +165,13 @@ impl EventBuilder {
             source_instance: source_instance.to_string(),
         }
     }
-    
-    pub fn error(&self, error_type: &str, message: &str, details: Option<serde_json::Value>) -> Event {
+
+    pub fn error(
+        &self,
+        error_type: &str,
+        message: &str,
+        details: Option<serde_json::Value>,
+    ) -> Event {
         Event::new(
             EventType::Error,
             EventPriority::Error,
@@ -158,7 +186,12 @@ impl EventBuilder {
         )
     }
 
-    pub fn buffer_overflow(&self, buffer_name: &str, capacity: usize, dropped: usize) -> Event {
+    pub fn buffer_overflow(
+        &self,
+        buffer_name: &str,
+        capacity: usize,
+        dropped: usize,
+    ) -> Event {
         Event::new(
             EventType::BufferOverflow,
             EventPriority::Warning,
@@ -173,7 +206,11 @@ impl EventBuilder {
         )
     }
 
-    pub fn config_changed(&self, component: &str, changes: serde_json::Value) -> Event {
+    pub fn config_changed(
+        &self,
+        component: &str,
+        changes: serde_json::Value,
+    ) -> Event {
         Event::new(
             EventType::ConfigChanged,
             EventPriority::Info,
@@ -199,50 +236,5 @@ impl DebugEventType {
             DebugEventType::NodeStopped => "Debug.NodeStopped",
             DebugEventType::ProducerAdded => "Debug.ProducerAdded",
         }
-    }
-}
-
-#[cfg(feature = "debug-events")]
-impl EventBuilder {
-    pub fn buffer_created(&self, name: &str, capacity: usize) -> Event {
-        Event::new(
-            EventType::Debug(DebugEventType::BufferCreated),
-            EventPriority::Debug,
-            &self.source,
-            &self.source_instance,
-            serde_json::json!({
-                "buffer_name": name,
-                "capacity": capacity,
-                "timestamp": crate::core::timestamp::utc_ns_now(),
-            }),
-        )
-    }
-
-    pub fn producer_started(&self, name: &str, config: serde_json::Value) -> Event {
-        Event::new(
-            EventType::Debug(DebugEventType::ProducerStarted),
-            EventPriority::Debug,
-            &self.source,
-            &self.source_instance,
-            serde_json::json!({
-                "producer_name": name,
-                "config": config,
-                "timestamp": crate::core::timestamp::utc_ns_now(),
-            }),
-        )
-    }
-
-    pub fn flow_status(&self, flow_name: &str, status: serde_json::Value) -> Event {
-        Event::new(
-            EventType::Debug(DebugEventType::FlowStatus),
-            EventPriority::Debug,
-            &self.source,
-            &self.source_instance,
-            serde_json::json!({
-                "flow_name": flow_name,
-                "status": status,
-                "timestamp": crate::core::timestamp::utc_ns_now(),
-            }),
-        )
     }
 }

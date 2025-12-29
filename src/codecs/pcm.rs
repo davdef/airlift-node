@@ -85,15 +85,16 @@ impl AudioDecoder for PcmPassthroughDecoder {
         }
 
         let pcm = if cfg!(target_endian = "little") {
-            let pcm_slice = bytemuck::try_cast_slice::<u8, i16>(packet).map_err(|_| {
-                anyhow!("invalid pcm payload length {}", packet.len())
-            })?;
+            let pcm_slice = bytemuck::try_cast_slice::<u8, i16>(packet)
+                .map_err(|_| anyhow!("invalid pcm payload length {}", packet.len()))?;
             pcm_slice.to_vec()
         } else {
-            let pcm_slice = bytemuck::try_cast_slice::<u8, i16>(packet).map_err(|_| {
-                anyhow!("invalid pcm payload length {}", packet.len())
-            })?;
-            pcm_slice.iter().map(|sample| i16::from_le(*sample)).collect()
+            let pcm_slice = bytemuck::try_cast_slice::<u8, i16>(packet)
+                .map_err(|_| anyhow!("invalid pcm payload length {}", packet.len()))?;
+            pcm_slice
+                .iter()
+                .map(|sample| i16::from_le(*sample))
+                .collect()
         };
 
         if pcm.len() != PCM_I16_SAMPLES {

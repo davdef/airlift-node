@@ -1,8 +1,12 @@
-use std::sync::{Arc, atomic::{AtomicBool, AtomicU64, Ordering}};
+use crate::impl_connectable_producer;
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc,
+};
 use std::thread;
 use std::time::Duration;
 
-use crate::core::{Producer, ProducerStatus, AudioRingBuffer, PcmFrame};
+use crate::core::{AudioRingBuffer, PcmFrame, Producer, ProducerStatus};
 use crate::producers::wait::StopWait;
 
 // Timing constant for sine wave generation loop.
@@ -38,7 +42,9 @@ impl Producer for SineProducer {
     }
 
     fn start(&mut self) -> anyhow::Result<()> {
-        if self.running.load(Ordering::Relaxed) { return Ok(()); }
+        if self.running.load(Ordering::Relaxed) {
+            return Ok(());
+        }
         let ring = self.ring.clone();
         let running = self.running.clone();
         let samples_processed = self.samples_processed.clone();
@@ -100,3 +106,5 @@ impl Producer for SineProducer {
         self.ring = Some(buffer);
     }
 }
+
+impl_connectable_producer!(SineProducer);

@@ -1,6 +1,7 @@
 pub mod audio_ring;
 pub mod encoded_ring;
 
+pub use crate::types::PcmFrame;
 pub use audio_ring::AudioRing;
 pub use audio_ring::AudioSlot;
 pub use audio_ring::RingRead;
@@ -9,7 +10,6 @@ pub use audio_ring::RingStats;
 pub use encoded_ring::EncodedRing;
 pub use encoded_ring::EncodedRingRead;
 pub use encoded_ring::EncodedRingReader;
-pub use crate::types::PcmFrame;
 
 use crate::types::EncodedFrame;
 

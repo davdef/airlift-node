@@ -11,7 +11,6 @@ pub mod lock;
 pub mod node;
 pub mod plugin;
 pub mod processor;
-pub mod plugin;
 #[cfg(feature = "lockfree")]
 #[path = "ringbuffer_lockfree.rs"]
 pub mod ringbuffer;
@@ -20,13 +19,14 @@ pub mod ringbuffer;
 pub mod timestamp;
 
 pub use buffer_registry::BufferRegistry;
-pub use connectable::{Connectable, Port, PortType};
 pub use consumer::{Consumer, ConsumerStatus};
 pub use error::{AudioError, AudioResult, ConfigError};
-pub use event_bus::{EventAuditHandler, EventBus, EventFileHandler, EventHandler, EventHandlerStats};
-pub use events::{Event, EventBuilder, EventPriority, EventType};
+pub use event_bus::{
+    EventAuditHandler, EventBus, EventHandler, EventHandlerStats,
+};
 #[cfg(feature = "debug-events")]
 pub use events::DebugEventType;
+pub use events::{Event, EventBuilder, EventPriority, EventType};
 pub use graph::{AudioGraph, GraphNode, GraphSnapshot, NodeClass};
 pub use graph_api::{ConnectionRequest, DisconnectStrategy, GraphApi, NodeRequest};
 pub use node::{AirliftNode, Flow};
@@ -40,7 +40,7 @@ pub trait Producer: Send + Sync {
     fn stop(&mut self) -> anyhow::Result<()>;
     fn status(&self) -> ProducerStatus;
     fn attach_ring_buffer(&mut self, buffer: std::sync::Arc<AudioRingBuffer>);
-    fn attach_decoder(&mut self, _decoder: Box<crate::decoders::AudioDecoder>) {}
+    fn attach_decoder(&mut self, _decoder: Box<dyn crate::decoders::AudioDecoder>) {}
 }
 
 #[derive(Debug, Clone)]

@@ -1,7 +1,6 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::core::connectable::Port;
 use crate::core::graph::{AudioGraph, GraphNode, NodeClass};
 use crate::core::timestamp::utc_ns_now;
 
@@ -11,8 +10,6 @@ pub struct NodeRequest {
     pub class: NodeClass,
     pub node_type: String,
     pub config: serde_json::Value,
-    pub input_ports: Vec<Port>,
-    pub output_ports: Vec<Port>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,8 +53,6 @@ impl GraphApi {
             request.class,
             request.node_type,
             request.config,
-            request.input_ports,
-            request.output_ports,
         );
         self.graph.add_node(node)?;
         Ok(node_id)

@@ -1,10 +1,10 @@
 use std::thread;
 use std::time::Duration;
 
-use airlift_node::{AirliftNode, Flow};
 use airlift_node::core::consumer::file_writer::FileConsumer;
 use airlift_node::processors::{MixerConfig, MixerInputConfig};
 use airlift_node::producers::sine::SineProducer;
+use airlift_node::{AirliftNode, Flow};
 
 fn main() -> anyhow::Result<()> {
     let _ = env_logger::builder().is_test(false).try_init();

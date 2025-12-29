@@ -1,8 +1,9 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use crate::impl_connectable_producer;
+use anyhow::{anyhow, Result};
 use std::fs::File;
 use std::io::Read;
-use anyhow::{Result, anyhow};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 
 use crate::audio::sanitize_audio_path;
 use crate::core::{AudioRingBuffer, Producer, ProducerStatus};
@@ -33,7 +34,7 @@ impl FileProducer {
             stop_wait: Arc::new(StopWait::new()),
         }
     }
-    
+
     fn utc_ns_now() -> u64 {
         use std::time::{SystemTime, UNIX_EPOCH};
         SystemTime::now()
@@ -47,57 +48,57 @@ impl Producer for FileProducer {
     fn name(&self) -> &str {
         &self.name
     }
-    
+
     fn start(&mut self) -> Result<()> {
         if self.running.load(Ordering::Relaxed) {
             return Ok(());
         }
-        
+
         let path = sanitize_audio_path(
             self.config
                 .path
                 .as_deref()
                 .ok_or_else(|| anyhow!("No file path specified"))?,
         )?;
-        
+
         log::info!(
             "FileProducer '{}': Starting (path: {}, loop: {})",
             self.name,
             path.display(),
             self.config.loop_audio.unwrap_or(false)
         );
-            
+
         let sample_rate = self.config.sample_rate.unwrap_or(48000);
         let channels = self.config.channels.unwrap_or(2);
         let loop_audio = self.config.loop_audio.unwrap_or(false);
-        
+
         self.running.store(true, Ordering::SeqCst);
-        
+
         let running = self.running.clone();
         let name = self.name.clone();
         let samples_processed = self.samples_processed.clone();
         let ring_buffer = self.ring_buffer.clone();
         let stop_wait = self.stop_wait.clone();
-        
+
         let handle = std::thread::spawn(move || {
             log::info!("FileProducer '{}': Playing {}", name, path.display());
-            
+
             let mut iteration = 0;
             while running.load(Ordering::Relaxed) {
                 iteration += 1;
-                
+
                 match File::open(&path) {
                     Ok(mut file) => {
                         // Einfache Simulation: Erzeuge Test-Daten
                         let samples_per_frame = (sample_rate as usize / 10) * channels as usize; // 100ms
                         let mut chunk = vec![0i16; samples_per_frame];
-                        
+
                         // Fülle mit Test-Daten (Sinus-ähnlich)
                         for (i, sample) in chunk.iter_mut().enumerate() {
                             let t = i as f32 / sample_rate as f32;
                             *sample = (t.sin() * 10000.0) as i16;
                         }
-                        
+
                         // In RingBuffer speichern
                         if let Some(rb) = &ring_buffer {
                             let frame = crate::core::ringbuffer::PcmFrame {
@@ -106,14 +107,18 @@ impl Producer for FileProducer {
                                 sample_rate,
                                 channels,
                             };
-                            log::debug!("FileProducer '{}': Schreibe Frame {} ({} samples) in Buffer", 
-                                name, iteration, chunk.len());
+                            log::debug!(
+                                "FileProducer '{}': Schreibe Frame {} ({} samples) in Buffer",
+                                name,
+                                iteration,
+                                chunk.len()
+                            );
                             rb.push(frame);
                             samples_processed.fetch_add(chunk.len() as u64, Ordering::Relaxed);
                         } else {
                             log::warn!("FileProducer '{}': KEIN Buffer attached!", name);
                         }
-                        
+
                         log::debug!("FileProducer '{}': Generated frame", name);
                     }
                     Err(e) => {
@@ -126,35 +131,35 @@ impl Producer for FileProducer {
                         break;
                     }
                 }
-                
+
                 stop_wait.wait_timeout(std::time::Duration::from_millis(FRAME_INTERVAL_MS));
-                
+
                 if !loop_audio {
                     break;
                 }
             }
-            
+
             log::info!("FileProducer '{}': Thread stopped", name);
         });
-        
+
         self.thread_handle = Some(handle);
         Ok(())
     }
-    
+
     fn stop(&mut self) -> Result<()> {
         log::info!("FileProducer '{}': Stopping...", self.name);
         self.running.store(false, Ordering::SeqCst);
         self.stop_wait.notify_all();
-        
+
         if let Some(handle) = self.thread_handle.take() {
             if let Err(e) = handle.join() {
                 log::error!("Failed to join producer thread: {:?}", e);
             }
         }
-        
+
         Ok(())
     }
-    
+
     fn status(&self) -> ProducerStatus {
         ProducerStatus {
             running: self.running.load(Ordering::Relaxed),
@@ -164,10 +169,15 @@ impl Producer for FileProducer {
             buffer_stats: self.ring_buffer.as_ref().map(|b| b.stats()),
         }
     }
-    
+
     fn attach_ring_buffer(&mut self, buffer: Arc<AudioRingBuffer>) {
-        log::debug!("FileProducer '{}': attach_ring_buffer mit addr: {:?}", 
-            self.name, Arc::as_ptr(&buffer));
+        log::debug!(
+            "FileProducer '{}': attach_ring_buffer mit addr: {:?}",
+            self.name,
+            Arc::as_ptr(&buffer)
+        );
         self.ring_buffer = Some(buffer);
     }
 }
+
+impl_connectable_producer!(FileProducer);

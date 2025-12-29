@@ -1,4 +1,6 @@
-use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockError};
+use std::sync::{
+    Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockError,
+};
 use std::time::{Duration, Instant};
 
 const LOCK_RETRY_DELAY: Duration = Duration::from_micros(200);
@@ -7,7 +9,11 @@ fn log_poisoned(lock_type: &str, context: &str) {
     log::error!("{} lock poisoned in {}", lock_type, context);
 }
 
-pub fn lock_mutex<T>(mutex: &Mutex<T>, context: &str) -> MutexGuard<'_, T> {
+/// Lock a mutex, ignoring poisoning (but logging it).
+pub fn lock_mutex<'a, T>(
+    mutex: &'a Mutex<T>,
+    context: &str,
+) -> MutexGuard<'a, T> {
     match mutex.lock() {
         Ok(guard) => guard,
         Err(poisoned) => {
@@ -17,11 +23,12 @@ pub fn lock_mutex<T>(mutex: &Mutex<T>, context: &str) -> MutexGuard<'_, T> {
     }
 }
 
-pub fn lock_mutex_with_timeout<T>(
-    mutex: &Mutex<T>,
+/// Try-lock a mutex with timeout.
+pub fn lock_mutex_with_timeout<'a, T>(
+    mutex: &'a Mutex<T>,
     context: &str,
     timeout: Duration,
-) -> Option<MutexGuard<'_, T>> {
+) -> Option<MutexGuard<'a, T>> {
     let start = Instant::now();
     loop {
         match mutex.try_lock() {
@@ -41,7 +48,11 @@ pub fn lock_mutex_with_timeout<T>(
     }
 }
 
-pub fn lock_rwlock_read<T>(lock: &RwLock<T>, context: &str) -> RwLockReadGuard<'_, T> {
+/// Read-lock an RwLock, ignoring poisoning (but logging it).
+pub fn lock_rwlock_read<'a, T>(
+    lock: &'a RwLock<T>,
+    context: &str,
+) -> RwLockReadGuard<'a, T> {
     match lock.read() {
         Ok(guard) => guard,
         Err(poisoned) => {
@@ -51,7 +62,11 @@ pub fn lock_rwlock_read<T>(lock: &RwLock<T>, context: &str) -> RwLockReadGuard<'
     }
 }
 
-pub fn lock_rwlock_write<T>(lock: &RwLock<T>, context: &str) -> RwLockWriteGuard<'_, T> {
+/// Write-lock an RwLock, ignoring poisoning (but logging it).
+pub fn lock_rwlock_write<'a, T>(
+    lock: &'a RwLock<T>,
+    context: &str,
+) -> RwLockWriteGuard<'a, T> {
     match lock.write() {
         Ok(guard) => guard,
         Err(poisoned) => {
@@ -61,11 +76,12 @@ pub fn lock_rwlock_write<T>(lock: &RwLock<T>, context: &str) -> RwLockWriteGuard
     }
 }
 
-pub fn lock_rwlock_read_with_timeout<T>(
-    lock: &RwLock<T>,
+/// Try read-lock an RwLock with timeout.
+pub fn lock_rwlock_read_with_timeout<'a, T>(
+    lock: &'a RwLock<T>,
     context: &str,
     timeout: Duration,
-) -> Option<RwLockReadGuard<'_, T>> {
+) -> Option<RwLockReadGuard<'a, T>> {
     let start = Instant::now();
     loop {
         match lock.try_read() {
@@ -85,11 +101,12 @@ pub fn lock_rwlock_read_with_timeout<T>(
     }
 }
 
-pub fn lock_rwlock_write_with_timeout<T>(
-    lock: &RwLock<T>,
+/// Try write-lock an RwLock with timeout.
+pub fn lock_rwlock_write_with_timeout<'a, T>(
+    lock: &'a RwLock<T>,
     context: &str,
     timeout: Duration,
-) -> Option<RwLockWriteGuard<'_, T>> {
+) -> Option<RwLockWriteGuard<'a, T>> {
     let start = Instant::now();
     loop {
         match lock.try_write() {

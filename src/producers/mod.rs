@@ -1,4 +1,4 @@
-pub mod sine;
-pub mod file;
 pub mod alsa;
+pub mod file;
+pub mod sine;
 pub mod wait;
