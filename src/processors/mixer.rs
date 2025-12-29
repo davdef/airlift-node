@@ -26,13 +26,22 @@ pub struct MixerConfig {
 pub struct Mixer {
     name: String,
     config: MixerConfig,
-    input_buffers: Vec<(String, f32, Arc<AudioRingBuffer>)>, // (source_name, gain, buffer)
+    input_buffers: Vec<MixerInputBuffer>,
     output_sample_rate: u32,
     output_channels: u8,
     master_gain: f32,
     buffer_registry: Option<Arc<BufferRegistry>>,
     connected: bool,
 }
+
+struct MixerInputBuffer {
+    source_name: String,
+    reader_id: String,
+    gain: f32,
+    buffer: Arc<AudioRingBuffer>,
+}
+
+const MAX_BATCH_FRAMES: usize = 8;
 
 impl Mixer {
     pub fn new(name: &str) -> Self {
@@ -97,11 +106,12 @@ impl Mixer {
                 }
                 
                 if let Some(buffer) = registry.get(&input_config.source) {
-                    self.input_buffers.push((
-                        input_config.source.clone(),
-                        input_config.gain,
+                    self.input_buffers.push(MixerInputBuffer {
+                        source_name: input_config.source.clone(),
+                        reader_id: format!("mixer:{}:{}", self.name, input_config.source),
+                        gain: input_config.gain,
                         buffer,
-                    ));
+                    });
                     
                     self.info(&format!(
                         "Connected input '{}' to source '{}' (gain: {})",
@@ -138,9 +148,14 @@ impl Mixer {
     /// Manuell einen Input verbinden (überschreibt Config)
     pub fn connect_input(&mut self, source_name: &str, gain: f32, buffer: Arc<AudioRingBuffer>) {
         // Entferne existierenden Eintrag für diese Source
-        self.input_buffers.retain(|(name, _, _)| name != source_name);
-        
-        self.input_buffers.push((source_name.to_string(), gain, buffer));
+        self.input_buffers.retain(|input| input.source_name != source_name);
+
+        self.input_buffers.push(MixerInputBuffer {
+            source_name: source_name.to_string(),
+            reader_id: format!("mixer:{}:{}", self.name, source_name),
+            gain,
+            buffer,
+        });
         self.connected = true;
         
         self.info(&format!("Manually connected source '{}' (gain: {})", source_name, gain));
@@ -173,48 +188,57 @@ pub fn update_config(&mut self, config: &MixerConfig) -> Result<()> {  // &Mixer
     }
     
     /// Mixing-Logik
-    fn mix_frame(&self) -> Option<PcmFrame> {
+    fn mix_batch(&self, batch_size: usize) -> Vec<PcmFrame> {
         if !self.connected || self.input_buffers.is_empty() {
-            return None;
+            return Vec::new();
         }
-        
+
         let target_samples = (self.output_sample_rate as usize / 10) * self.output_channels as usize;
-        let mut mixed_samples = vec![0i16; target_samples];
-        let mut frames_mixed = 0;
-        
-        for (source_name, gain, buffer) in &self.input_buffers {
-            let reader_id = format!("mixer:{}:{}", self.name, source_name);
-            
-            if let Some(frame) = buffer.pop_for_reader(&reader_id) {
-                frames_mixed += 1;
-                
-                // Einfaches Mixing (TODO: Resampling implementieren)
-                let samples_to_mix = frame.samples.len().min(mixed_samples.len());
-                for i in 0..samples_to_mix {
-                    let sample = frame.samples[i] as f32 * *gain;
-                    mixed_samples[i] = (mixed_samples[i] as f32 + sample)
-                        .clamp(-32768.0, 32767.0) as i16;
+        let mut mixed_frames = Vec::with_capacity(batch_size);
+
+        for _ in 0..batch_size {
+            let mut mixed_samples = vec![0i16; target_samples];
+            let mut frames_mixed = 0;
+
+            for input in &self.input_buffers {
+                if let Some(frame) = input.buffer.pop_for_reader(&input.reader_id) {
+                    frames_mixed += 1;
+                    self.mix_samples(&mut mixed_samples, &frame.samples, input.gain);
                 }
             }
-        }
-        
-        if frames_mixed > 0 {
-            // Master gain anwenden
-            if self.master_gain != 1.0 {
-                for sample in mixed_samples.iter_mut() {
-                    *sample = (*sample as f32 * self.master_gain)
-                        .clamp(-32768.0, 32767.0) as i16;
-                }
+
+            if frames_mixed == 0 {
+                break;
             }
-            
-            Some(PcmFrame {
+
+            self.apply_master_gain(&mut mixed_samples);
+
+            mixed_frames.push(PcmFrame {
                 utc_ns: crate::core::timestamp::utc_ns_now(),
                 samples: mixed_samples,
                 sample_rate: self.output_sample_rate,
                 channels: self.output_channels,
-            })
-        } else {
-            None
+            });
+        }
+
+        mixed_frames
+    }
+
+    fn mix_samples(&self, mixed_samples: &mut [i16], input_samples: &[i16], gain: f32) {
+        let samples_to_mix = input_samples.len().min(mixed_samples.len());
+        for i in 0..samples_to_mix {
+            let sample = input_samples[i] as f32 * gain;
+            mixed_samples[i] = (mixed_samples[i] as f32 + sample)
+                .clamp(-32768.0, 32767.0) as i16;
+        }
+    }
+
+    fn apply_master_gain(&self, samples: &mut [i16]) {
+        if self.master_gain != 1.0 {
+            for sample in samples.iter_mut() {
+                *sample = (*sample as f32 * self.master_gain)
+                    .clamp(-32768.0, 32767.0) as i16;
+            }
         }
     }
     
@@ -224,7 +248,7 @@ pub fn update_config(&mut self, config: &MixerConfig) -> Result<()> {  // &Mixer
     
     pub fn get_active_inputs(&self) -> Vec<(String, String, f32)> {
         self.input_buffers.iter()
-            .map(|(source, gain, _)| (source.clone(), format!("mixer:{}:{}", self.name, source), *gain))
+            .map(|input| (input.source_name.clone(), input.reader_id.clone(), input.gain))
             .collect()
     }
     
@@ -254,23 +278,39 @@ impl Processor for Mixer {
             }
         }
         
-        if let Some(mixed_frame) = self.mix_frame() {
-            output_buffer.push(mixed_frame);
-            
-            // Status logging alle 200 Frames
-            static mut FRAME_COUNT: u64 = 0;
-            unsafe {
-                FRAME_COUNT += 1;
-                if FRAME_COUNT % 200 == 0 {
-                    let avg_buffer: f32 = self.input_buffers.iter()
-                        .map(|(_, _, b)| b.len() as f32)
-                        .sum::<f32>() / self.input_buffers.len() as f32;
-                    
-                    self.info(&format!(
-                        "Processed {} frames, avg input buffer: {:.1}, active inputs: {}",
-                        FRAME_COUNT, avg_buffer, self.input_buffers.len()
-                    ));
-                }
+        let mut max_available = 0;
+        for input in &self.input_buffers {
+            max_available = max_available.max(input.buffer.available_for_reader(&input.reader_id));
+        }
+
+        if max_available == 0 {
+            return Ok(());
+        }
+
+        let batch_size = max_available.min(MAX_BATCH_FRAMES);
+        let mixed_frames = self.mix_batch(batch_size);
+        let mixed_count = mixed_frames.len();
+        if mixed_count == 0 {
+            return Ok(());
+        }
+
+        for frame in mixed_frames {
+            output_buffer.push(frame);
+        }
+
+        // Status logging alle 200 Frames
+        static mut FRAME_COUNT: u64 = 0;
+        unsafe {
+            FRAME_COUNT += mixed_count as u64;
+            if FRAME_COUNT % 200 == 0 {
+                let avg_buffer: f32 = self.input_buffers.iter()
+                    .map(|input| input.buffer.len() as f32)
+                    .sum::<f32>() / self.input_buffers.len() as f32;
+
+                self.info(&format!(
+                    "Processed {} frames, avg input buffer: {:.1}, active inputs: {}",
+                    FRAME_COUNT, avg_buffer, self.input_buffers.len()
+                ));
             }
         }
         
@@ -279,7 +319,7 @@ impl Processor for Mixer {
     
     fn status(&self) -> ProcessorStatus {
         let buffer_levels: Vec<usize> = self.input_buffers.iter()
-            .map(|(_, _, b)| b.len())
+            .map(|input| input.buffer.len())
             .collect();
         
         let avg_buffer = if !buffer_levels.is_empty() {
