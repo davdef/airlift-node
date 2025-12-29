@@ -588,34 +588,28 @@ impl Flow {
             let mut current_input = input_merge_buffer.clone();
             let mut scratch_index = 0;
 
-let proc_len = processors.len();
+            let proc_len = processors.len();
 
-for (i, processor) in processors.iter_mut().enumerate() {
-    let is_last = i + 1 == proc_len;
-    let link_buffer = processor_links
-        .get(i)
-        .and_then(|link| link.buffer.clone());
+            for (i, processor) in processors.iter_mut().enumerate() {
+                let is_last = i + 1 == proc_len;
+                let link_buffer = processor_links.get(i).and_then(|link| link.buffer.clone());
 
-    let output = if is_last {
-        output_buffer.clone()
-    } else if let Some(buffer) = link_buffer {
-        buffer
-    } else {
-        let buffer = scratch_buffers[scratch_index].clone();
-        scratch_index = (scratch_index + 1) % scratch_buffers.len();
-        buffer
-    };
+                let output = if is_last {
+                    output_buffer.clone()
+                } else if let Some(buffer) = link_buffer {
+                    buffer
+                } else {
+                    let buffer = scratch_buffers[scratch_index].clone();
+                    scratch_index = (scratch_index + 1) % scratch_buffers.len();
+                    buffer
+                };
 
-    if let Err(e) = processor.process(&current_input, &output) {
-        flow_logger.error(&format!(
-            "Processor '{}' error: {}",
-            processor.name(),
-            e
-        ));
-    }
+                if let Err(e) = processor.process(&current_input, &output) {
+                    flow_logger.error(&format!("Processor '{}' error: {}", processor.name(), e));
+                }
 
-    current_input = output;
-}
+                current_input = output;
+            }
 
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
@@ -776,9 +770,8 @@ impl AirliftNode {
         priority: EventPriority,
         payload: serde_json::Value,
     ) {
-
-let event = Event::new(event_type, priority, "AirliftNode", "main", payload)
-    .with_context(self.log_context().to_json());
+        let event = Event::new(event_type, priority, "AirliftNode", "main", payload)
+            .with_context(self.log_context().to_json());
 
         let event_bus = lock_mutex(&self.event_bus, "airlift_node.publish_event");
         if let Err(e) = event_bus.publish(event) {
@@ -842,6 +835,58 @@ let event = Event::new(event_type, priority, "AirliftNode", "main", payload)
 
         // Logging nach mutable borrow
         self.info(&format!("Added flow: '{}'", flow_name));
+    }
+
+    pub fn add_consumer_to_flow(
+        &mut self,
+        flow_index: usize,
+        consumer: Box<dyn Consumer>,
+    ) -> AudioResult<()> {
+        if flow_index >= self.flows.len() {
+            return Err(AudioError::InvalidFlowIndex {
+                index: flow_index,
+                max: self.flows.len().saturating_sub(1),
+            });
+        }
+
+        self.flows[flow_index].add_consumer(consumer);
+        Ok(())
+    }
+
+    pub fn flow_index_by_name(&self, flow_name: &str) -> Option<usize> {
+        self.flows.iter().position(|flow| flow.name == flow_name)
+    }
+
+    pub fn start_flow_by_name(&mut self, flow_name: &str) -> AudioResult<()> {
+        let flow = self
+            .flows
+            .iter_mut()
+            .find(|flow| flow.name == flow_name)
+            .ok_or_else(|| AudioError::message(format!("flow '{}' not found", flow_name)))?;
+        flow.start()
+    }
+
+    pub fn stop_flow_by_name(&mut self, flow_name: &str) -> AudioResult<()> {
+        let flow = self
+            .flows
+            .iter_mut()
+            .find(|flow| flow.name == flow_name)
+            .ok_or_else(|| AudioError::message(format!("flow '{}' not found", flow_name)))?;
+        flow.stop()
+    }
+
+    pub fn restart_flow_by_name(&mut self, flow_name: &str) -> AudioResult<()> {
+        self.stop_flow_by_name(flow_name)?;
+        self.start_flow_by_name(flow_name)
+    }
+
+    pub fn reset_modules(&mut self) {
+        self.running.store(false, Ordering::SeqCst);
+        self.start_time = Instant::now();
+        self.producers.clear();
+        self.producer_buffers.clear();
+        self.flows.clear();
+        self.buffer_registry = Arc::new(BufferRegistry::new());
     }
 
     pub fn connect_flow_input(&mut self, flow_index: usize, buffer_name: &str) -> AudioResult<()> {
@@ -975,6 +1020,13 @@ let event = Event::new(event_type, priority, "AirliftNode", "main", payload)
 
     pub fn start(&mut self) -> AudioResult<()> {
         self.info("Node starting...");
+
+        {
+            let mut event_bus = lock_mutex(&self.event_bus, "airlift_node.start_event_bus");
+            if let Err(e) = event_bus.start() {
+                self.warn(&format!("Failed to start EventBus: {}", e));
+            }
+        }
 
         #[cfg(feature = "debug-events")]
         self.publish_event(
