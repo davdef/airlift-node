@@ -9,6 +9,7 @@ pub trait Consumer: Send + Sync {
     fn stop(&mut self) -> Result<()>;
     fn status(&self) -> ConsumerStatus;
     fn attach_input_buffer(&mut self, buffer: Arc<AudioRingBuffer>);
+    fn attach_encoder(&mut self, _encoder: Box<crate::encoders::AudioCodec>) {}
 }
 
 #[derive(Debug, Clone)]
@@ -195,6 +196,146 @@ pub mod file_writer {
         fn attach_input_buffer(&mut self, buffer: Arc<AudioRingBuffer>) {
             self.input_buffer = Some(buffer);
             log::info!("FileConsumer '{}' attached to buffer", self.name);
+        }
+    }
+}
+
+pub mod encoded_output {
+    use super::*;
+    use crate::encoders::AudioCodec;
+    use crate::ring::{EncodedFramePacket, EncodedSink};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    pub struct EncodedOutputConsumer {
+        name: String,
+        running: Arc<AtomicBool>,
+        input_buffer: Option<Arc<AudioRingBuffer>>,
+        reader_id: String,
+        encoder: Option<Box<dyn AudioCodec>>,
+        output: Arc<dyn EncodedSink>,
+        thread_handle: Option<std::thread::JoinHandle<()>>,
+        frames_processed: Arc<AtomicU64>,
+        bytes_written: Arc<AtomicU64>,
+    }
+
+    impl EncodedOutputConsumer {
+        pub fn new(
+            name: &str,
+            encoder: Box<dyn AudioCodec>,
+            output: Arc<dyn EncodedSink>,
+        ) -> Self {
+            Self {
+                name: name.to_string(),
+                running: Arc::new(AtomicBool::new(false)),
+                input_buffer: None,
+                reader_id: format!("consumer:{}", name),
+                encoder: Some(encoder),
+                output,
+                thread_handle: None,
+                frames_processed: Arc::new(AtomicU64::new(0)),
+                bytes_written: Arc::new(AtomicU64::new(0)),
+            }
+        }
+    }
+
+    impl Consumer for EncodedOutputConsumer {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn start(&mut self) -> Result<()> {
+            if self.running.load(Ordering::Relaxed) {
+                return Ok(());
+            }
+
+            let mut encoder = self.encoder.take().ok_or_else(|| {
+                anyhow::anyhow!("EncodedOutputConsumer '{}' missing encoder", self.name)
+            })?;
+
+            self.running.store(true, Ordering::SeqCst);
+
+            let running = self.running.clone();
+            let input_buffer = self.input_buffer.clone();
+            let output = self.output.clone();
+            let reader_id = self.reader_id.clone();
+            let frames_processed = self.frames_processed.clone();
+            let bytes_written = self.bytes_written.clone();
+            let name = self.name.clone();
+
+            let handle = std::thread::spawn(move || {
+                while running.load(Ordering::Relaxed) {
+                    if let Some(buffer) = &input_buffer {
+                        if let Some(frame) = buffer.pop_for_reader(&reader_id) {
+                            match encoder.encode(&frame.samples) {
+                                Ok(encoded_frames) => {
+                                    for encoded in encoded_frames {
+                                        let payload_size = encoded.payload.len() as u64;
+                                        if let Err(e) = output.push(EncodedFramePacket {
+                                            utc_ns: frame.utc_ns,
+                                            frame: encoded,
+                                        }) {
+                                            log::error!(
+                                                "EncodedOutputConsumer '{}': push error: {}",
+                                                name,
+                                                e
+                                            );
+                                            break;
+                                        }
+                                        bytes_written.fetch_add(payload_size, Ordering::Relaxed);
+                                    }
+                                    frames_processed.fetch_add(1, Ordering::Relaxed);
+                                }
+                                Err(e) => {
+                                    log::error!(
+                                        "EncodedOutputConsumer '{}': encode error: {}",
+                                        name,
+                                        e
+                                    );
+                                }
+                            }
+                        } else {
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                    } else {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                }
+            });
+
+            self.thread_handle = Some(handle);
+            Ok(())
+        }
+
+        fn stop(&mut self) -> Result<()> {
+            self.running.store(false, Ordering::SeqCst);
+
+            if let Some(handle) = self.thread_handle.take() {
+                if let Err(e) = handle.join() {
+                    log::error!("Failed to join consumer thread: {:?}", e);
+                }
+            }
+
+            Ok(())
+        }
+
+        fn status(&self) -> ConsumerStatus {
+            ConsumerStatus {
+                running: self.running.load(Ordering::Relaxed),
+                connected: self.input_buffer.is_some(),
+                frames_processed: self.frames_processed.load(Ordering::Relaxed),
+                bytes_written: self.bytes_written.load(Ordering::Relaxed),
+                errors: 0,
+            }
+        }
+
+        fn attach_input_buffer(&mut self, buffer: Arc<AudioRingBuffer>) {
+            self.input_buffer = Some(buffer);
+            log::info!("EncodedOutputConsumer '{}' attached to buffer", self.name);
+        }
+
+        fn attach_encoder(&mut self, encoder: Box<dyn AudioCodec>) {
+            self.encoder = Some(encoder);
+            log::info!("EncodedOutputConsumer '{}' attached to encoder", self.name);
         }
     }
 }

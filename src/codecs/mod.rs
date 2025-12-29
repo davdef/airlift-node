@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+pub mod pcm;
+
 pub const PCM_SAMPLE_RATE: u32 = 48_000;
 pub const PCM_CHANNELS: u8 = 2;
 pub const PCM_FRAME_MS: u32 = 100;

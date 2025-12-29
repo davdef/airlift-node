@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use crate::core::logging::ComponentLogger;
 pub use crate::ring::PcmFrame;
+use crate::ring::PcmSink;
 
 #[derive(Debug)]
 struct RingSlot {
@@ -374,6 +375,13 @@ impl AudioRingBuffer {
 
     fn slot_timestamp(&self, seq: u64) -> Option<u64> {
         self.read_by_seq(seq).map(|frame| frame.utc_ns)
+    }
+}
+
+impl PcmSink for AudioRingBuffer {
+    fn push(&self, frame: PcmFrame) -> anyhow::Result<()> {
+        self.push(frame);
+        Ok(())
     }
 }
 
