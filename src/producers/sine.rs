@@ -5,6 +5,9 @@ use std::time::Duration;
 use crate::core::{Producer, ProducerStatus, AudioRingBuffer, PcmFrame};
 use crate::producers::wait::StopWait;
 
+// Timing constant for sine wave generation loop.
+const SINE_POLL_INTERVAL_MS: u64 = 10; // 100 Hz
+
 pub struct SineProducer {
     name: String,
     running: Arc<AtomicBool>,
@@ -69,7 +72,7 @@ impl Producer for SineProducer {
                     });
                 }
 
-                stop_wait.wait_timeout(Duration::from_millis(10)); // 100 Hz
+                stop_wait.wait_timeout(Duration::from_millis(SINE_POLL_INTERVAL_MS));
             }
         });
 

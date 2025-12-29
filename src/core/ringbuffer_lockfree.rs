@@ -78,6 +78,11 @@ impl ReaderRegistry {
 }
 
 const MAX_READERS: usize = 64;
+// Log interval/threshold constants for buffer diagnostics.
+const LOG_EVERY_N_PUSH: u64 = 50;
+const LOG_INITIAL_PUSH_COUNT: u64 = 5;
+const LOG_EVERY_N_POP: u64 = 100;
+const BUFFER_WARN_THRESHOLD: f32 = 0.8;
 
 pub struct AudioRingBuffer {
     slots: Arc<Vec<RingSlot>>,
@@ -113,7 +118,7 @@ impl AudioRingBuffer {
     pub fn push(&self, frame: PcmFrame) -> u64 {
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed);
 
-        if seq % 50 == 0 || seq <= 5 {
+        if seq % LOG_EVERY_N_PUSH == 0 || seq <= LOG_INITIAL_PUSH_COUNT {
             self.debug(&format!(
                 "push[seq={}] samples={} rate={} ch={}",
                 seq,
@@ -142,7 +147,7 @@ impl AudioRingBuffer {
         }
 
         let new_len = self.len() as u64;
-        if new_len as f32 / self.capacity as f32 > 0.8 {
+        if new_len as f32 / self.capacity as f32 > BUFFER_WARN_THRESHOLD {
             self.warn(&format!("Buffer >80% full: {}/{}", new_len, self.capacity));
         }
 
@@ -209,7 +214,7 @@ impl AudioRingBuffer {
             .position
             .store(position + 1, Ordering::Release);
 
-        if position % 100 == 0 {
+        if position % LOG_EVERY_N_POP == 0 {
             self.debug(&format!(
                 "pop[reader={}] seq={} samples={}",
                 reader_id,
