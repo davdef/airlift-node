@@ -93,6 +93,7 @@ Beispiele:
 - `src/core/ringbuffer.rs` (Default) und optional `src/core/ringbuffer_lockfree.rs` (via Feature `lockfree`)
 - `src/core/logging.rs`
 - `src/processors/mixer.rs`
+- `docs/PERFORMANCE.md`
 
 ### Integration-Tests
 
