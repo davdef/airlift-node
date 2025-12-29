@@ -131,6 +131,8 @@ fn run_normal_mode() -> anyhow::Result<()> {
     log::info!("Node: {}", config.node_name);
     
     let mut node = core::AirliftNode::new();
+    let mut processor_registry = core::plugin::PluginRegistry::new();
+    core::plugin::register_builtin_plugins(&mut processor_registry);
     
     // Producer aus Config laden
     for (name, producer_cfg) in &config.producers {

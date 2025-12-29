@@ -5,6 +5,7 @@ pub mod device_scanner;
 pub mod graph;
 pub mod graph_api;
 pub mod node;
+pub mod plugin;
 pub mod processor;
 pub mod plugin;
 #[cfg(feature = "lockfree")]
