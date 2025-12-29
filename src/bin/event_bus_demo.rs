@@ -1,5 +1,5 @@
 // src/bin/event_bus_demo.rs
-use airlift_node::core::{EventBus, EventLoggerHandler, EventStatsHandler, Event, EventType, EventPriority};
+use airlift_node::core::{EventAuditHandler, EventBus, Event, EventPriority, EventType};
 use std::sync::Arc;
 
 fn main() -> anyhow::Result<()> {
@@ -12,11 +12,8 @@ fn main() -> anyhow::Result<()> {
     let mut event_bus = EventBus::new("demo_bus");
     
     // Handler registrieren
-    let logger_handler = Arc::new(EventLoggerHandler::new("demo_logger", EventPriority::Debug));
-    event_bus.register_handler(logger_handler)?;
-    
-    let stats_handler = Arc::new(EventStatsHandler::new("demo_stats"));
-    event_bus.register_handler(stats_handler.clone())?;
+    let audit_handler = Arc::new(EventAuditHandler::new("demo_audit", EventPriority::Debug));
+    event_bus.register_handler(audit_handler.clone())?;
     
     // EventBus starten
     event_bus.start()?;
@@ -24,14 +21,14 @@ fn main() -> anyhow::Result<()> {
     // Events publizieren
     for i in 0..5 {
         let event = Event::new(
-            EventType::BufferCreated,
+            EventType::ConfigChanged,
             EventPriority::Info,
             "Demo",
             "instance1",
             serde_json::json!({
-                "buffer_id": i,
-                "name": format!("buffer_{}", i),
-                "capacity": 100 * (i + 1),
+                "change_id": i,
+                "component": "demo_buffer",
+                "details": format!("config update {}", i),
             }),
         );
         
@@ -40,8 +37,21 @@ fn main() -> anyhow::Result<()> {
     }
     
     // Kritischen Error simulieren
+    let overflow_event = Event::new(
+        EventType::BufferOverflow,
+        EventPriority::Warning,
+        "Demo",
+        "instance1",
+        serde_json::json!({
+            "buffer": "demo_buffer",
+            "capacity": 100,
+            "dropped": 12,
+        }),
+    );
+    event_bus.publish(overflow_event)?;
+
     let error_event = Event::new(
-        EventType::CriticalError,
+        EventType::Error,
         EventPriority::Error,
         "Demo",
         "instance1",
@@ -57,7 +67,7 @@ fn main() -> anyhow::Result<()> {
     // Warten und Statistiken anzeigen
     std::thread::sleep(std::time::Duration::from_millis(500));
     
-    if let Ok(stats) = stats_handler.get_stats() {
+    if let Ok(stats) = audit_handler.get_stats() {
         println!("\n=== Event Statistics ===");
         println!("Total events: {}", stats.total_events);
         println!("Events by type:");
