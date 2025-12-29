@@ -301,19 +301,32 @@ match producer_cfg.producer_type.as_str() {
             if flow.name == *flow_name {
                 // Normale Producer-Verbindungen
                 for input_name in &flow_cfg.inputs {
+                    let mut connected = false;
                     // Finde Producer mit diesem Namen
-                    for (producer_index, producer) in node.producers().iter().enumerate() {
+                    for producer in node.producers().iter() {
                         if producer.name() == input_name {
                             let buffer_name = format!("producer:{}", input_name);
-                            if let Err(e) = node.connect_registered_buffer_to_flow(&buffer_name, flow_index) {
-                                log::error!("Failed to connect {} to flow {}: {}", 
-                                    input_name, flow_name, e);
+                            if let Err(e) = node.connect_flow_input(flow_index, &buffer_name) {
+                                log::error!(
+                                    "Failed to connect {} to flow {}: {}",
+                                    input_name,
+                                    flow_name,
+                                    e
+                                );
                             }
+                            connected = true;
                             break;
                         }
-                    if let Err(e) = node.connect_registry_to_flow(flow_index, input_name) {
-                        log::error!("Failed to connect buffer {} to flow {}: {}", 
-                            input_name, flow_name, e);
+                    }
+                    if !connected {
+                        if let Err(e) = node.connect_flow_input(flow_index, input_name) {
+                            log::error!(
+                                "Failed to connect buffer {} to flow {}: {}",
+                                input_name,
+                                flow_name,
+                                e
+                            );
+                        }
                     }
                 }
                 
@@ -361,7 +374,7 @@ match producer_cfg.producer_type.as_str() {
         node.flows.push(test_flow);
         
         // Verbinde ersten Producer zum Test-Flow
-        if let Err(e) = node.connect_registry_to_flow(node.flows.len() - 1, &buffer_name) {
+        if let Err(e) = node.connect_flow_input(node.flows.len() - 1, &buffer_name) {
             log::error!("Failed to connect test: {}", e);
         }
     }
@@ -395,7 +408,7 @@ match producer_cfg.producer_type.as_str() {
         demo_flow.add_consumer(file_consumer);
         
         node.flows.push(demo_flow);
-        if let Err(e) = node.connect_registered_buffer_to_flow("producer:demo", 0) {
+        if let Err(e) = node.connect_flow_input(0, "producer:demo") {
             log::error!("Failed to connect demo: {}", e);
         }
     }

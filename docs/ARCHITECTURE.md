@@ -96,6 +96,25 @@ flowchart LR
   Modell ist abhängig von der jeweiligen Implementierung in
   `src/producers/*` bzw. `src/core/consumer/*`.
 
+## Ownership & Threading: Registry-basierte Verbindungen
+
+- **Registry als Ownership-Quelle**: `BufferRegistry` hält die kanonischen
+  `Arc<AudioRingBuffer>`-Instanzen. Flows verbinden sich ausschließlich über
+  Registry-Namen (`AirliftNode::connect_flow_input`), wodurch der Ownership-
+  Pfad klar bleibt.
+- **Connect/Disconnect-Semantik**:
+  - **Connect**: Ein Flow erhält einen zusätzlichen `Arc`-Clone auf den
+    Registry-Buffer (keine Kopie der Daten).
+  - **Disconnect**: Der Flow entfernt seine Referenz auf den Buffer
+    (`AirliftNode::disconnect_flow_input`). Der Buffer selbst bleibt bestehen,
+    solange die Registry oder andere Komponenten noch Referenzen halten.
+- **Threading/Sync**:
+  - Flows lesen aus ihren `input_buffers` ausschließlich im Flow-Thread.
+  - Producer schreiben in ihre Registry-Buffer typischerweise in eigenen
+    Threads/Callbacks.
+  - Der `AudioRingBuffer` ist für Multi-Reader/Writer-Szenarien ausgelegt,
+    wodurch der Zugriff über `Arc` zwischen Threads möglich ist.
+
 ## Relevante Module
 
 - `src/core/node.rs` — Orchestrierung von AirliftNode/Flow und Pipeline-Logik.
