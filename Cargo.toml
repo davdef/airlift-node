@@ -32,6 +32,9 @@ ctrlc = "3"
 notify = "6"
 crossbeam-channel = "0.5"
 nix = "0.27"
+tiny_http = "0.12"
+hound = "3.5"
+bytemuck = "1.14"
 
 [features]
 lockfree = []
