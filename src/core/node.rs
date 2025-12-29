@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use anyhow::Result;
@@ -321,7 +321,7 @@ pub struct AirliftNode {
     producer_buffers: Vec<Arc<AudioRingBuffer>>,
     pub flows: Vec<Flow>,
     buffer_registry: Arc<BufferRegistry>,
-    event_bus: Arc<EventBus>,
+    event_bus: Arc<Mutex<EventBus>>,
 }
 
 impl AirliftNode {
@@ -349,7 +349,7 @@ impl AirliftNode {
             producer_buffers: Vec::new(),
             flows: Vec::new(),
             buffer_registry: Arc::new(BufferRegistry::new()),
-            event_bus: Arc::new(event_bus),
+            event_bus: Arc::new(Mutex::new(event_bus)),
         };
         
         node.info("AirliftNode created with buffer registry");
@@ -365,8 +365,15 @@ impl AirliftNode {
             payload,
         ).with_context(self.log_context());
         
-        if let Err(e) = self.event_bus.publish(event) {
-            self.error(&format!("Failed to publish event: {}", e));
+        match self.event_bus.lock() {
+            Ok(event_bus) => {
+                if let Err(e) = event_bus.publish(event) {
+                    self.error(&format!("Failed to publish event: {}", e));
+                }
+            }
+            Err(e) => {
+                self.error(&format!("Failed to lock EventBus for publish: {}", e));
+            }
         }
     }
 
@@ -617,10 +624,29 @@ impl AirliftNode {
             self.info(&format!("{} producer(s) stopped successfully", successful_producers));
         }
         
-        if flow_stop_errors.is_empty() && producer_stop_errors.is_empty() {
+        let event_bus_stop_error = match self.event_bus.lock() {
+            Ok(mut event_bus) => match event_bus.stop() {
+                Ok(()) => {
+                    self.info("EventBus stopped successfully");
+                    false
+                }
+                Err(e) => {
+                    self.warn(&format!("Error stopping EventBus: {}", e));
+                    true
+                }
+            },
+            Err(e) => {
+                self.warn(&format!("Failed to lock EventBus for stop: {}", e));
+                true
+            }
+        };
+
+        if flow_stop_errors.is_empty() && producer_stop_errors.is_empty() && !event_bus_stop_error {
             self.info("Node stopped successfully");
         } else {
-            let total_errors = flow_stop_errors.len() + producer_stop_errors.len();
+            let total_errors = flow_stop_errors.len()
+                + producer_stop_errors.len()
+                + usize::from(event_bus_stop_error);
             self.warn(&format!("Node stopped with {} error(s)", total_errors));
         }
         
@@ -661,6 +687,21 @@ impl AirliftNode {
 impl crate::core::logging::ComponentLogger for AirliftNode {
     fn log_context(&self) -> crate::core::logging::LogContext {
         crate::core::logging::LogContext::new("Node", "main")
+    }
+}
+
+impl Drop for AirliftNode {
+    fn drop(&mut self) {
+        match self.event_bus.lock() {
+            Ok(mut event_bus) => {
+                if let Err(e) = event_bus.stop() {
+                    self.warn(&format!("Error stopping EventBus during drop: {}", e));
+                }
+            }
+            Err(e) => {
+                self.warn(&format!("Failed to lock EventBus during drop: {}", e));
+            }
+        }
     }
 }
 
