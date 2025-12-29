@@ -203,6 +203,71 @@ Geplantes Zielbild:
 - **Flow-CRUD** (Create/Update/Delete von Flows)
 - **Headless-Betrieb** (Betrieb ohne UI, komplett über API steuerbar)
 
+### API-Details (aktuell)
+
+**GET `/api/status`** liefert den aktuellen Status-Snapshot:
+
+```json
+{
+  "running": true,
+  "uptime_seconds": 123,
+  "timestamp_ms": 1716800000000,
+  "ringbuffer": { "fill": 1240, "capacity": 6000 },
+  "producers": [
+    { "name": "input_main", "running": true, "connected": true, "samples_processed": 4242, "errors": 0 }
+  ],
+  "flows": [
+    {
+      "name": "flow_main",
+      "running": true,
+      "input_buffer_levels": [120],
+      "processor_buffer_levels": [80],
+      "output_buffer_level": 64
+    }
+  ],
+  "modules": [],
+  "inactive_modules": [],
+  "configuration_issues": []
+}
+```
+
+**POST `/api/control`** steuert Aktionen (Start/Stop/Reload/Import etc.):
+
+```json
+{
+  "action": "config.import",
+  "parameters": { "toml": "[inputs.main]\n..." }
+}
+```
+
+Antwort:
+
+```json
+{ "ok": true, "message": "configuration imported" }
+```
+
+**GET `/api/catalog`** listet verfügbare Module nach Kategorien:
+
+```json
+{
+  "inputs": [{ "name": "srt", "type": "srt" }],
+  "buffers": [{ "name": "buffer", "type": "buffer" }],
+  "processing": [{ "name": "pcm", "type": "pcm" }],
+  "services": [{ "name": "audio_http", "type": "audio_http" }],
+  "outputs": [{ "name": "srt_out", "type": "srt_out" }]
+}
+```
+
+**WebSocket `/ws`** streamt Peak-Events für Visualisierung:
+
+```json
+{
+  "timestamp": 1716800000123,
+  "peaks": [0.12, 0.09],
+  "silence": false
+}
+```
+
 ## Einstiegspunkte
 
 - **Runtime/Bootstrap**: `src/main.rs`
