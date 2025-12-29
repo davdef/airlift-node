@@ -1,58 +1,30 @@
 // src/core/events.rs
 use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
 use super::logging::LogContext;
 
 /// Event-Typen im System
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum EventType {
-    // Buffer-Events
-    BufferCreated,
-    BufferUpdated,
-    BufferRemoved,
+    Error,
     BufferOverflow,
-    
-    // Producer-Events
+    ConfigChanged,
+    #[cfg(feature = "debug-events")]
+    Debug(DebugEventType),
+}
+
+#[cfg(feature = "debug-events")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DebugEventType {
+    BufferCreated,
     ProducerStarted,
-    ProducerStopped,
-    ProducerError,
-    ProducerDisconnected,
-    
-    // Consumer-Events
-    ConsumerStarted,
-    ConsumerStopped,
-    ConsumerError,
-    ConsumerConnected,
-    
-    // Flow-Events
-    FlowCreated,
-    FlowStarted,
-    FlowStopped,
-    FlowError,
-    FlowStatistics,
-    
-    // Processor-Events
-    ProcessorAdded,
-    ProcessorRemoved,
-    ProcessorError,
-    ProcessorConfigChanged,
-    
-    // Node-Events
+    FlowStatus,
     NodeStarted,
     NodeStopped,
-    NodeConfigChanged,
-    NodeStatusUpdate,
-    
-    // System-Events
-    DeviceDiscovered,
-    DeviceTested,
-    SignalDetected,
-    Warning,
-    CriticalError,
+    ProducerAdded,
 }
 
 /// Event-Priorität
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EventPriority {
     Debug,
     Info,
@@ -140,40 +112,15 @@ impl Event {
     
     fn event_type_str(&self) -> &str {
         match &self.event_type {
-            EventType::BufferCreated => "BufferCreated",
-            EventType::BufferUpdated => "BufferUpdated",
-            EventType::BufferRemoved => "BufferRemoved",
+            EventType::Error => "Error",
             EventType::BufferOverflow => "BufferOverflow",
-            EventType::ProducerStarted => "ProducerStarted",
-            EventType::ProducerStopped => "ProducerStopped",
-            EventType::ProducerError => "ProducerError",
-            EventType::ProducerDisconnected => "ProducerDisconnected",
-            EventType::ConsumerStarted => "ConsumerStarted",
-            EventType::ConsumerStopped => "ConsumerStopped",
-            EventType::ConsumerError => "ConsumerError",
-            EventType::ConsumerConnected => "ConsumerConnected",
-            EventType::FlowCreated => "FlowCreated",
-            EventType::FlowStarted => "FlowStarted",
-            EventType::FlowStopped => "FlowStopped",
-            EventType::FlowError => "FlowError",
-            EventType::FlowStatistics => "FlowStatistics",
-            EventType::ProcessorAdded => "ProcessorAdded",
-            EventType::ProcessorRemoved => "ProcessorRemoved",
-            EventType::ProcessorError => "ProcessorError",
-            EventType::ProcessorConfigChanged => "ProcessorConfigChanged",
-            EventType::NodeStarted => "NodeStarted",
-            EventType::NodeStopped => "NodeStopped",
-            EventType::NodeConfigChanged => "NodeConfigChanged",
-            EventType::NodeStatusUpdate => "NodeStatusUpdate",
-            EventType::DeviceDiscovered => "DeviceDiscovered",
-            EventType::DeviceTested => "DeviceTested",
-            EventType::SignalDetected => "SignalDetected",
-            EventType::Warning => "Warning",
-            EventType::CriticalError => "CriticalError",
+            EventType::ConfigChanged => "ConfigChanged",
+            #[cfg(feature = "debug-events")]
+            EventType::Debug(debug_event) => debug_event.event_type_str(),
         }
     }
     
-    fn payload_str(&self) -> String {
+    pub fn payload_str(&self) -> String {
         match &self.payload {
             serde_json::Value::String(s) => s.clone(),
             serde_json::Value::Null => "null".to_string(),
@@ -196,37 +143,9 @@ impl EventBuilder {
         }
     }
     
-    pub fn buffer_created(&self, name: &str, capacity: usize) -> Event {
-        Event::new(
-            EventType::BufferCreated,
-            EventPriority::Info,
-            &self.source,
-            &self.source_instance,
-            serde_json::json!({
-                "buffer_name": name,
-                "capacity": capacity,
-                "timestamp": crate::core::timestamp::utc_ns_now(),
-            }),
-        )
-    }
-    
-    pub fn producer_started(&self, name: &str, config: serde_json::Value) -> Event {
-        Event::new(
-            EventType::ProducerStarted,
-            EventPriority::Info,
-            &self.source,
-            &self.source_instance,
-            serde_json::json!({
-                "producer_name": name,
-                "config": config,
-                "timestamp": crate::core::timestamp::utc_ns_now(),
-            }),
-        )
-    }
-    
     pub fn error(&self, error_type: &str, message: &str, details: Option<serde_json::Value>) -> Event {
         Event::new(
-            EventType::CriticalError,
+            EventType::Error,
             EventPriority::Error,
             &self.source,
             &self.source_instance,
@@ -238,10 +157,84 @@ impl EventBuilder {
             }),
         )
     }
-    
+
+    pub fn buffer_overflow(&self, buffer_name: &str, capacity: usize, dropped: usize) -> Event {
+        Event::new(
+            EventType::BufferOverflow,
+            EventPriority::Warning,
+            &self.source,
+            &self.source_instance,
+            serde_json::json!({
+                "buffer_name": buffer_name,
+                "capacity": capacity,
+                "dropped": dropped,
+                "timestamp": crate::core::timestamp::utc_ns_now(),
+            }),
+        )
+    }
+
+    pub fn config_changed(&self, component: &str, changes: serde_json::Value) -> Event {
+        Event::new(
+            EventType::ConfigChanged,
+            EventPriority::Info,
+            &self.source,
+            &self.source_instance,
+            serde_json::json!({
+                "component": component,
+                "changes": changes,
+                "timestamp": crate::core::timestamp::utc_ns_now(),
+            }),
+        )
+    }
+}
+
+#[cfg(feature = "debug-events")]
+impl DebugEventType {
+    fn event_type_str(&self) -> &str {
+        match self {
+            DebugEventType::BufferCreated => "Debug.BufferCreated",
+            DebugEventType::ProducerStarted => "Debug.ProducerStarted",
+            DebugEventType::FlowStatus => "Debug.FlowStatus",
+            DebugEventType::NodeStarted => "Debug.NodeStarted",
+            DebugEventType::NodeStopped => "Debug.NodeStopped",
+            DebugEventType::ProducerAdded => "Debug.ProducerAdded",
+        }
+    }
+}
+
+#[cfg(feature = "debug-events")]
+impl EventBuilder {
+    pub fn buffer_created(&self, name: &str, capacity: usize) -> Event {
+        Event::new(
+            EventType::Debug(DebugEventType::BufferCreated),
+            EventPriority::Debug,
+            &self.source,
+            &self.source_instance,
+            serde_json::json!({
+                "buffer_name": name,
+                "capacity": capacity,
+                "timestamp": crate::core::timestamp::utc_ns_now(),
+            }),
+        )
+    }
+
+    pub fn producer_started(&self, name: &str, config: serde_json::Value) -> Event {
+        Event::new(
+            EventType::Debug(DebugEventType::ProducerStarted),
+            EventPriority::Debug,
+            &self.source,
+            &self.source_instance,
+            serde_json::json!({
+                "producer_name": name,
+                "config": config,
+                "timestamp": crate::core::timestamp::utc_ns_now(),
+            }),
+        )
+    }
+
     pub fn flow_status(&self, flow_name: &str, status: serde_json::Value) -> Event {
         Event::new(
-            EventType::FlowStatistics,
+            EventType::Debug(DebugEventType::FlowStatus),
             EventPriority::Debug,
             &self.source,
             &self.source_instance,

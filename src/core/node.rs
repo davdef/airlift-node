@@ -2,6 +2,9 @@ use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use crate::core::error::{AudioError, AudioResult};
+use crate::core::{Event, EventAuditHandler, EventBus, EventPriority, EventType};
+#[cfg(feature = "debug-events")]
+use crate::core::DebugEventType;
 
 use super::ringbuffer::AudioRingBuffer;
 use super::processor::{Processor, ProcessorStatus};
@@ -556,14 +559,11 @@ impl AirliftNode {
         let mut event_bus = EventBus::new("airlift_node");
         
         // Standard-Handler registrieren
-        let logger_handler = Arc::new(EventLoggerHandler::new(
-            "node_event_logger", 
-            EventPriority::Info
+        let audit_handler = Arc::new(EventAuditHandler::new(
+            "node_event_audit",
+            EventPriority::Info,
         ));
-        let _ = event_bus.register_handler(logger_handler);
-        
-        let stats_handler = Arc::new(EventStatsHandler::new("node_event_stats"));
-        let _ = event_bus.register_handler(stats_handler);
+        let _ = event_bus.register_handler(audit_handler);
         
         // EventBus starten
         event_bus.start().expect("Failed to start EventBus");
@@ -621,9 +621,10 @@ impl AirliftNode {
         self.producer_buffers.push(buffer);
         self.producers.push(producer);
         
-        self.publish_event(EventType::ProducerAdded, EventPriority::Info,
+        self.publish_event(EventType::ConfigChanged, EventPriority::Info,
             serde_json::json!({
-                "name": producer_name,
+                "action": "producer_added",
+                "producer_name": producer_name,
                 "buffer_name": buffer_name,
                 "timestamp": crate::core::timestamp::utc_ns_now(),
             }));
@@ -745,7 +746,8 @@ impl AirliftNode {
     pub fn start(&mut self) -> AudioResult<()> {
         self.info("Node starting...");
 
-        self.publish_event(EventType::NodeStarted, EventPriority::Info,
+        #[cfg(feature = "debug-events")]
+        self.publish_event(EventType::Debug(DebugEventType::NodeStarted), EventPriority::Info,
             serde_json::json!({
                 "timestamp": crate::core::timestamp::utc_ns_now(),
                 "producers": self.producers.len(),
@@ -814,7 +816,8 @@ impl AirliftNode {
     pub fn stop(&mut self) -> AudioResult<()> {
         self.info("Node stopping...");
 
-        self.publish_event(EventType::NodeStopped, EventPriority::Info,
+        #[cfg(feature = "debug-events")]
+        self.publish_event(EventType::Debug(DebugEventType::NodeStopped), EventPriority::Info,
             serde_json::json!({
                 "timestamp": crate::core::timestamp::utc_ns_now(),
                 "uptime_seconds": self.start_time.elapsed().as_secs(),

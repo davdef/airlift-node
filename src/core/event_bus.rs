@@ -6,7 +6,7 @@ use anyhow::Result;
 use crossbeam_channel::{select, unbounded, Receiver, Sender};
 use super::events::{Event, EventPriority};
 use super::lock::{lock_mutex, lock_rwlock_read, lock_rwlock_write};
-use super::logging::{ComponentLogger, LogContext};
+use super::logging::ComponentLogger;
 
 /// Event-Handler Trait
 pub trait EventHandler: Send + Sync {
@@ -87,16 +87,19 @@ impl EventBus {
         let _ = self.stop_tx.send(());
         
         // Sende Shutdown-Event
-        self.publish(Event::new(
-            super::events::EventType::NodeStopped,
-            super::events::EventPriority::Info,
-            "EventBus",
-            &self.name,
-            serde_json::json!({
-                "message": "EventBus shutting down",
-                "timestamp": crate::core::timestamp::utc_ns_now(),
-            }),
-        ))?;
+        #[cfg(feature = "debug-events")]
+        {
+            self.publish(Event::new(
+                super::events::EventType::Debug(super::events::DebugEventType::NodeStopped),
+                super::events::EventPriority::Info,
+                "EventBus",
+                &self.name,
+                serde_json::json!({
+                    "message": "EventBus shutting down",
+                    "timestamp": crate::core::timestamp::utc_ns_now(),
+                }),
+            ))?;
+        }
         
         if let Some(handle) = self.thread_handle.take() {
             if let Err(e) = handle.join() {
@@ -264,50 +267,74 @@ impl crate::core::logging::ComponentLogger for EventBus {
 
 // Standard-Event-Handler
 
-/// Event-Logger Handler (schreibt Events in Log)
-pub struct EventLoggerHandler {
+/// Event-Audit-Handler (Logging + Statistiken)
+pub struct EventAuditHandler {
     name: String,
     min_priority: EventPriority,
+    log_enabled: bool,
+    stats: std::sync::Mutex<EventHandlerStats>,
 }
 
-impl EventLoggerHandler {
+impl EventAuditHandler {
     pub fn new(name: &str, min_priority: EventPriority) -> Self {
         Self {
             name: name.to_string(),
             min_priority,
+            log_enabled: false,
+            stats: std::sync::Mutex::new(EventHandlerStats::default()),
         }
+    }
+
+    pub fn with_logging(mut self, enabled: bool) -> Self {
+        self.log_enabled = enabled;
+        self
+    }
+
+    pub fn get_stats(&self) -> Result<EventHandlerStats> {
+        let stats = lock_mutex(&self.stats, "event_audit_handler.get_stats");
+        Ok(stats.clone())
     }
 }
 
-impl EventHandler for EventLoggerHandler {
+impl EventHandler for EventAuditHandler {
     fn handle_event(&self, event: &Event) -> Result<()> {
         if (event.priority as u8) < (self.min_priority as u8) {
             return Ok(());
         }
-        
-        // Strukturierte Log-Ausgabe
-        let log_message = format!(
-            "[event_id={}][type={:?}] {}",
-            event.id,
-            event.event_type,
-            event.payload_str()
-        );
-        
-        match event.priority {
-            EventPriority::Debug => log::debug!("{}", log_message),
-            EventPriority::Info => log::info!("{}", log_message),
-            EventPriority::Warning => log::warn!("{}", log_message),
-            EventPriority::Error => log::error!("{}", log_message),
-            EventPriority::Critical => log::error!("CRITICAL: {}", log_message),
+
+        if self.log_enabled {
+            let log_message = format!(
+                "[event_id={}][type={:?}] {}",
+                event.id,
+                event.event_type,
+                event.payload_str()
+            );
+
+            match event.priority {
+                EventPriority::Debug => log::debug!("{}", log_message),
+                EventPriority::Info => log::info!("{}", log_message),
+                EventPriority::Warning => log::warn!("{}", log_message),
+                EventPriority::Error => log::error!("{}", log_message),
+                EventPriority::Critical => log::error!("CRITICAL: {}", log_message),
+            }
         }
-        
+
+        let mut stats = lock_mutex(&self.stats, "event_audit_handler.handle_event");
+
+        stats.total_events += 1;
+        *stats.events_by_type.entry(format!("{:?}", event.event_type))
+            .or_insert(0) += 1;
+        *stats.events_by_priority.entry(event.priority)
+            .or_insert(0) += 1;
+        stats.last_event_time = Some(event.timestamp);
+
         Ok(())
     }
-    
+
     fn name(&self) -> &str {
         &self.name
     }
-    
+
     fn priority_filter(&self) -> Option<EventPriority> {
         Some(self.min_priority)
     }
@@ -353,57 +380,19 @@ impl EventHandler for EventFileHandler {
 }
 
 /// Event-Stats-Handler (sammelt Statistiken)
-pub struct EventStatsHandler {
-    name: String,
-    stats: std::sync::Mutex<EventHandlerStats>,
-}
-
-#[derive(Debug, Default)]
-struct EventHandlerStats {
-    total_events: u64,
-    events_by_type: std::collections::HashMap<String, u64>,
-    events_by_priority: std::collections::HashMap<EventPriority, u64>,
-    last_event_time: Option<u64>,
-}
-
-impl EventStatsHandler {
-    pub fn new(name: &str) -> Self {
-        Self {
-            name: name.to_string(),
-            stats: std::sync::Mutex::new(EventHandlerStats::default()),
-        }
-    }
-    
-    pub fn get_stats(&self) -> Result<EventHandlerStats> {
-        let stats = lock_mutex(&self.stats, "event_stats_handler.get_stats");
-        Ok(stats.clone())
-    }
-}
-
-impl EventHandler for EventStatsHandler {
-    fn handle_event(&self, event: &Event) -> Result<()> {
-        let mut stats = lock_mutex(&self.stats, "event_stats_handler.handle_event");
-        
-        stats.total_events += 1;
-        *stats.events_by_type.entry(format!("{:?}", event.event_type))
-            .or_insert(0) += 1;
-        *stats.events_by_priority.entry(event.priority)
-            .or_insert(0) += 1;
-        stats.last_event_time = Some(event.timestamp);
-        
-        Ok(())
-    }
-    
-    fn name(&self) -> &str {
-        &self.name
-    }
+#[derive(Debug, Default, Clone)]
+pub struct EventHandlerStats {
+    pub total_events: u64,
+    pub events_by_type: std::collections::HashMap<String, u64>,
+    pub events_by_priority: std::collections::HashMap<EventPriority, u64>,
+    pub last_event_time: Option<u64>,
 }
 
 // Unit Tests
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::events::{EventBuilder, EventType, EventPriority};
+    use crate::core::events::{EventBuilder, EventPriority};
 
     #[test]
     fn test_event_bus_creation() {
@@ -421,7 +410,7 @@ mod tests {
         bus.start().unwrap();
         
         let builder = EventBuilder::new("test", "instance");
-        let event = builder.buffer_created("test_buffer", 100);
+        let event = builder.config_changed("test_buffer", serde_json::json!({"capacity": 100}));
         
         bus.publish(event).unwrap();
         
@@ -435,18 +424,18 @@ mod tests {
     #[test]
     fn test_event_handler_registration() {
         let bus = EventBus::new("test_handler");
-        let handler = Arc::new(EventLoggerHandler::new("test_logger", EventPriority::Debug));
+        let handler = Arc::new(EventAuditHandler::new("test_audit", EventPriority::Debug));
         
         bus.register_handler(handler).unwrap();
-        assert_eq!(bus.handler_list(), vec!["test_logger"]);
+        assert_eq!(bus.handler_list(), vec!["test_audit"]);
     }
 
     #[test]
     fn test_event_builder() {
         let builder = EventBuilder::new("test", "instance");
         
-        let event = builder.buffer_created("test", 100);
-        assert_eq!(format!("{:?}", event.event_type), "BufferCreated");
+        let event = builder.config_changed("test", serde_json::json!({"key": "value"}));
+        assert_eq!(format!("{:?}", event.event_type), "ConfigChanged");
         
         let error_event = builder.error("TestError", "Test message", None);
         assert_eq!(error_event.priority, EventPriority::Error);
