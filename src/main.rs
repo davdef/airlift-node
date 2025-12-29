@@ -417,43 +417,6 @@ if let Err(e) = node.connect_flow_input(flow_index, &buffer_name) {
                 log::error!("Failed to connect test: {}", e);
             }
         }
-
-        // Falls nichts konfiguriert: Demo-Setup
-        if node.producers().is_empty() {
-            log::info!("No producers configured, adding demo");
-            let demo_cfg = config::ProducerConfig {
-                producer_type: "file".to_string(),
-                enabled: true,
-                device: None,
-                path: Some("demo.wav".to_string()),
-                channels: Some(2),
-                sample_rate: Some(48000),
-                loop_audio: Some(true),
-                config: std::collections::HashMap::new(),
-            };
-            let demo_producer = producers::file::FileProducer::new("demo", &demo_cfg);
-            if let Err(e) = node.add_producer(Box::new(demo_producer)) {
-                log::error!("Failed to add demo producer: {}", e);
-            }
-
-            // Demo-Flow mit FileConsumer
-            let mut demo_flow = core::Flow::new("demo_flow");
-            demo_flow.add_processor(Box::new(core::processor::basic::PassThrough::new(
-                "demo_passthrough",
-            )));
-
-            // FileConsumer für Demo hinzufügen
-            let file_consumer = Box::new(core::consumer::file_writer::FileConsumer::new(
-                "demo_recorder",
-                "output.wav",
-            ));
-            demo_flow.add_consumer(file_consumer);
-
-            node.flows.push(demo_flow);
-            if let Err(e) = node.connect_flow_input(0, "producer:demo") {
-                log::error!("Failed to connect demo: {}", e);
-            }
-        }
     }
 
     let shutdown = Arc::new(AtomicBool::new(false));

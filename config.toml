@@ -5,6 +5,7 @@ consumers = {}
 flows = {}
 
 [api]
+enabled = true
 bind = "127.0.0.1:3008"
 
 [monitoring]

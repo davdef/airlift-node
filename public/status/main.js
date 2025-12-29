@@ -699,7 +699,7 @@ function determineViewState(status, localState) {
     const isEmptyConfig = resolvedState.isEmptyGraph;
 
     if (isEmptyConfig) {
-        return 'idle';
+        return 'setup';
     }
 
     if (hasLocalIssues) {
