@@ -475,7 +475,7 @@ impl AirliftNode {
     /// Erstelle und füge einen Mixer mit Buffer-Registry hinzu
     pub fn create_and_add_mixer(&mut self, flow_index: usize, name: &str, config: crate::processors::MixerConfig) -> Result<()> {
         if flow_index < self.flows.len() {
-            let mut mixer = crate::processors::Mixer::from_config(name, &config);
+            let mut mixer = crate::processors::Mixer::from_config(name, config);
             mixer.set_buffer_registry(self.buffer_registry());
             
             // Versuche automatisch zu verbinden
