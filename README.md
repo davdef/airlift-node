@@ -37,7 +37,8 @@ Die `Flow`-Struktur in `src/core/node.rs` besteht aus folgenden Feldern:
   werden.
 - `input_merge_buffer`: Sammelbuffer, in den die Frames aus allen
   `input_buffers` zusammengeführt werden.
-- `processor_buffers`: Zwischenbuffer zwischen den einzelnen Processors.
+- `processor_buffers`: Segment-Buffer zwischen einzelnen Processors
+  (Legacy: immer vorhanden, Simplified: optional pro Teilstrecke).
 - `output_buffer`: Endbuffer nach der Processor-Kette.
 - `processors`: Liste der Processor-Instanzen (Reihenfolge = Kette).
 - `consumers`: Liste der Consumer-Instanzen, die am `output_buffer` hängen.
@@ -47,7 +48,8 @@ Die Verarbeitung läuft wie folgt:
 1. **Inputs** liefern Frames in `input_buffers`.
 2. **Merge**: Der Flow sammelt alle Frames in `input_merge_buffer`.
 3. **Processor-Kette**: Jeder Processor liest aus dem jeweiligen Input-Buffer
-   und schreibt in den nächsten Buffer der Kette (`processor_buffers`).
+   und schreibt in den nächsten Buffer der Kette. Segment-Buffer sind optional;
+   nicht gepufferte Teilstrecken werden über interne Scratch-Buffer verkettet.
 4. **Output**: Der letzte Processor schreibt in `output_buffer`.
 5. **Consumers** lesen aus `output_buffer` und geben die Daten aus.
 
