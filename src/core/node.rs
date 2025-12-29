@@ -509,24 +509,30 @@ impl Flow {
                 ));
             }
 
-            // Einfache Pipeline-Verarbeitung
-            for (i, processor) in processors.iter_mut().enumerate() {
-                let input = if i == 0 {
-                    &input_merge_buffer
-                } else {
-                    &processor_buffers[i - 1]
-                };
+// Einfache Pipeline-Verarbeitung
+let proc_len = processors.len();
 
-                let output = if i + 1 < processors.len() {
-                    &processor_buffers[i]
-                } else {
-                    &output_buffer
-                };
+for (i, processor) in processors.iter_mut().enumerate() {
+    let input = if i == 0 {
+        &input_merge_buffer
+    } else {
+        &processor_buffers[i - 1]
+    };
 
-                if let Err(e) = processor.process(input, output) {
-                    flow_logger.error(&format!("Processor '{}' error: {}", processor.name(), e));
-                }
-            }
+    let output = if i + 1 < proc_len {
+        &processor_buffers[i]
+    } else {
+        &output_buffer
+    };
+
+    if let Err(e) = processor.process(input, output) {
+        flow_logger.error(&format!(
+            "Processor '{}' error: {}",
+            processor.name(),
+            e
+        ));
+    }
+}
 
             std::thread::sleep(std::time::Duration::from_millis(10));
         }

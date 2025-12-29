@@ -151,7 +151,7 @@ fn run_normal_mode() -> anyhow::Result<()> {
                 }
             }
 
-            node.flows.push(flow);
+            node.add_flow(flow);
             log::info!("Added flow '{}'", flow_name);
         }
 
