@@ -405,19 +405,19 @@ match processor_cfg.processor_type.as_str() {
         if tick % 10 == 0 {
             let status = node.status();
             log::info!("=== Node Status ===");
-            log::info!("Uptime: {}s, Producers: {}, Flows: {}", 
+            log::info!("Uptime: {}s, Producers: {}, Flows: {}",
                 status.uptime_seconds, status.producers, status.flows);
             
             for (i, p_status) in status.producer_status.iter().enumerate() {
                 log::info!("  Producer {}:", i);
-                log::info!("    running={}, connected={}, samples={}", 
+                log::info!("    running={}, connected={}, samples={}",
                     p_status.running, p_status.connected, p_status.samples_processed);
             }
             
             for (i, f_status) in status.flow_status.iter().enumerate() {
                 if let Some(flow) = node.flows.get(i) {
-                    log::info!("  Flow {} ('{}'): running={}, input_buffers={}, processor_buffers={}, output={}", 
-                        i, flow.name, f_status.running, 
+                    log::info!("  Flow {} ('{}'): running={}, input_buffers={}, processor_buffers={}, output={}",
+                        i, flow.name, f_status.running,
                         f_status.input_buffer_levels.len(),
                         f_status.processor_buffer_levels.len(),
                         f_status.output_buffer_level);
