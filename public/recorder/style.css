@@ -1,0 +1,106 @@
+:root {
+    --bg: #0b0e11;
+    --panel: #14171c;
+    --panel-light: #1c2128;
+    --blue: #5aa0ff;
+    --blue-light: #8cc2ff;
+    --text: #d8e4f0;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, sans-serif;
+    overflow-x: hidden;
+}
+
+header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 16px;
+    background: var(--panel);
+    border-bottom: 1px solid #222;
+}
+
+.header-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+header img {
+    height: 36px;
+    opacity: 0.95;
+}
+
+header h1 {
+    font-size: 22px;
+    font-weight: 500;
+    text-transform: uppercase;
+    margin: 0;
+    color: #ffffff;
+}
+
+.controls {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+button {
+    padding: 8px 14px;
+    font-size: 15px;
+    border-radius: 6px;
+    border: none;
+    color: var(--bg);
+    background: var(--blue);
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+button:active {
+    background: var(--blue-light);
+}
+
+main {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.status-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 14px;
+    background: var(--panel-light);
+    font-size: 12px;
+    border-bottom: 1px solid #222;
+}
+
+#waveform {
+    width: 100%;
+    height: calc(var(--vh, 1vh) * 55);
+    display: block;
+    background: #000;
+}
+
+@media (orientation: landscape) {
+    #waveform {
+        height: calc(var(--vh, 1vh) * 72);
+    }
+}
+
+@media (orientation: portrait) {
+    #waveform {
+        height: calc(var(--vh, 1vh) * 48);
+    }
+}
