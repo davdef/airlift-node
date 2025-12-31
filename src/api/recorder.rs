@@ -6,7 +6,7 @@ use serde::Serialize;
 use tiny_http::{Header, Method, Request, Response, StatusCode};
 
 use crate::core::lock::lock_mutex;
-use crate::core::AirliftNode;
+use crate::core::{AirliftNode, Flow};
 use crate::producers::ws::{WsHandle, WsProducer};
 
 static RECORDER_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -38,19 +38,32 @@ pub fn handle_recorder_start(
             Ok(mut guard) => match guard.add_producer(Box::new(producer)) {
                 Ok(()) => {
                     let buffer_name = format!("producer:{}", producer_id);
-                    if let Some(flow_index) = guard.flow_index_by_name("main") {
-                        if let Err(err) =
-                            guard.connect_flow_input(flow_index, &buffer_name)
-                        {
+                    let flow_name = producer_id.clone();
+                    if guard.flow_index_by_name(&flow_name).is_none() {
+                        guard.add_flow(Flow::new(&flow_name));
+                    }
+
+                    if let Some(flow_index) = guard.flow_index_by_name(&flow_name) {
+                        if let Err(err) = guard.connect_flow_input(flow_index, &buffer_name) {
                             log::warn!(
-                                "Failed to connect recorder '{}' to flow 'main': {}",
+                                "Failed to connect recorder '{}' to flow '{}': {}",
                                 producer_id,
+                                flow_name,
+                                err
+                            );
+                        }
+
+                        if let Err(err) = guard.start_flow_by_name(&flow_name) {
+                            log::warn!(
+                                "Failed to start recorder flow '{}': {}",
+                                flow_name,
                                 err
                             );
                         }
                     } else {
                         log::warn!(
-                            "Flow 'main' not found; recorder '{}' not connected",
+                            "Recorder flow '{}' not found; recorder '{}' not connected",
+                            flow_name,
                             producer_id
                         );
                     }

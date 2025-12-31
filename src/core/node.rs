@@ -111,11 +111,12 @@ impl PeakAccumulator {
             "timestamp": now,
             "peaks": [self.peaks[0], self.peaks[1]],
             "silence": silence,
+            "flow": flow_name,
         });
 
         let event = Event::new(
             EventType::AudioPeak,
-            EventPriority::Debug,
+            EventPriority::Info,
             "flow",
             flow_name,
             payload,
