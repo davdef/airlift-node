@@ -11,6 +11,7 @@ pub mod catalog;
 pub mod config;
 pub mod control;
 pub mod peaks;
+pub mod recorder;
 pub mod status;
 pub mod ws;
 
@@ -28,6 +29,14 @@ pub fn start_api_server(
         for mut req in server.incoming_requests() {
             let url = req.url().to_string();
             let (path, query) = url.split_once('?').unwrap_or((&url, ""));
+
+            if req.method() == &Method::Get && path.starts_with("/ws/recorder/") {
+                let producer_id = path
+                    .trim_start_matches("/ws/recorder/")
+                    .to_string();
+                ws::handle_recorder_ws_request(req, node.clone(), producer_id);
+                continue;
+            }
 
             if req.method() == &Method::Get && path == "/ws" {
                 ws::handle_ws_request(req, node.clone());
@@ -65,6 +74,10 @@ pub fn start_api_server(
                 }
                 (&Method::Post, "/api/control") => {
                     control::handle_control_request(req, config.clone(), node.clone());
+                    continue;
+                }
+                (&Method::Post, "/api/recorder/start") => {
+                    recorder::handle_recorder_start(req, node.clone());
                     continue;
                 }
                 (&Method::Get, "/api/catalog") => {
