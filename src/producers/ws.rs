@@ -26,10 +26,11 @@ impl WsHandle {
     pub fn push_frame(&self, frame: PcmFrame) -> Result<()> {
         let ring = lock_mutex(&self.state.ring, "ws.handle.push_frame");
         if let Some(rb) = ring.as_ref() {
+            let samples_len = frame.samples.len() as u64;
             rb.push(frame);
             self.state
                 .samples_processed
-                .fetch_add(frame.samples.len() as u64, Ordering::Relaxed);
+                .fetch_add(samples_len, Ordering::Relaxed);
             Ok(())
         } else {
             self.state.errors.fetch_add(1, Ordering::Relaxed);
