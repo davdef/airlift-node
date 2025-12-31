@@ -115,7 +115,7 @@ impl PeakAccumulator {
 
         let event = Event::new(
             EventType::AudioPeak,
-            EventPriority::Info,
+            EventPriority::Debug,
             "flow",
             flow_name,
             payload,
