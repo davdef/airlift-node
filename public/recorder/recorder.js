@@ -13,7 +13,8 @@ let audioContext = null;
 let mediaStream = null;
 let mediaSource = null;
 let processor = null;
-let ws = null;
+let audioWs = null;
+let peakWs = null;
 let running = false;
 let rafId = null;
 
@@ -118,7 +119,7 @@ async function createProducer() {
     return producerId;
 }
 
-function openWebSocket(producerId) {
+function openAudioWebSocket(producerId) {
     const scheme = window.location.protocol === "https:" ? "wss" : "ws";
     const socket = new WebSocket(`${scheme}://${window.location.host}/ws/recorder/${producerId}`);
     socket.binaryType = "arraybuffer";
@@ -138,6 +139,49 @@ function openWebSocket(producerId) {
     });
 
     return socket;
+}
+
+function openPeakWebSocket(producerId) {
+    const scheme = window.location.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(`${scheme}://${window.location.host}/ws`);
+
+    socket.addEventListener("message", (event) => {
+        let data = null;
+        try {
+            data = JSON.parse(event.data);
+        } catch (error) {
+            console.warn("Peak-Message nicht parsebar", error);
+            return;
+        }
+
+        if (!data || !Array.isArray(data.peaks)) return;
+        if (data.flow && data.flow !== producerId) return;
+
+        const peakL = Number(data.peaks[0]) || 0;
+        const peakR = Number(data.peaks[1]) || peakL;
+        updateMeters(peakL, peakR);
+    });
+
+    socket.addEventListener("error", () => {
+        if (running) {
+            setStatus("Peak-WebSocket Fehler");
+        }
+    });
+
+    socket.addEventListener("close", () => {
+        if (running) {
+            setStatus("Peak-Verbindung getrennt");
+        }
+    });
+
+    return socket;
+}
+
+function updateMeters(peakL, peakR) {
+    meterL[meterIndex] = peakL;
+    meterR[meterIndex] = peakR;
+    meterIndex = (meterIndex + 1) % METER_HISTORY;
+    setLevelText(peakL, peakR);
 }
 
 async function startAudio() {
@@ -168,8 +212,6 @@ async function startAudio() {
         const left = input.getChannelData(0);
         const right = input.numberOfChannels > 1 ? input.getChannelData(1) : left;
 
-        let peakL = 0;
-        let peakR = 0;
         const length = left.length;
         const interleaved = new Float32Array(length * 2);
 
@@ -178,21 +220,10 @@ async function startAudio() {
             const r = right[i];
             interleaved[i * 2] = l;
             interleaved[i * 2 + 1] = r;
-
-            const absL = Math.abs(l);
-            const absR = Math.abs(r);
-            if (absL > peakL) peakL = absL;
-            if (absR > peakR) peakR = absR;
         }
 
-        meterL[meterIndex] = peakL;
-        meterR[meterIndex] = peakR;
-        meterIndex = (meterIndex + 1) % METER_HISTORY;
-
-        setLevelText(peakL, peakR);
-
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(interleaved.buffer);
+        if (audioWs && audioWs.readyState === WebSocket.OPEN) {
+            audioWs.send(interleaved.buffer);
         }
     };
 }
@@ -207,7 +238,8 @@ async function startRecording() {
     try {
         const producerId = await createProducer();
         setStatus("Verbinde...");
-        ws = openWebSocket(producerId);
+        audioWs = openAudioWebSocket(producerId);
+        peakWs = openPeakWebSocket(producerId);
         await startAudio();
 
         if (!rafId) {
@@ -248,9 +280,14 @@ async function stopRecording() {
         audioContext = null;
     }
 
-    if (ws) {
-        ws.close();
-        ws = null;
+    if (audioWs) {
+        audioWs.close();
+        audioWs = null;
+    }
+
+    if (peakWs) {
+        peakWs.close();
+        peakWs = null;
     }
 
     if (rafId) {
