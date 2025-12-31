@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RFM Recorder</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <div class="header-left">
+            <img src="../rfm-logo.png" alt="RFM Logo">
+            <h1>RECORDER</h1>
+        </div>
+        <div class="controls">
+            <button id="recordBtn">Start</button>
+        </div>
+    </header>
+
+    <main>
+        <div class="status-row">
+            <div>Status: <span id="status">Bereit</span></div>
+            <div>Pegel: <span id="level">L 0.00 / R 0.00</span></div>
+        </div>
+        <canvas id="waveform"></canvas>
+    </main>
+
+    <script src="recorder.js"></script>
+</body>
+</html>
