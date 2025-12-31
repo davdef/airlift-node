@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -6,11 +6,14 @@ use std::thread;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use tiny_http::{Header, ReadWrite, Request, Response, StatusCode};
 
+use crate::api::recorder::get_recorder_handle;
 use crate::core::lock::lock_mutex;
-use crate::core::{AirliftNode, Event, EventHandler, EventPriority, EventType};
+use crate::core::{timestamp, AirliftNode, Event, EventHandler, EventPriority, EventType, PcmFrame};
+use crate::producers::ws::WsHandle;
 
 const WEBSOCKET_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 static WS_HANDLER_COUNTER: AtomicU64 = AtomicU64::new(1);
+const RECORDER_SAMPLE_RATE: u32 = 48_000;
 
 pub fn handle_ws_request(request: Request, node: Arc<Mutex<AirliftNode>>) {
     thread::spawn(move || {
@@ -71,6 +74,47 @@ pub fn handle_ws_request(request: Request, node: Arc<Mutex<AirliftNode>>) {
     });
 }
 
+pub fn handle_recorder_ws_request(
+    request: Request,
+    _node: Arc<Mutex<AirliftNode>>,
+    producer_id: String,
+) {
+    thread::spawn(move || {
+        let Some(handle) = get_recorder_handle(&producer_id) else {
+            let _ = request.respond(Response::empty(StatusCode(404)));
+            return;
+        };
+
+        if !is_websocket_request(&request) {
+            let _ = request.respond(Response::empty(StatusCode(400)));
+            return;
+        }
+
+        let key = match websocket_key(&request) {
+            Some(key) => key,
+            None => {
+                let _ = request.respond(Response::empty(StatusCode(400)));
+                return;
+            }
+        };
+
+        let accept = websocket_accept_key(&key);
+        let response = Response::empty(StatusCode(101))
+            .with_header(make_header("Upgrade", "websocket"))
+            .with_header(make_header("Connection", "Upgrade"))
+            .with_header(make_header("Sec-WebSocket-Accept", &accept));
+
+        let mut stream = request.upgrade("websocket", response);
+        if let Err(error) = read_recorder_frames(&mut stream, &handle, &producer_id) {
+            log::info!(
+                "Recorder websocket '{}' closed: {}",
+                producer_id,
+                error
+            );
+        }
+    });
+}
+
 fn is_websocket_request(request: &Request) -> bool {
     request
         .headers()
@@ -88,6 +132,84 @@ fn websocket_key(request: &Request) -> Option<String> {
         .map(|h| h.value.as_str().to_string())
 }
 
+fn read_recorder_frames(
+    stream: &mut dyn ReadWrite,
+    handle: &WsHandle,
+    producer_id: &str,
+) -> std::io::Result<()> {
+    loop {
+        let frame = read_ws_frame(stream)?;
+        match frame.opcode {
+            0x2 => {
+                if !frame.fin {
+                    log::warn!(
+                        "Recorder websocket '{}' received fragmented frame",
+                        producer_id
+                    );
+                    return Ok(());
+                }
+
+                if frame.payload.len() % 4 != 0 {
+                    log::warn!(
+                        "Recorder websocket '{}' received invalid payload length {}",
+                        producer_id,
+                        frame.payload.len()
+                    );
+                    continue;
+                }
+
+                let mut samples = Vec::with_capacity(frame.payload.len() / 4);
+                for chunk in frame.payload.chunks_exact(4) {
+                    let sample = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                    samples.push(normalize_sample(sample));
+                }
+
+                if samples.is_empty() {
+                    continue;
+                }
+
+                let frame = PcmFrame {
+                    utc_ns: timestamp::utc_ns_now(),
+                    samples,
+                    sample_rate: RECORDER_SAMPLE_RATE,
+                    channels: 2,
+                };
+
+                if let Err(error) = handle.push_frame(frame) {
+                    log::warn!(
+                        "Recorder websocket '{}' failed to push frame: {}",
+                        producer_id,
+                        error
+                    );
+                    return Ok(());
+                }
+            }
+            0x8 => return Ok(()),
+            0x9 => {
+                write_ws_frame(stream, 0xA, &frame.payload)?;
+            }
+            0x1 => {
+                log::debug!(
+                    "Recorder websocket '{}' ignoring text frame",
+                    producer_id
+                );
+            }
+            _ => {
+                log::debug!(
+                    "Recorder websocket '{}' ignoring opcode {}",
+                    producer_id,
+                    frame.opcode
+                );
+            }
+        }
+    }
+}
+
+fn normalize_sample(sample: f32) -> i16 {
+    let clamped = sample.clamp(-1.0, 1.0);
+    (clamped * i16::MAX as f32) as i16
+}
+
 fn stream_audio_peaks(
     stream: &mut dyn ReadWrite,
     receiver: Receiver<String>,
@@ -99,8 +221,20 @@ fn stream_audio_peaks(
 }
 
 fn write_text_frame(stream: &mut dyn ReadWrite, payload: &[u8]) -> std::io::Result<()> {
+    write_ws_frame(stream, 0x1, payload)
+}
+
+fn make_header(name: &str, value: &str) -> Header {
+    Header::from_bytes(name.as_bytes(), value.as_bytes()).unwrap()
+}
+
+fn write_ws_frame(
+    stream: &mut dyn ReadWrite,
+    opcode: u8,
+    payload: &[u8],
+) -> std::io::Result<()> {
     let mut header = Vec::with_capacity(10);
-    header.push(0x81);
+    header.push(0x80 | (opcode & 0x0F));
 
     match payload.len() {
         0..=125 => header.push(payload.len() as u8),
@@ -119,8 +253,62 @@ fn write_text_frame(stream: &mut dyn ReadWrite, payload: &[u8]) -> std::io::Resu
     stream.flush()
 }
 
-fn make_header(name: &str, value: &str) -> Header {
-    Header::from_bytes(name.as_bytes(), value.as_bytes()).unwrap()
+struct WsFrame {
+    fin: bool,
+    opcode: u8,
+    payload: Vec<u8>,
+}
+
+fn read_ws_frame(stream: &mut dyn ReadWrite) -> std::io::Result<WsFrame> {
+    let mut header = [0u8; 2];
+    stream.read_exact(&mut header)?;
+
+    let fin = (header[0] & 0x80) != 0;
+    let opcode = header[0] & 0x0F;
+    let masked = (header[1] & 0x80) != 0;
+    let mut payload_len = (header[1] & 0x7F) as u64;
+
+    if payload_len == 126 {
+        let mut len_bytes = [0u8; 2];
+        stream.read_exact(&mut len_bytes)?;
+        payload_len = u16::from_be_bytes(len_bytes) as u64;
+    } else if payload_len == 127 {
+        let mut len_bytes = [0u8; 8];
+        stream.read_exact(&mut len_bytes)?;
+        payload_len = u64::from_be_bytes(len_bytes);
+    }
+
+    let payload_len: usize = match payload_len.try_into() {
+        Ok(len) => len,
+        Err(_) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "payload too large",
+            ))
+        }
+    };
+
+    let mut mask_key = [0u8; 4];
+    if masked {
+        stream.read_exact(&mut mask_key)?;
+    }
+
+    let mut payload = vec![0u8; payload_len];
+    if payload_len > 0 {
+        stream.read_exact(&mut payload)?;
+    }
+
+    if masked {
+        for (i, byte) in payload.iter_mut().enumerate() {
+            *byte ^= mask_key[i % 4];
+        }
+    }
+
+    Ok(WsFrame {
+        fin,
+        opcode,
+        payload,
+    })
 }
 
 fn websocket_accept_key(key: &str) -> String {
@@ -327,4 +515,3 @@ fn base64_encode(data: &[u8]) -> String {
     }
     out
 }
-
