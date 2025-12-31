@@ -37,6 +37,24 @@ pub fn handle_recorder_start(
         match node.lock() {
             Ok(mut guard) => match guard.add_producer(Box::new(producer)) {
                 Ok(()) => {
+                    let buffer_name = format!("producer:{}", producer_id);
+                    if let Some(flow_index) = guard.flow_index_by_name("main") {
+                        if let Err(err) =
+                            guard.connect_flow_input(flow_index, &buffer_name)
+                        {
+                            log::warn!(
+                                "Failed to connect recorder '{}' to flow 'main': {}",
+                                producer_id,
+                                err
+                            );
+                        }
+                    } else {
+                        log::warn!(
+                            "Flow 'main' not found; recorder '{}' not connected",
+                            producer_id
+                        );
+                    }
+
                     let mut registry =
                         lock_mutex(recorder_registry(), "api.recorder.register");
                     registry.insert(producer_id.clone(), handle);

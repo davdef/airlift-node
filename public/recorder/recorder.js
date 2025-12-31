@@ -97,7 +97,7 @@ function drawWaveform() {
 }
 
 async function createProducer() {
-    const response = await fetch("/api/ws-producer/start", {
+    const response = await fetch("/api/recorder/start", {
         method: "POST",
         headers: {
             "Content-Type": "application/json"
@@ -120,7 +120,7 @@ async function createProducer() {
 
 function openWebSocket(producerId) {
     const scheme = window.location.protocol === "https:" ? "wss" : "ws";
-    const socket = new WebSocket(`${scheme}://${window.location.host}/ws/prod/${producerId}`);
+    const socket = new WebSocket(`${scheme}://${window.location.host}/ws/recorder/${producerId}`);
     socket.binaryType = "arraybuffer";
 
     socket.addEventListener("open", () => {

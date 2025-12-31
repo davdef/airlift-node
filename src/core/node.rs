@@ -115,7 +115,7 @@ impl PeakAccumulator {
 
         let event = Event::new(
             EventType::AudioPeak,
-            EventPriority::Info,
+            EventPriority::Debug,
             "flow",
             flow_name,
             payload,
@@ -808,6 +808,18 @@ impl AirliftNode {
 
         let mut producer = producer;
         producer.attach_ring_buffer(buffer.clone());
+        if self.running.load(Ordering::Relaxed) {
+            if let Err(e) = producer.start() {
+                self.error(&format!(
+                    "Failed to start producer '{}' after add: {}",
+                    producer_name, e
+                ));
+                return Err(AudioError::with_context(
+                    format!("start producer '{}'", producer_name),
+                    e,
+                ));
+            }
+        }
 
         // Buffer in Registry registrieren
         let buffer_name = format!("producer:{}", producer_name);
@@ -912,12 +924,25 @@ impl AirliftNode {
             });
         }
 
-        self.flows[flow_index].add_input_from_registry(&self.buffer_registry, buffer_name)?;
+        let flow_running = {
+            let flow = &mut self.flows[flow_index];
+            flow.add_input_from_registry(&self.buffer_registry, buffer_name)?;
+            flow.running.load(Ordering::Relaxed)
+        };
 
         self.info(&format!(
             "Connected registry buffer '{}' to flow {}",
             buffer_name, flow_index
         ));
+
+        if flow_running {
+            self.warn(&format!(
+                "Flow {} is running; restarting to pick up new input '{}'",
+                flow_index, buffer_name
+            ));
+            self.flows[flow_index].stop()?;
+            self.flows[flow_index].start()?;
+        }
 
         Ok(())
     }
