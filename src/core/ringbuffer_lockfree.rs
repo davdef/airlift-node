@@ -1,6 +1,6 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use std::fmt::Debug;
@@ -86,6 +86,8 @@ const LOG_EVERY_N_PUSH: u64 = 50;
 const LOG_INITIAL_PUSH_COUNT: u64 = 5;
 const LOG_EVERY_N_POP: u64 = 100;
 const BUFFER_WARN_THRESHOLD: f32 = 0.8;
+const BUFFER_WARN_RESET_THRESHOLD: f32 = 0.5;
+const DROP_LOG_INTERVAL: u64 = 1_000;
 const BUFFER_LOCK_TIMEOUT: Duration = Duration::from_millis(5);
 
 #[derive(Debug)]
@@ -96,6 +98,7 @@ pub struct AudioRingBuffer {
     head_seq: AtomicU64,
     readers: ReaderRegistry,
     dropped_frames: AtomicU64,
+    high_water_warned: AtomicBool,
 }
 
 impl AudioRingBuffer {
@@ -115,6 +118,7 @@ impl AudioRingBuffer {
             head_seq: AtomicU64::new(0),
             readers: ReaderRegistry::new(MAX_READERS),
             dropped_frames: AtomicU64::new(0),
+            high_water_warned: AtomicBool::new(false),
         }
     }
 
@@ -151,16 +155,26 @@ impl AudioRingBuffer {
         self.head_seq.store(seq, Ordering::Release);
 
         if seq > self.capacity as u64 {
-            self.dropped_frames.fetch_add(1, Ordering::Relaxed);
-            self.warn(&format!(
-                "Frame dropped! Total dropped: {}",
-                self.dropped_frames.load(Ordering::Relaxed)
-            ));
+            let dropped = self.dropped_frames.fetch_add(1, Ordering::Relaxed) + 1;
+            if dropped == 1 || dropped % DROP_LOG_INTERVAL == 0 {
+                self.debug(&format!(
+                    "Frame dropped (ring overwrite). Total dropped: {}",
+                    dropped
+                ));
+            }
         }
 
         let new_len = self.len() as u64;
-        if new_len as f32 / self.capacity as f32 > BUFFER_WARN_THRESHOLD {
-            self.warn(&format!("Buffer >80% full: {}/{}", new_len, self.capacity));
+        let utilization = new_len as f32 / self.capacity as f32;
+        if utilization > BUFFER_WARN_THRESHOLD {
+            if !self.high_water_warned.swap(true, Ordering::Relaxed) {
+                self.debug(&format!(
+                    "Buffer high-water mark reached: {}/{}",
+                    new_len, self.capacity
+                ));
+            }
+        } else if utilization < BUFFER_WARN_RESET_THRESHOLD {
+            self.high_water_warned.store(false, Ordering::Relaxed);
         }
 
         new_len
