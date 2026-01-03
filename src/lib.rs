@@ -4,6 +4,7 @@ pub mod app;
 pub mod audio;
 pub mod codecs;
 pub mod config;
+pub mod consumers;
 pub mod core;
 pub mod decoders;
 pub mod encoders;

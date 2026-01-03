@@ -13,6 +13,10 @@ pub enum AudioError {
     InvalidFlowIndex { index: usize, max: usize },
     #[error("invalid producer index: {index} (max producer={max})")]
     InvalidProducerIndex { index: usize, max: usize },
+    #[error("producer '{name}' not found")]
+    ProducerNotFound { name: String },
+    #[error("flow '{name}' not found")]
+    FlowNotFound { name: String },
     #[error("{context}: {source}")]
     Context {
         context: String,

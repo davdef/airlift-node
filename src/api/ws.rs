@@ -6,7 +6,7 @@ use std::thread;
 use crossbeam_channel::{unbounded, Receiver, Sender};
 use tiny_http::{Header, ReadWrite, Request, Response, StatusCode};
 
-use crate::api::recorder::get_recorder_handle;
+use crate::api::recorder::get_echo_sender; // This should now exist
 use crate::core::lock::lock_mutex;
 use crate::core::{timestamp, AirliftNode, Event, EventHandler, EventPriority, EventType, PcmFrame};
 use crate::producers::ws::WsHandle;
@@ -80,7 +80,7 @@ pub fn handle_recorder_ws_request(
     producer_id: String,
 ) {
     thread::spawn(move || {
-        let Some(handle) = get_recorder_handle(&producer_id) else {
+        let Some(handle) = crate::api::recorder::get_recorder_handle(&producer_id) else {
             let _ = request.respond(Response::empty(StatusCode(404)));
             return;
         };
@@ -113,6 +113,101 @@ pub fn handle_recorder_ws_request(
             );
         }
     });
+}
+
+pub fn handle_echo_ws_request(
+    request: Request,
+    _node: Arc<Mutex<AirliftNode>>,
+    session_id: String,
+) {
+    thread::spawn(move || {
+        log::info!("Echo WebSocket requested for session: {}", session_id);
+        
+        // Hole den Echo-Sender für diese Session
+        let Some(echo_sender) = get_echo_sender(&session_id) else {
+            log::warn!("No echo sender found for session: {}", session_id);
+            let _ = request.respond(Response::empty(StatusCode(404)));
+            return;
+        };
+
+        log::info!("Echo sender found for session: {}", session_id);
+
+        // WebSocket-Handshake
+        if !is_websocket_request(&request) {
+            let _ = request.respond(Response::empty(StatusCode(400)));
+            return;
+        }
+
+        let key = match websocket_key(&request) {
+            Some(key) => key,
+            None => {
+                let _ = request.respond(Response::empty(StatusCode(400)));
+                return;
+            }
+        };
+
+        let accept = websocket_accept_key(&key);
+        let response = Response::empty(StatusCode(101))
+            .with_header(make_header("Upgrade", "websocket"))
+            .with_header(make_header("Connection", "Upgrade"))
+            .with_header(make_header("Sec-WebSocket-Accept", &accept));
+
+        let mut stream = request.upgrade("websocket", response);
+        
+        log::info!("Echo WebSocket connected for session: {}", session_id);
+        
+        // Erstelle einen Channel für diesen Client
+        let (client_sender, client_receiver) = unbounded::<PcmFrame>();
+        
+        // Starte einen Thread, der Frames vom Client zum Echo-Sender forwardet
+        let echo_sender_clone = echo_sender.clone();
+        let session_id_clone = session_id.clone();
+        thread::spawn(move || {
+            log::info!("Starting echo client handler for session: {}", session_id_clone);
+            
+            for frame in client_receiver.iter() {
+                if echo_sender_clone.send(frame).is_err() {
+                    log::info!("Echo client handler '{}': session closed", session_id_clone);
+                    break;
+                }
+            }
+            
+            log::info!("Echo client handler stopped for session: {}", session_id_clone);
+        });
+        
+        // Fix the type inference issue
+        let _sender = client_sender;
+        
+        // Sende Audio-Frames an Client
+        if let Err(error) = stream_echo_frames(&mut stream, &session_id) {
+            log::info!("Echo websocket '{}' closed: {}", session_id, error);
+        }
+    });
+}
+
+fn stream_echo_frames(
+    stream: &mut dyn ReadWrite,
+    session_id: &str,
+) -> std::io::Result<()> {
+    log::info!("Starting echo stream for session: {}", session_id);
+    
+    // Diese Funktion wartet auf Close-Frame
+    loop {
+        let frame = read_ws_frame(stream)?;
+        
+        match frame.opcode {
+            0x8 => { // Close
+                log::info!("Echo WebSocket closed by client: {}", session_id);
+                return Ok(());
+            }
+            0x9 => { // Ping
+                write_ws_frame(stream, 0xA, &frame.payload)?; // Pong
+            }
+            _ => {
+                // Ignoriere andere Frames
+            }
+        }
+    }
 }
 
 fn is_websocket_request(request: &Request) -> bool {

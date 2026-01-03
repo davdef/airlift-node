@@ -3,6 +3,7 @@ use airlift_node::{
     config,
     core,
     producers,
+    consumers,
 };
 
 use airlift_node::app::init::{build_plugin_registry, PluginRegistry};

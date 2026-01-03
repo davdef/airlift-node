@@ -116,7 +116,7 @@ impl PeakAccumulator {
 
         let event = Event::new(
             EventType::AudioPeak,
-            EventPriority::Info,
+            EventPriority::Debug,
             "flow",
             flow_name,
             payload,
@@ -1275,6 +1275,112 @@ impl AirliftNode {
     pub fn flows(&self) -> &[Flow] {
         &self.flows
     }
+
+    /// Entfernt einen Producer und den zugehörigen Buffer aus der Registry
+    pub fn remove_producer(&mut self, producer_name: &str) -> AudioResult<()> {
+        // Finde den Index des Producers
+        let index = self.producers
+            .iter()
+            .position(|p| p.name() == producer_name)
+            .ok_or_else(|| AudioError::ProducerNotFound {
+                name: producer_name.to_string(),
+            })?;
+
+        // Stoppe den Producer, wenn Node läuft
+        if self.running.load(Ordering::Relaxed) {
+            if let Err(e) = self.producers[index].stop() {
+                self.warn(&format!("Failed to stop producer '{}': {}", producer_name, e));
+                // Fahren wir trotzdem fort
+            }
+        }
+
+        // Entferne Producer und seinen Buffer
+        self.producers.remove(index);
+        self.producer_buffers.remove(index);
+
+        // Entferne Buffer aus der Registry
+        let buffer_name = format!("producer:{}", producer_name);
+        if let Err(e) = self.buffer_registry.remove(&buffer_name) {
+            self.warn(&format!("Failed to remove buffer '{}' from registry: {}", buffer_name, e));
+        }
+
+        // Sende ConfigChanged Event
+        self.publish_event(
+            EventType::ConfigChanged,
+            EventPriority::Info,
+            serde_json::json!({
+                "action": "producer_removed",
+                "producer_name": producer_name,
+                "buffer_name": buffer_name,
+                "timestamp": crate::core::timestamp::utc_ns_now(),
+            }),
+        );
+
+        self.info(&format!("Removed producer '{}'", producer_name));
+        Ok(())
+    }
+
+    /// Entfernt einen Flow
+    pub fn remove_flow(&mut self, flow_name: &str) -> AudioResult<()> {
+        // Finde den Index des Flows
+        let index = self.flows
+            .iter()
+            .position(|f| f.name == flow_name)
+            .ok_or_else(|| AudioError::FlowNotFound {
+                name: flow_name.to_string(),
+            })?;
+
+        // Stoppe den Flow
+        if let Err(e) = self.flows[index].stop() {
+            self.warn(&format!("Failed to stop flow '{}': {}", flow_name, e));
+            // Fahren wir trotzdem fort
+        }
+
+        // Entferne den Flow
+        self.flows.remove(index);
+
+        self.info(&format!("Removed flow '{}'", flow_name));
+        Ok(())
+    }
+
+    /// Entfernt eine Recording-Session (sowohl Producer als auch Flow)
+    pub fn remove_recording_session(&mut self, session_id: &str) -> AudioResult<()> {
+        self.info(&format!("Removing recording session '{}'", session_id));
+
+        // Versuche Flow zu entfernen (falls vorhanden)
+        if let Ok(()) = self.remove_flow(session_id) {
+            self.debug(&format!("Removed flow '{}'", session_id));
+        } else {
+            self.debug(&format!("Flow '{}' not found (may have been removed already)", session_id));
+        }
+
+        // Entferne Producer
+        self.remove_producer(session_id)?;
+
+        self.info(&format!("Recording session '{}' completely removed", session_id));
+        Ok(())
+    }
+
+    /// Prüft, ob ein Producer existiert
+    pub fn has_producer(&self, producer_name: &str) -> bool {
+        self.producers.iter().any(|p| p.name() == producer_name)
+    }
+
+    /// Prüft, ob ein Flow existiert
+    pub fn has_flow(&self, flow_name: &str) -> bool {
+        self.flows.iter().any(|f| f.name == flow_name)
+    }
+
+    /// Gibt eine Liste aller Producer-Namen zurück
+    pub fn producer_names(&self) -> Vec<String> {
+        self.producers.iter().map(|p| p.name().to_string()).collect()
+    }
+
+    /// Gibt eine Liste aller Flow-Namen zurück
+    pub fn flow_names(&self) -> Vec<String> {
+        self.flows.iter().map(|f| f.name.clone()).collect()
+    }
+
 }
 
 // Implementierung des ComponentLogger Traits für AirliftNode
