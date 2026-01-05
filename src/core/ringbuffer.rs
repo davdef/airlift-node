@@ -299,6 +299,23 @@ let read_positions: MutexGuard<'_, HashMap<String, u64>> =
         self.available_for_reader("default")
     }
 
+    pub fn skip_to_latest(&self, reader_id: &str) {
+        let head = self.head_seq.load(Ordering::Acquire);
+        if head == 0 {
+            return;
+        }
+
+        if let Some(mut read_positions) = lock_mutex_with_timeout(
+            &self.read_positions,
+            "ringbuffer.skip_to_latest.read_positions",
+            BUFFER_LOCK_TIMEOUT,
+        ) {
+            read_positions.insert(reader_id.to_string(), head);
+        } else {
+            self.warn("skip_to_latest aborted: read_positions lock timeout");
+        }
+    }
+
     pub fn stats(&self) -> RingBufferStats {
         let head = self.head_seq.load(Ordering::Acquire);
         if head == 0 {

@@ -104,8 +104,26 @@ pub fn handle_recorder_ws_request(
             .with_header(make_header("Connection", "Upgrade"))
             .with_header(make_header("Sec-WebSocket-Accept", &accept));
 
+        let request_url = request.url().to_string();
+        let input_channels = parse_query_u8(&request_url, "channels").unwrap_or(2).clamp(1, 2);
+        let input_sample_rate =
+            parse_query_u32(&request_url, "sample_rate").unwrap_or(RECORDER_SAMPLE_RATE);
+        if input_channels != 2 {
+            log::info!(
+                "Recorder websocket '{}' configured for {} channel input (will upmix to stereo)",
+                producer_id,
+                input_channels
+            );
+        }
+
         let mut stream = request.upgrade("websocket", response);
-        if let Err(error) = read_recorder_frames(&mut stream, &handle, &producer_id) {
+        if let Err(error) = read_recorder_frames(
+            &mut stream,
+            &handle,
+            &producer_id,
+            input_sample_rate,
+            input_channels,
+        ) {
             log::info!(
                 "Recorder websocket '{}' closed: {}",
                 producer_id,
@@ -202,10 +220,33 @@ fn websocket_key(request: &Request) -> Option<String> {
         .map(|h| h.value.as_str().to_string())
 }
 
+fn parse_query_u32(url: &str, key: &str) -> Option<u32> {
+    parse_query_value(url, key).and_then(|value| value.parse::<u32>().ok())
+}
+
+fn parse_query_u8(url: &str, key: &str) -> Option<u8> {
+    parse_query_value(url, key).and_then(|value| value.parse::<u8>().ok())
+}
+
+fn parse_query_value<'a>(url: &'a str, key: &str) -> Option<&'a str> {
+    let query = url.splitn(2, '?').nth(1)?;
+    for pair in query.split('&') {
+        let mut parts = pair.splitn(2, '=');
+        let k = parts.next()?;
+        let v = parts.next().unwrap_or("");
+        if k == key {
+            return Some(v);
+        }
+    }
+    None
+}
+
 fn read_recorder_frames(
     stream: &mut dyn ReadWrite,
     handle: &WsHandle,
     producer_id: &str,
+    input_sample_rate: u32,
+    input_channels: u8,
 ) -> std::io::Result<()> {
     loop {
         let frame = read_ws_frame(stream)?;
@@ -228,7 +269,27 @@ fn read_recorder_frames(
                     continue;
                 }
 
-                let mut samples = Vec::with_capacity(frame.payload.len() / 4);
+                let sample_count = frame.payload.len() / 4;
+                if input_channels == 2 && sample_count % 2 != 0 {
+                    log::warn!(
+                        "Recorder websocket '{}' received odd sample count {} for stereo input",
+                        producer_id,
+                        sample_count
+                    );
+                    continue;
+                }
+
+                if input_sample_rate != RECORDER_SAMPLE_RATE {
+                    log::warn!(
+                        "Recorder websocket '{}' received unsupported sample rate {} (expected {})",
+                        producer_id,
+                        input_sample_rate,
+                        RECORDER_SAMPLE_RATE
+                    );
+                    continue;
+                }
+
+                let mut samples = Vec::with_capacity(sample_count);
                 for chunk in frame.payload.chunks_exact(4) {
                     let sample = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
                     samples.push(normalize_sample(sample));
@@ -238,11 +299,22 @@ fn read_recorder_frames(
                     continue;
                 }
 
+                let (samples, channels) = if input_channels == 1 {
+                    let mut stereo_samples = Vec::with_capacity(samples.len() * 2);
+                    for sample in samples {
+                        stereo_samples.push(sample);
+                        stereo_samples.push(sample);
+                    }
+                    (stereo_samples, 2)
+                } else {
+                    (samples, 2)
+                };
+
                 let frame = PcmFrame {
                     utc_ns: timestamp::utc_ns_now(),
                     samples,
                     sample_rate: RECORDER_SAMPLE_RATE,
-                    channels: 2,
+                    channels,
                 };
 
                 if let Err(error) = handle.push_frame(frame) {
@@ -276,7 +348,11 @@ fn read_recorder_frames(
 }
 
 fn normalize_sample(sample: f32) -> i16 {
-    let clamped = sample.clamp(-1.0, 1.0);
+    let clamped = if sample.is_finite() {
+        sample.clamp(-1.0, 1.0)
+    } else {
+        0.0
+    };
     (clamped * i16::MAX as f32) as i16
 }
 
