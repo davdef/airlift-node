@@ -20,7 +20,8 @@ export class UIManager {
             jumpLiveBtn: document.getElementById('jumpLiveBtn'),
             status: document.getElementById('status'),
             playIcon: document.getElementById('playIcon'),
-            debugPanel: document.getElementById('debugPanel')
+            debugPanel: document.getElementById('debugPanel'),
+            controls: document.getElementById('controls')
         };
         
         // IDLE OVERLAY ERSTELLEN (WIE IM ORIGINAL)
@@ -33,9 +34,16 @@ export class UIManager {
     createIdleOverlay() {
         const overlay = document.createElement('div');
         overlay.className = 'idle-overlay';
+        const header = document.querySelector('header');
+        const updateBounds = () => {
+            const headerHeight = header?.getBoundingClientRect().height ?? 0;
+            overlay.style.top = `${headerHeight}px`;
+        };
         overlay.style.cssText = `
             position: fixed;
-            inset: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
             background: rgba(0, 0, 0, 0.85);
             display: none;
             align-items: center;
@@ -78,6 +86,8 @@ export class UIManager {
         this.elements.idleOverlay = overlay;
         this.elements.idleTitle = title;
         this.elements.idleSubtitle = subtitle;
+        updateBounds();
+        window.addEventListener('resize', updateBounds);
     }
     
     setupAutoHide() {
@@ -167,6 +177,26 @@ export class UIManager {
         }
         if (subtitle && this.elements.idleSubtitle) {
             this.elements.idleSubtitle.textContent = subtitle;
+        }
+
+        this.setControlsEnabled(!active);
+    }
+
+    setControlsEnabled(enabled) {
+        const targets = [
+            this.elements.playBtn,
+            this.elements.liveBtn,
+            this.elements.jumpLiveBtn
+        ];
+
+        targets.forEach((button) => {
+            if (button) {
+                button.disabled = !enabled;
+            }
+        });
+
+        if (this.elements.controls) {
+            this.elements.controls.classList.toggle('dimmed', !enabled);
         }
     }
 }
