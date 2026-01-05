@@ -81,10 +81,10 @@ impl Consumer for WsConsumer {
             while connected.load(Ordering::Relaxed) {
                 if let Some(buffer) = &input_buffer {
                     if last_stats.elapsed() >= Duration::from_secs(5) {
-                        let available = buffer.available_for_reader(&reader_id);
                         let stats = buffer.stats();
+                        let available = buffer.available_for_reader(&reader_id);
                         log::info!(
-                            "WsConsumer '{}' stats: available={}, buffer_frames={}, dropped={}, processed={}, errors={}, echo_buffer={}",
+                            "WsConsumer '{}' stats: available={}, buffer_frames={}, dropped={}, processed={}, errors={}, backlog={}",
                             name,
                             available,
                             stats.current_frames,
@@ -94,6 +94,23 @@ impl Consumer for WsConsumer {
                             buffer.len()
                         );
                         last_stats = Instant::now();
+                    }
+
+                    if echo_mode {
+                        let stats = buffer.stats();
+                        let available = buffer.available_for_reader(&reader_id);
+                        if stats.capacity > 0
+                            && available as f32 > (stats.capacity as f32 * 0.75)
+                        {
+                            buffer.skip_to_latest(&reader_id);
+                            errors.fetch_add(1, Ordering::Relaxed);
+                            log::warn!(
+                                "WsConsumer '{}' skipped backlog (available={}, capacity={})",
+                                name,
+                                available,
+                                stats.capacity
+                            );
+                        }
                     }
 
                     if let Some(frame) = buffer.pop_for_reader(&reader_id) {
