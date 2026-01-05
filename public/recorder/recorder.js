@@ -167,6 +167,8 @@ function openPeakWebSocket(producerId) {
     const socket = new WebSocket(`${scheme}://${window.location.host}/ws`);
 
     socket.addEventListener("message", (event) => {
+        console.log("RAW Peak message:", event.data); // Debug log hinzufügen
+        
         let data = null;
         try {
             data = JSON.parse(event.data);
@@ -175,11 +177,15 @@ function openPeakWebSocket(producerId) {
             return;
         }
 
+        console.log("Parsed peak data:", data); // Debug log hinzufügen
+        
         if (!data || !Array.isArray(data.peaks)) return;
         
-//        console.log("Peak event:", data.flow, "peaks:", data.peaks);
+        // Test: Zeige ALLE Peak-Events an
+        console.log("Flow:", data.flow, "Peaks:", data.peaks);
         
-        if (data.flow && data.flow === producerId) {
+        // Try different matching strategies
+        if (data.flow && (data.flow === producerId || data.flow.includes(producerId))) {
             const peakL = Number(data.peaks[0]) || 0;
             const peakR = Number(data.peaks[1]) || peakL;
             updateMeters(peakL, peakR);

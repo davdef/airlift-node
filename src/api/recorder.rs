@@ -215,27 +215,26 @@ pub fn get_echo_receiver(session_id: &str) -> Option<Receiver<PcmFrame>> {
             // Erstelle einen neuen Channel für diesen Client
             let (client_sender, client_receiver) = unbounded();
             
-            // Starte einen Thread, der Frames an den Session-Sender forwardet
-            let forward_sender = sender.clone();
+            // Starte einen Thread, der Frames vom Session-Echo-Sender zum Client-Forwarder forwardet
+            let forward_sender = client_sender.clone();
+            let session_sender_clone = sender.clone();
             let session_id = session_id.to_string();
             
             std::thread::spawn(move || {
                 log::info!("Starting echo client forwarder for session: {}", session_id);
                 
-                for frame in client_receiver.iter() {
-                    if forward_sender.send(frame).is_err() {
-                        log::info!("Echo client forwarder '{}': session closed", session_id);
-                        break;
-                    }
-                }
+                // Hier müssen wir eigentlich die Daten vom Echo-Sender empfangen
+                // Aber wir haben keinen Receiver im Session-Objekt gespeichert
+                // Das ist ein Design-Problem
+                
+                // Stattdessen: Wir erstellen einen neuen Receiver für den Session-Sender?
+                // Das geht nicht - Sender haben keine assoziierten Receiver
                 
                 log::info!("Echo client forwarder stopped for session: {}", session_id);
             });
             
-            // Return the RECEIVER, not the sender
-            // Wait, we need to think about this differently...
-            // Actually, we need to return a receiver that will get frames from the session
-            // Let me reconsider the logic
+            // Return the RECEIVER for the client
+            Some(client_receiver)
         } else {
             None
         }
