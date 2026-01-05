@@ -143,10 +143,17 @@ pub fn handle_echo_ws_request(
             return;
         }
 
+        let Some((client_id, client_receiver)) = register_echo_client(&session_id) else {
+            log::warn!("No echo session found for session: {}", session_id);
+            let _ = request.respond(Response::empty(StatusCode(404)));
+            return;
+        };
+
         let key = match websocket_key(&request) {
             Some(key) => key,
             None => {
                 let _ = request.respond(Response::empty(StatusCode(400)));
+                unregister_echo_client(&session_id, client_id);
                 return;
             }
         };
