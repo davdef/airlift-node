@@ -12,11 +12,12 @@ use crate::core::{AirliftNode, Flow, PcmFrame};
 use crate::producers::ws::{WsHandle, WsProducer};
 
 static RECORDER_COUNTER: AtomicU64 = AtomicU64::new(1);
+static ECHO_CLIENT_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 struct RecordingSession {
     producer_id: String,
     producer_handle: WsHandle,
-    echo_sender: Option<Sender<PcmFrame>>, // Sender für Echo-Daten
+    echo_clients: HashMap<u64, Sender<PcmFrame>>,
 }
 
 static RECORDER_SESSIONS: OnceLock<Mutex<HashMap<String, RecordingSession>>> = OnceLock::new();
@@ -74,12 +75,8 @@ pub fn handle_recorder_start(
                             log::info!("Added echo consumer 'echo-{}' to flow {}", producer_id, flow_index);
                         }
 
-                        // Channel für Echo-Daten erstellen
-                        let (echo_sender, client_receiver) = unbounded();
-                        
-                        // Thread starten, der Daten vom Consumer zum Echo-Channel forwardet
+                        // Thread starten, der Daten vom Consumer an alle Echo-Clients forwardet
                         let session_id = producer_id.clone();
-                        let echo_sender_clone = echo_sender.clone();
                         std::thread::spawn(move || {
                             log::info!("Starting echo forwarder for session: {}", session_id);
                             let mut frame_count = 0;
@@ -91,10 +88,30 @@ pub fn handle_recorder_start(
                                     log::debug!("Echo forwarder '{}': forwarded {} frames", session_id, frame_count);
                                 }
                                 
-                                // Forward frame zum Echo-Channel
-                                if echo_sender_clone.send(frame).is_err() {
-                                    log::info!("Echo forwarder '{}': client disconnected", session_id);
+                                let clients = {
+                                    let sessions = lock_mutex(session_registry(), "api.recorder.echo_clients_snapshot");
+                                    sessions.get(&session_id).map(|session| session.echo_clients.clone())
+                                };
+
+                                let Some(clients) = clients else {
+                                    log::info!("Echo forwarder '{}' stopped: session removed", session_id);
                                     break;
+                                };
+
+                                let mut failed_clients = Vec::new();
+                                for (client_id, sender) in clients {
+                                    if sender.send(frame.clone()).is_err() {
+                                        failed_clients.push(client_id);
+                                    }
+                                }
+
+                                if !failed_clients.is_empty() {
+                                    let mut sessions = lock_mutex(session_registry(), "api.recorder.echo_clients_prune");
+                                    if let Some(session) = sessions.get_mut(&session_id) {
+                                        for client_id in failed_clients {
+                                            session.echo_clients.remove(&client_id);
+                                        }
+                                    }
                                 }
                             }
                             
@@ -108,7 +125,7 @@ pub fn handle_recorder_start(
                             RecordingSession {
                                 producer_id: producer_id.clone(),
                                 producer_handle: handle,
-                                echo_sender: Some(echo_sender), // Store the SENDER, not receiver
+                                echo_clients: HashMap::new(),
                             },
                         );
 
@@ -200,43 +217,18 @@ pub fn get_recorder_handle(producer_id: &str) -> Option<WsHandle> {
         .map(|session| session.producer_handle.clone())
 }
 
-// Add the missing get_echo_sender function
-pub fn get_echo_sender(session_id: &str) -> Option<Sender<PcmFrame>> {
-    let sessions = lock_mutex(session_registry(), "api.recorder.get_echo_sender");
-    sessions.get(session_id).and_then(|session| {
-        session.echo_sender.clone()
-    })
+pub fn register_echo_client(session_id: &str) -> Option<(u64, Receiver<PcmFrame>)> {
+    let (sender, receiver) = unbounded();
+    let mut sessions = lock_mutex(session_registry(), "api.recorder.register_echo_client");
+    let session = sessions.get_mut(session_id)?;
+    let client_id = ECHO_CLIENT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    session.echo_clients.insert(client_id, sender);
+    Some((client_id, receiver))
 }
 
-pub fn get_echo_receiver(session_id: &str) -> Option<Receiver<PcmFrame>> {
-    let sessions = lock_mutex(session_registry(), "api.recorder.get_echo_receiver");
-    sessions.get(session_id).and_then(|session| {
-        if let Some(sender) = &session.echo_sender {
-            // Erstelle einen neuen Channel für diesen Client
-            let (client_sender, client_receiver) = unbounded();
-            
-            // Starte einen Thread, der Frames vom Session-Echo-Sender zum Client-Forwarder forwardet
-            let forward_sender = client_sender.clone();
-            let session_sender_clone = sender.clone();
-            let session_id = session_id.to_string();
-            
-            std::thread::spawn(move || {
-                log::info!("Starting echo client forwarder for session: {}", session_id);
-                
-                // Hier müssen wir eigentlich die Daten vom Echo-Sender empfangen
-                // Aber wir haben keinen Receiver im Session-Objekt gespeichert
-                // Das ist ein Design-Problem
-                
-                // Stattdessen: Wir erstellen einen neuen Receiver für den Session-Sender?
-                // Das geht nicht - Sender haben keine assoziierten Receiver
-                
-                log::info!("Echo client forwarder stopped for session: {}", session_id);
-            });
-            
-            // Return the RECEIVER for the client
-            Some(client_receiver)
-        } else {
-            None
-        }
-    })
+pub fn unregister_echo_client(session_id: &str, client_id: u64) {
+    let mut sessions = lock_mutex(session_registry(), "api.recorder.unregister_echo_client");
+    if let Some(session) = sessions.get_mut(session_id) {
+        session.echo_clients.remove(&client_id);
+    }
 }

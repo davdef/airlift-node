@@ -38,6 +38,7 @@ fn main() -> anyhow::Result<()> {
     run_normal_mode()
 }
 
+#[cfg(feature = "alsa")]
 fn run_discovery() -> anyhow::Result<()> {
     use airlift_node::core::device_scanner::DeviceScanner;
     let scanner = producers::alsa::AlsaDeviceScanner;
@@ -48,6 +49,13 @@ fn run_discovery() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(not(feature = "alsa"))]
+fn run_discovery() -> anyhow::Result<()> {
+    log::error!("ALSA support disabled; rebuild with --features alsa to use --discover");
+    Ok(())
+}
+
+#[cfg(feature = "alsa")]
 fn test_device(device_id: &str) -> anyhow::Result<()> {
     use airlift_node::core::device_scanner::DeviceScanner;
     let scanner = producers::alsa::AlsaDeviceScanner;
@@ -55,6 +63,12 @@ fn test_device(device_id: &str) -> anyhow::Result<()> {
     log::info!("Testing device {}", device_id);
     let result = scanner.test_device(device_id, 3000)?;
     println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
+#[cfg(not(feature = "alsa"))]
+fn test_device(_device_id: &str) -> anyhow::Result<()> {
+    log::error!("ALSA support disabled; rebuild with --features alsa to use --test-device");
     Ok(())
 }
 
@@ -190,4 +204,3 @@ fn run_normal_mode() -> anyhow::Result<()> {
     log::info!("Node stopped");
     Ok(())
 }
-
