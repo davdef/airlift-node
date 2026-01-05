@@ -24,14 +24,28 @@ let producerId = null;
 let echoEnabled = false;
 let echoAudioContext = null;
 let echoScriptProcessor = null;
-let echoBufferL = new Float32Array(4096);
-let echoBufferR = new Float32Array(4096);
+let echoBufferL = new Float32Array(48000); // 1 Sekunde Buffer bei 48kHz
+let echoBufferR = new Float32Array(48000);
 let echoBufferIndex = 0;
-let echoVolume = 0.7; // 70% Volume
+let echoReadIndex = 0;
+let echoVolume = 0.7;
+let lastPeakLogTime = 0;
+let peakEventCount = 0;
 
-// UI-Elemente (müssen im HTML existieren)
+// UI-Elemente
 let echoToggle = document.getElementById("echoToggle");
 let volumeSlider = document.getElementById("volumeSlider");
+
+function logPeakEvent(flow, peaks) {
+    const now = Date.now();
+    peakEventCount++;
+    
+    // Logge nur alle 2 Sekunden oder bei wichtigen Ereignissen
+    if (now - lastPeakLogTime > 2000 || peakEventCount % 100 === 0) {
+        console.log(`Peak [${flow}]: L=${peaks[0]?.toFixed(3) || 0}, R=${peaks[1]?.toFixed(3) || 0} (events: ${peakEventCount})`);
+        lastPeakLogTime = now;
+    }
+}
 
 function setStatus(text) {
     statusEl.textContent = text;
@@ -143,19 +157,19 @@ function openAudioWebSocket(producerId) {
     socket.binaryType = "arraybuffer";
 
     socket.addEventListener("open", () => {
-        console.log("Audio WebSocket connected");
+        console.log("✅ Audio WebSocket connected");
         setStatus("Verbunden");
     });
 
     socket.addEventListener("close", () => {
-        console.log("Audio WebSocket closed");
+        console.log("🔌 Audio WebSocket closed");
         if (running) {
             setStatus("Audio-Verbindung getrennt");
         }
     });
 
     socket.addEventListener("error", (error) => {
-        console.error("Audio WebSocket error:", error);
+        console.error("❌ Audio WebSocket error:", error);
         setStatus("Audio-WebSocket Fehler");
     });
 
@@ -167,43 +181,30 @@ function openPeakWebSocket(producerId) {
     const socket = new WebSocket(`${scheme}://${window.location.host}/ws`);
 
     socket.addEventListener("message", (event) => {
-        console.log("RAW Peak message:", event.data); // Debug log hinzufügen
-        
         let data = null;
         try {
             data = JSON.parse(event.data);
         } catch (error) {
-            console.warn("Peak-Message nicht parsebar:", error, event.data);
-            return;
+            return; // Silent fail für nicht-JSON Nachrichten
         }
 
-        console.log("Parsed peak data:", data); // Debug log hinzufügen
-        
-        if (!data || !Array.isArray(data.peaks)) return;
-        
-        // Test: Zeige ALLE Peak-Events an
-        console.log("Flow:", data.flow, "Peaks:", data.peaks);
-        
-        // Try different matching strategies
-        if (data.flow && (data.flow === producerId || data.flow.includes(producerId))) {
+        if (!data || !Array.isArray(data.peaks) || !data.flow) return;
+
+        // Prüfe ob die Nachricht für unseren Producer ist
+        if (data.flow === producerId || data.flow.includes(producerId)) {
             const peakL = Number(data.peaks[0]) || 0;
             const peakR = Number(data.peaks[1]) || peakL;
             updateMeters(peakL, peakR);
+            logPeakEvent(data.flow, data.peaks);
         }
     });
 
     socket.addEventListener("error", (error) => {
-        console.error("Peak WebSocket error:", error);
-        if (running) {
-            setStatus("Peak-WebSocket Fehler");
-        }
+        console.error("❌ Peak WebSocket error:", error);
     });
 
     socket.addEventListener("close", () => {
-        console.log("Peak WebSocket closed");
-        if (running) {
-            setStatus("Peak-Verbindung getrennt");
-        }
+        console.log("🔌 Peak WebSocket closed");
     });
 
     return socket;
@@ -215,15 +216,24 @@ function openEchoWebSocket(sessionId) {
     socket.binaryType = "arraybuffer";
     
     socket.addEventListener("open", () => {
-        console.log("Echo WebSocket connected");
+        console.log("✅ Echo WebSocket connected");
         if (echoToggle) {
             echoToggle.textContent = "Echo AUS";
             echoToggle.disabled = false;
         }
+        
+        // AudioContext jetzt starten
+        setupEchoAudio().then(audioCtx => {
+            if (audioCtx && audioCtx.state === "suspended") {
+                audioCtx.resume().then(() => {
+                    console.log("🎵 Echo audio context resumed");
+                }).catch(console.error);
+            }
+        });
     });
     
     socket.addEventListener("close", () => {
-        console.log("Echo WebSocket closed");
+        console.log("🔌 Echo WebSocket closed");
         cleanupEchoAudio();
         if (echoToggle && running) {
             echoToggle.textContent = "Echo AN";
@@ -232,7 +242,7 @@ function openEchoWebSocket(sessionId) {
     });
     
     socket.addEventListener("error", (error) => {
-        console.error("Echo WebSocket error:", error);
+        console.error("❌ Echo WebSocket error:", error);
         cleanupEchoAudio();
         if (echoToggle) {
             echoToggle.textContent = "Echo AN";
@@ -240,63 +250,71 @@ function openEchoWebSocket(sessionId) {
         }
     });
     
-socket.onmessage = (event) => {
-    console.log("Echo data received:", event.data.byteLength, "bytes");
-    
-    if (!echoAudioContext) {
-        console.error("No echo audio context");
-        return;
-    }
-    
-    if (echoAudioContext.state === "suspended") {
-        echoAudioContext.resume().then(() => {
-            console.log("Echo audio context resumed");
-        }).catch(console.error);
-    }
-    
-    // Float32-Daten empfangen
-    const floatData = new Float32Array(event.data);
-    console.log(`Echo: ${floatData.length} samples, first: ${floatData[0]}`);
-    
-    if (floatData.length === 0) return;
-    
-    // Buffer für Playback füllen (einfache Queue)
-    const numSamples = floatData.length / 2; // Stereo: L,R,L,R,...
-    
-    for (let i = 0; i < numSamples; i++) {
-        if (echoBufferIndex >= echoBufferL.length) {
-            echoBufferIndex = 0; // Circular buffer wrap
+    socket.addEventListener("message", (event) => {
+        if (!echoAudioContext || echoAudioContext.state !== "running") {
+            console.warn("Echo audio context not ready, ignoring data");
+            return;
         }
         
-        const left = floatData[i * 2] * echoVolume;
-        const right = floatData[i * 2 + 1] * echoVolume;
+        // Float32-Daten empfangen
+        const floatData = new Float32Array(event.data);
         
-        echoBufferL[echoBufferIndex] = left;
-        echoBufferR[echoBufferIndex] = right;
-        echoBufferIndex = (echoBufferIndex + 1) % echoBufferL.length;
-    }
-};
+        if (floatData.length === 0) return;
+        
+        // Buffer für Playback füllen
+        const numSamples = floatData.length / 2;
+        
+        for (let i = 0; i < numSamples; i++) {
+            const bufferIdx = (echoBufferIndex + i) % echoBufferL.length;
+            
+            // Interleaved Stereo-Daten: L,R,L,R,...
+            const left = floatData[i * 2] * echoVolume;
+            const right = floatData[i * 2 + 1] * echoVolume;
+            
+            // Additive Mixing für den Fall, dass Buffer noch nicht geleert wurde
+            echoBufferL[bufferIdx] += left;
+            echoBufferR[bufferIdx] += right;
+        }
+        
+        echoBufferIndex = (echoBufferIndex + numSamples) % echoBufferL.length;
+        
+        // Logge nur gelegentlich
+        if (Math.random() < 0.01) { // 1% Chance zu loggen
+            console.log(`🎧 Echo: ${numSamples} samples added (total: ${floatData.length} floats)`);
+        }
+    });
+    
+    return socket;
+}
 
-// In setupEchoAudio, stelle sicher dass der Context läuft:
-function setupEchoAudio() {
+function updateMeters(peakL, peakR) {
+    meterL[meterIndex] = peakL;
+    meterR[meterIndex] = peakR;
+    meterIndex = (meterIndex + 1) % METER_HISTORY;
+    setLevelText(peakL, peakR);
+}
+
+async function setupEchoAudio() {
     if (echoAudioContext) {
         if (echoAudioContext.state === "suspended") {
-            echoAudioContext.resume();
+            await echoAudioContext.resume();
         }
         return echoAudioContext;
     }
     
     try {
-        echoAudioContext = new AudioContext({ sampleRate: 48000 });
+        echoAudioContext = new AudioContext({ 
+            sampleRate: 48000,
+            latencyHint: "interactive"
+        });
         
-        // Wichtig: AudioContext starten
+        // Wichtig: AudioContext starten (Benutzerinteraktion erforderlich)
         if (echoAudioContext.state === "suspended") {
-            echoAudioContext.resume().then(() => {
-                console.log("Echo audio context started");
-            }).catch(console.error);
+            await echoAudioContext.resume();
+            console.log("🎵 Echo audio context started");
         }
         
-        echoScriptProcessor = echoAudioContext.createScriptProcessor(1024, 2, 2);
+        echoScriptProcessor = echoAudioContext.createScriptProcessor(1024, 0, 2);
         
         echoScriptProcessor.onaudioprocess = (event) => {
             const outputL = event.outputBuffer.getChannelData(0);
@@ -317,60 +335,11 @@ function setupEchoAudio() {
         };
         
         echoScriptProcessor.connect(echoAudioContext.destination);
-        console.log("Echo audio setup complete");
+        console.log("🎵 Echo audio setup complete");
         
         return echoAudioContext;
     } catch (error) {
-        console.error("Failed to setup echo audio:", error);
-        cleanupEchoAudio();
-        return null;
-    }
-}
-
-// Füge diese Variable hinzu (neben anderen Variablen):
-let echoReadIndex = 0;
-    
-    return socket;
-}
-
-function updateMeters(peakL, peakR) {
-    meterL[meterIndex] = peakL;
-    meterR[meterIndex] = peakR;
-    meterIndex = (meterIndex + 1) % METER_HISTORY;
-    setLevelText(peakL, peakR);
-}
-
-function setupEchoAudio() {
-    if (echoAudioContext) return echoAudioContext;
-    
-    try {
-        echoAudioContext = new AudioContext({ sampleRate: 48000 });
-        echoScriptProcessor = echoAudioContext.createScriptProcessor(1024, 2, 2);
-        
-        echoScriptProcessor.onaudioprocess = (event) => {
-            const outputL = event.outputBuffer.getChannelData(0);
-            const outputR = event.outputBuffer.getChannelData(1);
-            
-            // Aus Echo-Buffer lesen
-            for (let i = 0; i < 1024; i++) {
-                const idx = (echoBufferIndex + i) % echoBufferL.length;
-                outputL[i] = echoBufferL[idx];
-                outputR[i] = echoBufferR[idx];
-                
-                // Buffer löschen nach dem Abspielen
-                echoBufferL[idx] = 0;
-                echoBufferR[idx] = 0;
-            }
-            
-            echoBufferIndex = (echoBufferIndex + 1024) % echoBufferL.length;
-        };
-        
-        echoScriptProcessor.connect(echoAudioContext.destination);
-        console.log("Echo audio setup complete");
-        
-        return echoAudioContext;
-    } catch (error) {
-        console.error("Failed to setup echo audio:", error);
+        console.error("❌ Failed to setup echo audio:", error);
         cleanupEchoAudio();
         return null;
     }
@@ -391,6 +360,7 @@ function cleanupEchoAudio() {
     echoBufferL.fill(0);
     echoBufferR.fill(0);
     echoBufferIndex = 0;
+    echoReadIndex = 0;
 }
 
 async function toggleEcho() {
@@ -410,16 +380,15 @@ async function toggleEcho() {
         if (echoToggle) {
             echoToggle.textContent = "Echo AN";
         }
-        console.log("Echo disabled");
+        console.log("🔇 Echo disabled");
     } else {
         // Echo einschalten
         echoEnabled = true;
         try {
-            setupEchoAudio();
             echoWs = openEchoWebSocket(producerId);
-            console.log("Echo enabled");
+            console.log("🔊 Echo enabled");
         } catch (error) {
-            console.error("Failed to enable echo:", error);
+            console.error("❌ Failed to enable echo:", error);
             echoEnabled = false;
             cleanupEchoAudio();
             if (echoToggle) {
@@ -431,7 +400,7 @@ async function toggleEcho() {
 
 function updateEchoVolume(value) {
     echoVolume = parseFloat(value) / 100.0;
-    console.log("Echo volume:", echoVolume);
+    console.log("🎚️ Echo volume:", echoVolume);
 }
 
 async function startAudio() {
@@ -447,10 +416,10 @@ async function startAudio() {
             }
         });
 
-        console.log("MediaStream obtained");
+        console.log("🎤 MediaStream obtained");
 
         audioContext = new AudioContext({ sampleRate: 48000 });
-        console.log("AudioContext sampleRate:", audioContext.sampleRate);
+        console.log("🎵 AudioContext sampleRate:", audioContext.sampleRate);
 
         mediaSource = audioContext.createMediaStreamSource(mediaStream);
         processor = audioContext.createScriptProcessor(1024, 2, 2);
@@ -485,9 +454,9 @@ async function startAudio() {
             }
         };
 
-        console.log("Audio processing setup complete");
+        console.log("🎛️ Audio processing setup complete");
     } catch (error) {
-        console.error("Error starting audio:", error);
+        console.error("❌ Error starting audio:", error);
         throw error;
     }
 }
@@ -501,21 +470,21 @@ async function startRecording() {
     resetMeters();
 
     try {
-        console.log("Creating producer...");
+        console.log("🔄 Creating producer...");
         const id = await createProducer();
         producerId = id;
         
         setStatus("Verbinde...");
-        console.log("Opening WebSockets for producer:", producerId);
+        console.log("🔗 Opening WebSockets for producer:", producerId);
         
         audioWs = openAudioWebSocket(producerId);
         peakWs = openPeakWebSocket(producerId);
         
-        console.log("Starting audio capture...");
+        console.log("🎤 Starting audio capture...");
         await startAudio();
 
         if (!rafId) {
-            console.log("Starting waveform rendering");
+            console.log("📈 Starting waveform rendering");
             drawWaveform();
         }
 
@@ -526,10 +495,10 @@ async function startRecording() {
         }
         
         setStatus("Aufnahme läuft");
-        console.log("Recording started successfully");
+        console.log("✅ Recording started successfully");
         
     } catch (error) {
-        console.error("Start recording error:", error);
+        console.error("❌ Start recording error:", error);
         setStatus("Fehler beim Start");
         await stopRecording();
     }
@@ -538,7 +507,7 @@ async function startRecording() {
 async function stopRecording() {
     if (!running) return;
     
-    console.log("Stopping recording...");
+    console.log("🛑 Stopping recording...");
     running = false;
     recordBtn.textContent = "Start";
 
@@ -557,13 +526,13 @@ async function stopRecording() {
     // API-Aufruf zum Stoppen der Session
     if (producerId) {
         try {
-            console.log("Calling stop API for:", producerId);
+            console.log("📡 Calling stop API for:", producerId);
             const response = await fetch(`/api/recorder/stop/${producerId}`, {
                 method: 'POST'
             });
-            console.log("Stop API response:", response.status, response.statusText);
+            console.log("📡 Stop API response:", response.status, response.statusText);
         } catch (error) {
-            console.error("Stop API error:", error);
+            console.error("❌ Stop API error:", error);
         }
     }
 
@@ -612,12 +581,12 @@ async function stopRecording() {
     // State reset
     producerId = null;
     setStatus("Gestoppt");
-    console.log("Recording stopped completely");
+    console.log("🛑 Recording stopped completely");
 }
 
 // Event Listeners
 recordBtn.addEventListener("click", () => {
-    console.log("Record button clicked, running:", running);
+    console.log("🎬 Record button clicked, running:", running);
     if (running) {
         stopRecording();
     } else {
@@ -643,7 +612,7 @@ window.addEventListener("resize", () => {
 
 window.addEventListener("beforeunload", () => {
     if (running) {
-        console.log("Page unloading, stopping recording...");
+        console.log("⚠️ Page unloading, stopping recording...");
         stopRecording();
     }
 });
@@ -652,4 +621,4 @@ window.addEventListener("beforeunload", () => {
 updateViewportUnit();
 resizeCanvas();
 resetMeters();
-console.log("Recorder initialized");
+console.log("✅ Recorder initialized");
