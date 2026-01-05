@@ -1,0 +1,133 @@
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s
+     Running `target/debug/airlift-node`
+[2026-01-05T16:48:48.466Z INFO  airlift_node] === Airlift Node v0.3.0 ===
+[2026-01-05T16:48:48.469Z INFO  airlift_node::core::logging] [INFO][seq=000000][EventBus:airlift_node] EventBus 'airlift_node' created
+[2026-01-05T16:48:48.469Z INFO  airlift_node::core::logging] [INFO][seq=000001][EventBus:airlift_node] Registered handler 'node_event_audit' (total=1)
+[2026-01-05T16:48:48.469Z INFO  airlift_node::core::logging] [INFO][seq=000002][EventBus:airlift_node] EventBus started
+[2026-01-05T16:48:48.469Z INFO  airlift_node::core::logging] [INFO][seq=000003][Node:main] AirliftNode created with buffer registry
+[2026-01-05T16:48:48.469Z INFO  airlift_node] Node: airlift-node-sample
+[2026-01-05T16:48:48.469Z INFO  airlift_node::core::logging] [INFO][seq=000004][EventBus:airlift_node] EventBus processing loop started
+[2026-01-05T16:48:48.469Z INFO  airlift_node::api] [api] server on 0.0.0.0:3008
+[2026-01-05T16:48:48.470Z INFO  airlift_node::core::logging] [INFO][seq=000005][EventBus:airlift_node] Registered handler 'api_peak_history' (total=2)
+[2026-01-05T16:48:48.470Z INFO  airlift_node::core::logging] [INFO][seq=000007][EventBus:airlift_node] [INFO][AirliftNode] ConfigChanged: {"action":"producer_added","buffer_name":"producer:sine","producer_name":"sine","timestamp":1767631728470576626}
+[2026-01-05T16:48:48.470Z INFO  airlift_node::core::logging] [INFO][seq=000008][Node:main] Added producer 'sine' (buffer: 'producer:sine')
+[2026-01-05T16:48:48.470Z INFO  airlift_node] Added sine producer 'sine' (440 Hz)
+[2026-01-05T16:48:48.471Z INFO  airlift_node::core::logging] [INFO][seq=000009][Flow:main] Flow 'main' created
+[2026-01-05T16:48:48.471Z INFO  airlift_node::core::logging] [INFO][seq=000010][Flow:main] Added processor 'passthrough'
+[2026-01-05T16:48:48.471Z INFO  airlift_node] Added processor 'passthrough' to flow 'main'
+[2026-01-05T16:48:48.471Z INFO  airlift_node::core::consumer::file_writer] FileConsumer 'file' attached to buffer
+[2026-01-05T16:48:48.471Z INFO  airlift_node::core::logging] [INFO][seq=000011][Flow:main] Added consumer 'file' (output_buffer addr=0x560d79735210)
+[2026-01-05T16:48:48.471Z INFO  airlift_node] Added FileConsumer 'file' to flow 'main' (data/sample_output.wav)
+[2026-01-05T16:48:48.471Z INFO  airlift_node::core::logging] [INFO][seq=000012][Node:main] Added flow: 'main'
+[2026-01-05T16:48:48.471Z INFO  airlift_node] Added flow 'main'
+[2026-01-05T16:48:48.471Z INFO  airlift_node::core::logging] [INFO][seq=000013][Flow:main] add_input_buffer: buffer addr=0x560d79703490, capacity=1000
+[2026-01-05T16:48:48.471Z INFO  airlift_node::core::logging] [INFO][seq=000014][Flow:main] Connected input buffer from registry 'producer:sine'
+[2026-01-05T16:48:48.471Z INFO  airlift_node::core::logging] [INFO][seq=000015][Node:main] Connected registry buffer 'producer:sine' to flow 0
+[2026-01-05T16:48:48.471Z INFO  airlift_node::core::logging] [INFO][seq=000016][Node:main] Node starting...
+[2026-01-05T16:48:48.471Z INFO  airlift_node::core::logging] [INFO][seq=000017][Node:main] 1 producer(s) started successfully
+[2026-01-05T16:48:48.471Z INFO  airlift_node::core::logging] [INFO][seq=000018][Flow:main] Starting flow...
+[2026-01-05T16:48:48.471Z INFO  airlift_node::core::consumer::file_writer] FileConsumer 'file' starting to write to data/sample_output.wav
+[2026-01-05T16:48:48.472Z INFO  airlift_node::core::logging] [INFO][seq=000020][Flow:main] Processing thread started with 1 input buffers
+[2026-01-05T16:48:48.472Z INFO  airlift_node::core::logging] [INFO][seq=000021][Flow:main] 1 consumer(s) started successfully
+[2026-01-05T16:48:48.472Z INFO  airlift_node::core::logging] [INFO][seq=000022][Flow:main] Legacy output buffer addr=0x560d79735210
+[2026-01-05T16:48:48.472Z INFO  airlift_node::core::logging] [INFO][seq=000023][Flow:main] Flow started successfully
+[2026-01-05T16:48:48.472Z INFO  airlift_node::core::logging] [INFO][seq=000024][Node:main] 1 flow(s) started successfully
+[2026-01-05T16:48:48.472Z INFO  airlift_node::core::logging] [INFO][seq=000026][Node:main] Node started successfully
+[2026-01-05T16:48:48.472Z INFO  airlift_node] Node started. Press Ctrl+C to stop.
+[2026-01-05T16:49:05.842Z INFO  airlift_node::core::logging] [INFO][seq=000386][EventBus:airlift_node] [INFO][AirliftNode] ConfigChanged: {"action":"producer_added","buffer_name":"producer:recorder-1","producer_name":"recorder-1","timestamp":1767631745842623820}
+[2026-01-05T16:49:05.842Z INFO  airlift_node::core::logging] [INFO][seq=000387][Node:main] Added producer 'recorder-1' (buffer: 'producer:recorder-1')
+[2026-01-05T16:49:05.843Z INFO  airlift_node::core::logging] [INFO][seq=000388][Flow:recorder-1] Flow 'recorder-1' created
+[2026-01-05T16:49:05.843Z INFO  airlift_node::core::logging] [INFO][seq=000389][Node:main] Added flow: 'recorder-1'
+[2026-01-05T16:49:05.843Z INFO  airlift_node::core::logging] [INFO][seq=000390][Flow:recorder-1] add_input_buffer: buffer addr=0x7fd63000e840, capacity=1000
+[2026-01-05T16:49:05.843Z INFO  airlift_node::core::logging] [INFO][seq=000391][Flow:recorder-1] Connected input buffer from registry 'producer:recorder-1'
+[2026-01-05T16:49:05.843Z INFO  airlift_node::core::logging] [INFO][seq=000392][Node:main] Connected registry buffer 'producer:recorder-1' to flow 1
+[2026-01-05T16:49:05.843Z INFO  airlift_node::consumers::ws] WsConsumer 'echo-recorder-1' attached to buffer
+[2026-01-05T16:49:05.843Z INFO  airlift_node::core::logging] [INFO][seq=000393][Flow:recorder-1] Added consumer 'echo-recorder-1' (output_buffer addr=0x7fd63000e9d0)
+[2026-01-05T16:49:05.843Z INFO  airlift_node::api::recorder] Added echo consumer 'echo-recorder-1' to flow 1
+[2026-01-05T16:49:05.843Z INFO  airlift_node::core::logging] [INFO][seq=000394][Flow:recorder-1] Starting flow...
+[2026-01-05T16:49:05.844Z INFO  airlift_node::api::recorder] Starting echo forwarder for session: recorder-1
+[2026-01-05T16:49:05.844Z INFO  airlift_node::core::logging] [INFO][seq=000396][Flow:recorder-1] 1 consumer(s) started successfully
+[2026-01-05T16:49:05.844Z INFO  airlift_node::consumers::ws] WsConsumer 'echo-recorder-1' thread started
+[2026-01-05T16:49:05.844Z INFO  airlift_node::core::logging] [INFO][seq=000397][Flow:recorder-1] Flow started successfully
+[2026-01-05T16:49:05.844Z INFO  airlift_node::api::recorder] Started recorder flow 'recorder-1'
+[2026-01-05T16:49:05.844Z INFO  airlift_node::core::logging] [INFO][seq=000395][Flow:recorder-1] Processing thread started with 1 input buffers
+[2026-01-05T16:49:05.844Z INFO  airlift_node::core::logging] [INFO][seq=000398][Flow:recorder-1] Legacy output buffer addr=0x7fd63000e9d0
+[2026-01-05T16:49:06.065Z INFO  airlift_node::core::logging] [INFO][seq=000402][EventBus:airlift_node] Registered handler 'ws-audio-1' (total=3)
+[2026-01-05T16:49:22.419Z INFO  airlift_node::api::ws] Echo WebSocket requested for session: recorder-1
+[2026-01-05T16:49:22.419Z INFO  airlift_node::api::ws] Echo WebSocket connected for session: recorder-1
+[2026-01-05T16:49:22.419Z INFO  airlift_node::api::ws] Starting echo stream for session: recorder-1
+[2026-01-05T16:49:36.773Z INFO  airlift_node::core::logging] [INFO][seq=001422][Node:main] Removing recording session 'recorder-1'
+[2026-01-05T16:49:36.773Z INFO  airlift_node::core::logging] [INFO][seq=001423][Flow:recorder-1] Stopping flow...
+[2026-01-05T16:49:36.779Z INFO  airlift_node::core::logging] [INFO][seq=001424][Flow:recorder-1] Processing thread stopped
+[2026-01-05T16:49:36.782Z INFO  airlift_node::consumers::ws] WsConsumer 'echo-recorder-1' thread stopped
+[2026-01-05T16:49:36.783Z INFO  airlift_node::core::logging] [INFO][seq=001425][Flow:recorder-1] 1 consumer(s) stopped successfully
+[2026-01-05T16:49:36.783Z INFO  airlift_node::core::logging] [INFO][seq=001426][Flow:recorder-1] Flow stopped successfully
+[2026-01-05T16:49:36.783Z INFO  airlift_node::core::logging] [INFO][seq=001427][Node:main] Removed flow 'recorder-1'
+[2026-01-05T16:49:36.784Z INFO  airlift_node::api::recorder] Echo forwarder stopped for session: recorder-1
+[2026-01-05T16:49:36.784Z INFO  airlift_node::core::logging] [INFO][seq=001430][EventBus:airlift_node] [INFO][AirliftNode] ConfigChanged: {"action":"producer_removed","buffer_name":"producer:recorder-1","producer_name":"recorder-1","timestamp":1767631776784052994}
+[2026-01-05T16:49:36.784Z INFO  airlift_node::core::logging] [INFO][seq=001431][Node:main] Removed producer 'recorder-1'
+[2026-01-05T16:49:36.784Z INFO  airlift_node::core::logging] [INFO][seq=001432][Node:main] Recording session 'recorder-1' completely removed
+^C[2026-01-05T16:49:44.337Z INFO  airlift_node] Shutdown requested
+[2026-01-05T16:49:44.485Z INFO  airlift_node::core::logging] [INFO][seq=001591][Node:main] Node stopping...
+[2026-01-05T16:49:44.485Z INFO  airlift_node::core::logging] [INFO][seq=001592][Flow:main] Stopping flow...
+[2026-01-05T16:49:44.485Z INFO  airlift_node::core::consumer::file_writer] FileConsumer 'file' stopping...
+[2026-01-05T16:49:44.490Z INFO  airlift_node::core::consumer::file_writer] FileConsumer stopped. Wrote 5501 frames to data/sample_output.wav
+[2026-01-05T16:49:44.490Z INFO  airlift_node::core::logging] [INFO][seq=001593][Flow:main] 1 consumer(s) stopped successfully
+[2026-01-05T16:49:44.494Z INFO  airlift_node::core::logging] [INFO][seq=001594][Flow:main] Processing thread stopped
+[2026-01-05T16:49:44.494Z INFO  airlift_node::core::logging] [INFO][seq=001595][Flow:main] Flow stopped successfully
+[2026-01-05T16:49:44.494Z INFO  airlift_node::core::logging] [INFO][seq=001596][Node:main] 1 flow(s) stopped successfully
+[2026-01-05T16:49:44.494Z INFO  airlift_node::core::logging] [INFO][seq=001597][Node:main] 1 producer(s) stopped successfully
+[2026-01-05T16:49:44.494Z INFO  airlift_node::core::logging] [INFO][seq=001598][EventBus:airlift_node] EventBus processing loop stopped
+[2026-01-05T16:49:44.494Z INFO  airlift_node::core::logging] [INFO][seq=001599][EventBus:airlift_node] EventBus stopped
+[2026-01-05T16:49:44.494Z INFO  airlift_node::core::logging] [INFO][seq=001600][Node:main] EventBus stopped successfully
+[2026-01-05T16:49:44.494Z INFO  airlift_node::core::logging] [INFO][seq=001601][Node:main] Node stopped successfully
+[2026-01-05T16:49:44.494Z INFO  airlift_node] Node stopped
+__
+recorder.js:624 ✅ Recorder initialized
+recorder.js:589 🎬 Record button clicked, running: false
+recorder.js:473 🔄 Creating producer...
+recorder.js:150 Producer created: recorder-1
+recorder.js:478 🔗 Opening WebSockets for producer: recorder-1
+recorder.js:483 🎤 Starting audio capture...
+recorder.js:419 🎤 MediaStream obtained
+recorder.js:422 🎵 AudioContext sampleRate: 48000
+recorder.js:425 [Deprecation] The ScriptProcessorNode is deprecated. Use AudioWorkletNode instead. (https://bit.ly/audio-worklet)
+startAudio @ recorder.js:425
+await in startAudio
+startRecording @ recorder.js:484
+await in startRecording
+(anonymous) @ recorder.js:593
+recorder.js:457 🎛️ Audio processing setup complete
+recorder.js:487 📈 Starting waveform rendering
+recorder.js:498 ✅ Recording started successfully
+recorder.js:160 ✅ Audio WebSocket connected
+recorder.js:45 Peak [recorder-1]: L=0.000, R=0.000 (events: 1)
+recorder.js:45 Peak [recorder-1]: L=0.835, R=0.835 (events: 21)
+recorder.js:45 Peak [recorder-1]: L=0.024, R=0.024 (events: 41)
+recorder.js:45 Peak [recorder-1]: L=0.005, R=0.005 (events: 61)
+recorder.js:45 Peak [recorder-1]: L=0.006, R=0.006 (events: 81)
+recorder.js:45 Peak [recorder-1]: L=0.032, R=0.032 (events: 100)
+recorder.js:45 Peak [recorder-1]: L=0.007, R=0.007 (events: 120)
+recorder.js:45 Peak [recorder-1]: L=0.006, R=0.006 (events: 140)
+recorder.js:389 🔊 Echo enabled
+recorder.js:45 Peak [recorder-1]: L=0.119, R=0.119 (events: 160)
+recorder.js:219 ✅ Echo WebSocket connected
+recorder.js:317 [Deprecation] The ScriptProcessorNode is deprecated. Use AudioWorkletNode instead. (https://bit.ly/audio-worklet)
+setupEchoAudio @ recorder.js:317
+(anonymous) @ recorder.js:226
+recorder.js:338 🎵 Echo audio setup complete
+recorder.js:45 Peak [recorder-1]: L=0.261, R=0.261 (events: 180)
+recorder.js:45 Peak [recorder-1]: L=0.006, R=0.006 (events: 200)
+recorder.js:45 Peak [recorder-1]: L=0.307, R=0.307 (events: 220)
+recorder.js:45 Peak [recorder-1]: L=0.013, R=0.013 (events: 238)
+recorder.js:45 Peak [recorder-1]: L=0.367, R=0.367 (events: 258)
+recorder.js:45 Peak [recorder-1]: L=0.244, R=0.244 (events: 276)
+recorder.js:383 🔇 Echo disabled
+recorder.js:589 🎬 Record button clicked, running: true
+recorder.js:510 🛑 Stopping recording...
+recorder.js:529 📡 Calling stop API for: recorder-1
+recorder.js:236 🔌 Echo WebSocket closed
+recorder.js:533 📡 Stop API response: 200 
+recorder.js:584 🛑 Recording stopped completely
+recorder.js:165 🔌 Audio WebSocket closed
+recorder.js:207 🔌 Peak WebSocket closed
