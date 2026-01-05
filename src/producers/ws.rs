@@ -6,15 +6,17 @@ use std::sync::{
 use anyhow::Result;
 
 use crate::core::lock::lock_mutex;
-use crate::core::{AudioRingBuffer, PcmFrame, Producer, ProducerStatus};
+use crate::core::{timestamp, AudioRingBuffer, PcmFrame, Producer, ProducerStatus};
 use crate::impl_connectable_producer;
 
 #[derive(Debug)]
 struct WsState {
+    name: String,
     ring: Mutex<Option<Arc<AudioRingBuffer>>>,
     running: AtomicBool,
     samples_processed: AtomicU64,
     errors: AtomicU64,
+    last_log_ns: AtomicU64,
 }
 
 #[derive(Clone)]
@@ -31,6 +33,20 @@ impl WsHandle {
             self.state
                 .samples_processed
                 .fetch_add(samples_len, Ordering::Relaxed);
+            let now = timestamp::utc_ns_now();
+            let last_log = self.state.last_log_ns.load(Ordering::Relaxed);
+            if last_log == 0 || now.saturating_sub(last_log) >= 5_000_000_000 {
+                self.state.last_log_ns.store(now, Ordering::Relaxed);
+                let stats = rb.stats();
+                log::info!(
+                    "WsProducer '{}' stats: buffer_frames={}, dropped_frames={}, samples_processed={}, errors={}",
+                    self.state.name,
+                    stats.current_frames,
+                    stats.dropped_frames,
+                    self.state.samples_processed.load(Ordering::Relaxed),
+                    self.state.errors.load(Ordering::Relaxed)
+                );
+            }
             Ok(())
         } else {
             self.state.errors.fetch_add(1, Ordering::Relaxed);
@@ -47,10 +63,12 @@ pub struct WsProducer {
 impl WsProducer {
     pub fn new(name: &str) -> (Self, WsHandle) {
         let state = Arc::new(WsState {
+            name: name.to_string(),
             ring: Mutex::new(None),
             running: AtomicBool::new(false),
             samples_processed: AtomicU64::new(0),
             errors: AtomicU64::new(0),
+            last_log_ns: AtomicU64::new(0),
         });
         (
             Self {

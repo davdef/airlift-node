@@ -470,6 +470,7 @@ impl Flow {
 
         let mut peak_accumulator = PeakAccumulator::new();
         let mut iteration = 0;
+        let output_reader_id = format!("{}:output", flow_reader_id);
         while running.load(Ordering::Relaxed) {
             iteration += 1;
 
@@ -510,30 +511,35 @@ impl Flow {
                 ));
             }
 
-// Einfache Pipeline-Verarbeitung
-let proc_len = processors.len();
+            // Einfache Pipeline-Verarbeitung
+            let proc_len = processors.len();
+            if proc_len == 0 {
+                while let Some(frame) = input_merge_buffer.pop_for_reader(&output_reader_id) {
+                    output_buffer.push(frame);
+                }
+            } else {
+                for (i, processor) in processors.iter_mut().enumerate() {
+                    let input = if i == 0 {
+                        &input_merge_buffer
+                    } else {
+                        &processor_buffers[i - 1]
+                    };
 
-for (i, processor) in processors.iter_mut().enumerate() {
-    let input = if i == 0 {
-        &input_merge_buffer
-    } else {
-        &processor_buffers[i - 1]
-    };
+                    let output = if i + 1 < proc_len {
+                        &processor_buffers[i]
+                    } else {
+                        &output_buffer
+                    };
 
-    let output = if i + 1 < proc_len {
-        &processor_buffers[i]
-    } else {
-        &output_buffer
-    };
-
-    if let Err(e) = processor.process(input, output) {
-        flow_logger.error(&format!(
-            "Processor '{}' error: {}",
-            processor.name(),
-            e
-        ));
-    }
-}
+                    if let Err(e) = processor.process(input, output) {
+                        flow_logger.error(&format!(
+                            "Processor '{}' error: {}",
+                            processor.name(),
+                            e
+                        ));
+                    }
+                }
+            }
 
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
@@ -563,6 +569,7 @@ for (i, processor) in processors.iter_mut().enumerate() {
 
         let mut peak_accumulator = PeakAccumulator::new();
         let mut iteration = 0;
+        let output_reader_id = format!("{}:output", flow_reader_id);
         while running.load(Ordering::Relaxed) {
             iteration += 1;
 
@@ -605,6 +612,13 @@ for (i, processor) in processors.iter_mut().enumerate() {
             let mut scratch_index = 0;
 
             let proc_len = processors.len();
+            if proc_len == 0 {
+                while let Some(frame) = input_merge_buffer.pop_for_reader(&output_reader_id) {
+                    output_buffer.push(frame);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                continue;
+            }
 
             for (i, processor) in processors.iter_mut().enumerate() {
                 let is_last = i + 1 == proc_len;
