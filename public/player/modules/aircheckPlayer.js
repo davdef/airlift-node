@@ -75,6 +75,7 @@ export class AircheckPlayer {
             this.isInitialized = true;
             this.ui.setIdleState({ active: false });
             this.ui.updateStatus('Bereit', 'success');
+            this.startRenderLoop();
             
         } catch (error) {
             if (this.initTimeout) clearTimeout(this.initTimeout);
