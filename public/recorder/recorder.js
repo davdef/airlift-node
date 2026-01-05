@@ -256,8 +256,12 @@ function openEchoWebSocket(sessionId) {
             return;
         }
         
-        // Float32-Daten empfangen
-        const floatData = new Float32Array(event.data);
+        // Int16-Daten empfangen (Server sendet i16 PCM)
+        const int16Data = new Int16Array(event.data);
+        const floatData = new Float32Array(int16Data.length);
+        for (let i = 0; i < int16Data.length; i++) {
+            floatData[i] = int16Data[i] / 32768.0;
+        }
         
         if (floatData.length === 0) return;
         
