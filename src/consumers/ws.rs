@@ -76,6 +76,7 @@ impl Consumer for WsConsumer {
         let handle = std::thread::spawn(move || {
             log::info!("WsConsumer '{}' thread started (echo_mode: {})", name, echo_mode);
             let mut last_stats = Instant::now();
+            let mut last_echo_sent = Instant::now();
             
             while connected.load(Ordering::Relaxed) {
                 if let Some(buffer) = &input_buffer {
@@ -90,7 +91,7 @@ impl Consumer for WsConsumer {
                             stats.dropped_frames,
                             frames_processed.load(Ordering::Relaxed),
                             errors.load(Ordering::Relaxed),
-                            available
+                            buffer.len()
                         );
                         last_stats = Instant::now();
                     }
@@ -115,9 +116,22 @@ impl Consumer for WsConsumer {
                     if let Some(frame) = buffer.pop_for_reader(&reader_id) {
                         if echo_mode {
                             let frame_size = frame.samples.len() * 2;
+                            let now = Instant::now();
+                            if frame.sample_rate > 0 && frame.channels > 0 {
+                                let samples_per_channel = frame.samples.len() as f32 / frame.channels as f32;
+                                if samples_per_channel > 0.0 {
+                                    let frame_duration = Duration::from_secs_f32(
+                                        samples_per_channel / frame.sample_rate as f32,
+                                    );
+                                    if now.duration_since(last_echo_sent) < frame_duration {
+                                        std::thread::sleep(frame_duration - now.duration_since(last_echo_sent));
+                                    }
+                                }
+                            }
 
                             if let Some(sender) = &sender {
                                 if sender.send(frame).is_ok() {
+                                    last_echo_sent = Instant::now();
                                     frames_processed.fetch_add(1, Ordering::Relaxed);
                                     bytes_written.fetch_add(frame_size as u64, Ordering::Relaxed);
                                     log::trace!("WsConsumer '{}' sent echo frame ({} samples)", 
