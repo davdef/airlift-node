@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 use anyhow::Result;
 use crossbeam_channel::{Sender, Receiver, unbounded};
 
@@ -61,9 +62,25 @@ impl Consumer for WsConsumer {
 
         let handle = std::thread::spawn(move || {
             log::info!("WsConsumer '{}' thread started", name);
+            let mut last_stats = Instant::now();
             
             while connected.load(Ordering::Relaxed) {
                 if let Some(buffer) = &input_buffer {
+                    if last_stats.elapsed() >= Duration::from_secs(5) {
+                        let available = buffer.available_for_reader(&reader_id);
+                        let stats = buffer.stats();
+                        log::info!(
+                            "WsConsumer '{}' stats: available_for_reader={}, buffer_frames={}, dropped_frames={}, frames_processed={}, errors={}",
+                            name,
+                            available,
+                            stats.current_frames,
+                            stats.dropped_frames,
+                            frames_processed.load(Ordering::Relaxed),
+                            errors.load(Ordering::Relaxed)
+                        );
+                        last_stats = Instant::now();
+                    }
+
                     if let Some(frame) = buffer.pop_for_reader(&reader_id) {
                         log::debug!("WsConsumer '{}' got frame with {} samples", name, frame.samples.len());
                         
@@ -83,6 +100,15 @@ impl Consumer for WsConsumer {
                         std::thread::sleep(std::time::Duration::from_millis(10));
                     }
                 } else {
+                    if last_stats.elapsed() >= Duration::from_secs(5) {
+                        log::info!(
+                            "WsConsumer '{}' waiting for input buffer (frames_processed={}, errors={})",
+                            name,
+                            frames_processed.load(Ordering::Relaxed),
+                            errors.load(Ordering::Relaxed)
+                        );
+                        last_stats = Instant::now();
+                    }
                     std::thread::sleep(std::time::Duration::from_millis(100));
                 }
             }
