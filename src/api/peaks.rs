@@ -15,6 +15,7 @@ pub struct PeakPoint {
     pub peak_l: f32,
     pub peak_r: f32,
     pub silence: bool,
+    pub flow: String,
 }
 
 #[derive(Debug)]
@@ -34,17 +35,22 @@ impl PeakHistory {
         self.trim_to_retention();
     }
 
-    pub fn range(&self, from: u64, to: u64) -> Vec<PeakPoint> {
+    pub fn range(&self, from: u64, to: u64, flow: Option<&str>) -> Vec<PeakPoint> {
         self.points
             .iter()
             .filter(|point| point.ts >= from && point.ts <= to)
+            .filter(|point| flow.map(|filter| point.flow == filter).unwrap_or(true))
             .cloned()
             .collect()
     }
 
-    pub fn buffer_range(&self) -> Option<(u64, u64)> {
-        let start = self.points.front()?.ts;
-        let end = self.points.back()?.ts;
+    pub fn buffer_range(&self, flow: Option<&str>) -> Option<(u64, u64)> {
+        let mut iter = self
+            .points
+            .iter()
+            .filter(|point| flow.map(|filter| point.flow == filter).unwrap_or(true));
+        let start = iter.next()?.ts;
+        let end = iter.last().map(|point| point.ts).unwrap_or(start);
         Some((start, end))
     }
 
@@ -81,6 +87,10 @@ impl EventHandler for PeakHistoryHandler {
         let payload = &event.payload;
         let timestamp = payload.get("timestamp").and_then(normalize_timestamp_ms);
         let peaks = payload.get("peaks").and_then(|value| value.as_array());
+        let flow = payload
+            .get("flow")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown");
 
         let (Some(timestamp), Some(peaks)) = (timestamp, peaks) else {
             return Ok(());
@@ -99,6 +109,7 @@ impl EventHandler for PeakHistoryHandler {
             peak_l,
             peak_r,
             silence,
+            flow: flow.to_string(),
         });
 
         Ok(())
@@ -144,9 +155,11 @@ pub fn handle_peaks_request(request: Request, history: Arc<Mutex<PeakHistory>>) 
         end: Option<u64>,
     }
 
+    let flow = request.url().split('?').nth(1).and_then(|query| query_value(query, "flow"));
+
     let range = {
         let history = lock_mutex(&history, "api.peak_history.range");
-        history.buffer_range()
+        history.buffer_range(flow)
     };
 
     let response = PeaksResponse {
@@ -163,14 +176,14 @@ pub fn handle_history_request(
     history: Arc<Mutex<PeakHistory>>,
     query: Option<&str>,
 ) {
-    let Some((from, to)) = parse_history_query(query) else {
+    let Some((from, to, flow)) = parse_history_query(query) else {
         let _ = request.respond(Response::empty(StatusCode(400)));
         return;
     };
 
     let points = {
         let history = lock_mutex(&history, "api.peak_history.query");
-        history.range(from, to)
+        history.range(from, to, flow)
     };
 
     respond_json(request, StatusCode(200), points);
@@ -184,14 +197,15 @@ fn respond_json<T: Serialize>(request: Request, status: StatusCode, payload: T) 
     let _ = request.respond(response);
 }
 
-fn parse_history_query(query: Option<&str>) -> Option<(u64, u64)> {
+fn parse_history_query(query: Option<&str>) -> Option<(u64, u64, Option<&str>)> {
     let query = query?;
     let from = query_value(query, "from")?.parse::<u64>().ok()?;
     let to = query_value(query, "to")?.parse::<u64>().ok()?;
     if from >= to {
         return None;
     }
-    Some((from, to))
+    let flow = query_value(query, "flow");
+    Some((from, to, flow))
 }
 
 fn query_value<'a>(query: &'a str, key: &str) -> Option<&'a str> {
