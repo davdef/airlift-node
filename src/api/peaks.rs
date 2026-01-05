@@ -109,7 +109,7 @@ impl EventHandler for PeakHistoryHandler {
     }
 
     fn priority_filter(&self) -> Option<EventPriority> {
-        Some(EventPriority::Info)
+        Some(EventPriority::Debug)
     }
 
     fn event_type_filter(&self) -> Option<Vec<EventType>> {

@@ -43,6 +43,12 @@ pub fn start_api_server(
                 continue;
             }
 
+            if req.method() == &Method::Get && path.starts_with("/ws/echo/") {
+                let session_id = path.trim_start_matches("/ws/echo/").to_string();
+                ws::handle_echo_ws_request(req, node.clone(), session_id);
+                continue;
+            }
+
             match (req.method(), path) {
                 (&Method::Get, "/health") => {
                     monitoring::handle_health_request(req, node.clone());
@@ -80,24 +86,14 @@ pub fn start_api_server(
                     recorder::handle_recorder_start(req, node.clone());
                     continue;
                 }
+                (&Method::Post, _) if path.starts_with("/api/recorder/stop/") => {
+                    recorder::handle_recorder_stop(req, node.clone());
+                    continue;
+                }
                 (&Method::Get, "/api/catalog") => {
                     catalog::handle_catalog_request(req, node.clone());
+                    continue;
                 }
-    (&Method::Post, "/api/recorder/start") => {
-        recorder::handle_recorder_start(req, node.clone());
-    }
-    
-    // Neue Route für Stop
-    _ if req.method() == &Method::Post && path.starts_with("/api/recorder/stop/") => {
-        recorder::handle_recorder_stop(req, node.clone());
-    }
-
-_ if req.method() == &Method::Get && path.starts_with("/ws/echo/") => {
-    let session_id = path.trim_start_matches("/ws/echo/").to_string();
-    println!("DEBUG: Echo WS request for session: {}", session_id); // Log hinzufügen
-    ws::handle_echo_ws_request(req, node.clone(), session_id);
-}
-
                 _ => {
                     let _ = req.respond(Response::empty(StatusCode(404)));
                 }
