@@ -81,6 +81,30 @@
             align-items: center;
         }
 
+        .source-picker {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 10px;
+            background: var(--panel-light);
+            border-radius: 6px;
+            color: var(--text);
+            font-size: 14px;
+        }
+
+        .source-picker label {
+            opacity: 0.7;
+        }
+
+        .source-picker select {
+            background: #0f1318;
+            color: var(--text);
+            border: 1px solid #2a3240;
+            border-radius: 6px;
+            padding: 6px 8px;
+            font-size: 14px;
+        }
+
         button {
             padding: 8px 14px;
             font-size: 15px;
@@ -145,6 +169,12 @@
         <div id="controls">
             <button id="playBtn"><span id="playIcon">▶</span></button>
             <button id="liveBtn">Follow HEAD/LIVE</button>
+            <div class="source-picker">
+                <label for="sourceSelect">Quelle</label>
+                <select id="sourceSelect">
+                    <option value="">Alle Quellen</option>
+                </select>
+            </div>
         </div>
     </header>
     
