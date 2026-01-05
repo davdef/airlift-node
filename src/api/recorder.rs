@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use serde::Serialize;
@@ -66,8 +67,9 @@ pub fn handle_recorder_start(
                             );
                         }
 
-                        // Echo-Consumer erstellen und hinzufügen
-                        let (echo_consumer, echo_receiver) = WsConsumer::new(&format!("echo-{}", producer_id));
+                        // Echo-Consumer erstellen und konfigurieren
+                        let (mut echo_consumer, echo_receiver) = WsConsumer::new(&format!("echo-{}", producer_id));
+                        echo_consumer.set_echo_mode(true); // WICHTIG: Echo-Modus aktivieren!
                         
                         if let Err(err) = guard.add_consumer_to_flow(flow_index, Box::new(echo_consumer)) {
                             log::warn!("Failed to add echo consumer to flow {}: {}", flow_index, err);
@@ -80,12 +82,15 @@ pub fn handle_recorder_start(
                         std::thread::spawn(move || {
                             log::info!("Starting echo forwarder for session: {}", session_id);
                             let mut frame_count = 0;
+                            let mut last_log = Instant::now();
                             
                             for frame in echo_receiver.iter() {
                                 frame_count += 1;
                                 
-                                if frame_count % 100 == 0 {
+                                // Gelegentlich loggen (nicht zu oft)
+                                if last_log.elapsed() >= std::time::Duration::from_secs(2) {
                                     log::debug!("Echo forwarder '{}': forwarded {} frames", session_id, frame_count);
+                                    last_log = Instant::now();
                                 }
                                 
                                 let clients = {
@@ -100,6 +105,7 @@ pub fn handle_recorder_start(
 
                                 let mut failed_clients = Vec::new();
                                 for (client_id, sender) in clients {
+                                    // Frame KLONEN und senden (jeder Client bekommt eigene Kopie)
                                     if sender.send(frame.clone()).is_err() {
                                         failed_clients.push(client_id);
                                     }

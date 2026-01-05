@@ -16,6 +16,9 @@ pub struct WsConsumer {
     errors: Arc<AtomicU64>,
     reader_id: String,
     thread_handle: Option<std::thread::JoinHandle<()>>,
+    // NEU: Echo-Konfiguration
+    echo_mode: bool,
+    echo_target_interval_ms: u64,
 }
 
 impl WsConsumer {
@@ -32,9 +35,22 @@ impl WsConsumer {
                 errors: Arc::new(AtomicU64::new(0)),
                 reader_id: format!("consumer:{}", name),
                 thread_handle: None,
+                // WICHTIG: 21ms für 1024 Samples bei 48kHz (~47 FPS)
+                echo_mode: false,
+                echo_target_interval_ms: 21,
             },
             receiver
         )
+    }
+    
+    // NEUE METHODE: Für Echo konfigurieren
+    pub fn set_echo_mode(&mut self, enabled: bool) {
+        self.echo_mode = enabled;
+        if enabled {
+            log::info!("WsConsumer '{}' configured for echo mode ({}ms interval = ~{} FPS)", 
+                self.name, self.echo_target_interval_ms, 
+                1000 / self.echo_target_interval_ms);
+        }
     }
 }
 
@@ -59,10 +75,16 @@ impl Consumer for WsConsumer {
         let bytes_written = self.bytes_written.clone();
         let errors = self.errors.clone();
         let name = self.name.clone();
+        
+        // Echo-spezifische Parameter
+        let echo_mode = self.echo_mode;
+        let echo_interval = Duration::from_millis(self.echo_target_interval_ms);
 
         let handle = std::thread::spawn(move || {
-            log::info!("WsConsumer '{}' thread started", name);
+            log::info!("WsConsumer '{}' thread started (echo_mode: {})", name, echo_mode);
             let mut last_stats = Instant::now();
+            let mut last_echo_sent = Instant::now();
+            let mut echo_frame_buffer = Vec::new();
             
             while connected.load(Ordering::Relaxed) {
                 if let Some(buffer) = &input_buffer {
@@ -70,42 +92,78 @@ impl Consumer for WsConsumer {
                         let available = buffer.available_for_reader(&reader_id);
                         let stats = buffer.stats();
                         log::info!(
-                            "WsConsumer '{}' stats: available_for_reader={}, buffer_frames={}, dropped_frames={}, frames_processed={}, errors={}",
+                            "WsConsumer '{}' stats: available={}, buffer_frames={}, dropped={}, processed={}, errors={}, echo_buffer={}",
                             name,
                             available,
                             stats.current_frames,
                             stats.dropped_frames,
                             frames_processed.load(Ordering::Relaxed),
-                            errors.load(Ordering::Relaxed)
+                            errors.load(Ordering::Relaxed),
+                            echo_frame_buffer.len()
                         );
                         last_stats = Instant::now();
                     }
 
                     if let Some(frame) = buffer.pop_for_reader(&reader_id) {
-                        log::debug!("WsConsumer '{}' got frame with {} samples", name, frame.samples.len());
-                        
-                        if let Some(sender) = &sender {
-                            let frame_size = frame.samples.len() * 2; // i16 = 2 bytes
+                        if echo_mode {
+                            // ECHO MODUS: Frame BEHALTEN in Originalgröße (1024 Samples)
+                            // Keine Reduzierung auf 512 Samples!
+                            echo_frame_buffer.push(frame);
                             
-                            if sender.send(frame).is_ok() {
-                                frames_processed.fetch_add(1, Ordering::Relaxed);
-                                bytes_written.fetch_add(frame_size as u64, Ordering::Relaxed);
-                                log::trace!("WsConsumer '{}' sent frame", name);
-                            } else {
+                            // Buffer auf 20 Frames beschränken (~420ms bei 21ms/Frame)
+                            if echo_frame_buffer.len() > 20 {
+                                // Den ältesten Frame entfernen
+                                echo_frame_buffer.remove(0);
                                 errors.fetch_add(1, Ordering::Relaxed);
-                                log::warn!("WsConsumer '{}' failed to send frame (queue full?)", name);
+                                log::trace!("Echo buffer overflow, dropped oldest frame");
+                            }
+                            
+                            // Prüfen ob wir senden sollten (alle 21ms = ~47 FPS)
+                            let now = Instant::now();
+                            if now.duration_since(last_echo_sent) >= echo_interval && !echo_frame_buffer.is_empty() {
+                                last_echo_sent = now;
+                                
+                                // Den ältesten Frame nehmen und senden
+                                let frame_to_send = echo_frame_buffer.remove(0);
+                                let frame_size = frame_to_send.samples.len() * 2;
+                                
+                                if let Some(sender) = &sender {
+                                    if sender.send(frame_to_send).is_ok() {
+                                        frames_processed.fetch_add(1, Ordering::Relaxed);
+                                        bytes_written.fetch_add(frame_size as u64, Ordering::Relaxed);
+                                        log::trace!("WsConsumer '{}' sent echo frame ({} samples)", 
+                                            name, frame_size / 2);
+                                    } else {
+                                        errors.fetch_add(1, Ordering::Relaxed);
+                                        log::warn!("WsConsumer '{}' failed to send echo frame", name);
+                                    }
+                                }
+                            }
+                        } else {
+                            // NORMAL MODUS: Direkt senden
+                            let frame_size = frame.samples.len() * 2;
+                            
+                            if let Some(sender) = &sender {
+                                if sender.send(frame).is_ok() {
+                                    frames_processed.fetch_add(1, Ordering::Relaxed);
+                                    bytes_written.fetch_add(frame_size as u64, Ordering::Relaxed);
+                                    log::trace!("WsConsumer '{}' sent frame", name);
+                                } else {
+                                    errors.fetch_add(1, Ordering::Relaxed);
+                                    log::warn!("WsConsumer '{}' failed to send frame", name);
+                                }
                             }
                         }
                     } else {
-                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        // Kürzere Sleep-Zeit für Echo-Modus
+                        let sleep_ms = if echo_mode { 2 } else { 10 };
+                        std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
                     }
                 } else {
                     if last_stats.elapsed() >= Duration::from_secs(5) {
                         log::info!(
-                            "WsConsumer '{}' waiting for input buffer (frames_processed={}, errors={})",
-                            name,
-                            frames_processed.load(Ordering::Relaxed),
-                            errors.load(Ordering::Relaxed)
+                            "WsConsumer '{}' waiting for input buffer",
+                            name
                         );
                         last_stats = Instant::now();
                     }
