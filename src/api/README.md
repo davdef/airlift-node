@@ -164,29 +164,25 @@ WebSocket for sending PCM audio frames to the recorder producer.
 
 ### `GET /ws/echo/<session_id>`
 
-Intended for echo playback for a recorder session. The connection exists, but
-see the **Known inconsistencies & follow-ups** below.
+WebSocket for echo playback for a recorder session.
+
+- **Server message format**: binary frames containing interleaved `i16` samples
+  encoded as little-endian bytes.
+- **Sample rate**: 48kHz; **channels**: 2.
 
 ## Known inconsistencies & follow-ups
 
 These are implementation details that may be surprising to clients or worth
 addressing:
 
-1. **Echo WS doesn’t stream audio frames yet**
-   - `handle_echo_ws_request` currently only performs the handshake and waits
-     for ping/close frames. It does not send audio frames to clients, and the
-     supporting channel plumbing in `recorder.rs` is incomplete.
-   - This means the recorder UI’s echo playback will connect, but never receive
-     audio frames.
-
-2. **Status response omits module metadata**
+1. **Status response omits module metadata**
    - `StatusResponse` includes `modules`, `inactive_modules`, and
      `configuration_issues`, but they are currently always empty (`Vec::new()`).
    - The status UI expects these to render module diagnostics.
 
-3. **Peak history is keyed by flow name**
+2. **Peak history is keyed by flow name**
    - `AudioPeak` events include `flow` in their payload. Frontends that need
      per-producer or per-flow peak views should filter by this field.
 
-If you want, I can file follow-up patches to implement the echo streaming
-pipeline and/or populate module diagnostics in `StatusResponse`.
+If you want, I can file follow-up patches to populate module diagnostics in
+`StatusResponse`.
