@@ -37,17 +37,27 @@ pub fn apply_config(node: &mut AirliftNode, config: &Config) -> anyhow::Result<(
                 node.add_producer(Box::new(producer))
                     .context("failed to add file producer")?;
             }
+            #[cfg(feature = "alsa")]
             "alsa_input" => {
                 let producer = producers::alsa::AlsaProducer::new(name, producer_cfg)
                     .context("failed to create ALSA input producer")?;
                 node.add_producer(Box::new(producer))
                     .context("failed to add ALSA input producer")?;
             }
+            #[cfg(feature = "alsa")]
             "alsa_output" => {
                 let producer = producers::alsa::AlsaOutputCapture::new(name, producer_cfg)
                     .context("failed to create ALSA output capture producer")?;
                 node.add_producer(Box::new(producer))
                     .context("failed to add ALSA output capture producer")?;
+            }
+            #[cfg(not(feature = "alsa"))]
+            "alsa_input" | "alsa_output" => {
+                bail!(
+                    "producer '{}' uses ALSA type '{}' but ALSA support is disabled",
+                    name,
+                    producer_cfg.producer_type
+                );
             }
             "sine" => {
                 let freq: f32 = producer_cfg
@@ -219,7 +229,10 @@ pub fn validate_config_capabilities(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "alsa")]
 const SUPPORTED_PRODUCER_TYPES: [&str; 4] = ["file", "alsa_input", "alsa_output", "sine"];
+#[cfg(not(feature = "alsa"))]
+const SUPPORTED_PRODUCER_TYPES: [&str; 2] = ["file", "sine"];
 const SUPPORTED_PROCESSOR_TYPES: [&str; 3] = ["passthrough", "gain", "mixer"];
 const SUPPORTED_CONSUMER_TYPES: [&str; 1] = ["file"];
 
