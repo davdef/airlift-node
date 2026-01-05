@@ -2,10 +2,12 @@
 <html lang="de">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>RFM Aircheck Player</title>
-
+    <script type="module" src="main.js"></script>
+    <link rel="stylesheet" href="styles/player.css">
     <style>
+        /* Temporäres Inline-CSS bis player.css vollständig ist */
         :root {
             --bg: #0b0e11;
             --panel: #14171c;
@@ -22,8 +24,6 @@
             font-family: system-ui, sans-serif;
             overflow-x: hidden;
         }
-
-        /* HEADER --------------------------------------------------- */
 
         header {
             display: flex;
@@ -55,8 +55,6 @@
             margin: 0;
         }
 
-        /* WAVEFORM ------------------------------------------------- */
-
         #waveform {
             width: 100%;
             height: calc(var(--vh, 1vh) * 55);
@@ -76,8 +74,6 @@
                 height: calc(var(--vh, 1vh) * 48);
             }
         }
-
-        /* CONTROLS ------------------------------------------------- */
 
         #controls {
             display: flex;
@@ -101,12 +97,9 @@
             background: var(--blue-light);
         }
 
-        /* Mach den Chrome-Orange-Unsinn kaputt */
         button span {
             color: var(--bg) !important;
         }
-
-        /* DEBUG ---------------------------------------------------- */
 
         #debugPanel {
             padding: 8px 12px;
@@ -118,8 +111,6 @@
         #debugPanel div {
             margin-bottom: 4px;
         }
-
-        /* FLOATING LIVE BUTTON ------------------------------------- */
 
         #jumpLiveBtn {
             position: fixed;
@@ -139,68 +130,37 @@
             background: var(--blue-light);
         }
 
-        /* Auto-hide */
         .dimmed {
             opacity: 0.25;
             transition: opacity 0.25s ease;
         }
     </style>
 </head>
-
 <body>
-
-<header>
-    <div class="header-left">
-        <img src="../rfm-logo.png" alt="RFM Logo">
-        <h1>AIRCHECK</h1>
+    <header>
+        <div class="header-left">
+            <img src="../rfm-logo.png" alt="RFM Logo">
+            <h1>AIRCHECK</h1>
+        </div>
+        <div id="controls">
+            <button id="playBtn"><span id="playIcon">▶</span></button>
+            <button id="liveBtn">Live</button>
+        </div>
+    </header>
+    
+    <canvas id="waveform"></canvas>
+    
+    <div id="debugPanel">
+        <div>Status: <span id="status">–</span></div>
+        <div>Mode: <span id="dbgMode">–</span></div>
+        <div>Viewport: <span id="dbgViewport">–</span></div>
+        <div>Playhead: <span id="dbgPlayhead">–</span></div>
+        <div>AudioTime: <span id="dbgAudioTime">–</span></div>
+        <div>History: <span id="dbgHistory">–</span></div>
+        <div>Last WS: <span id="dbgLastWs">–</span></div>
+        <div>Buffer: <span id="bufferInfo">–</span></div>
     </div>
-    <div id="controls">
-        <button id="playBtn"><span id="playIcon">▶</span></button>
-        <button id="liveBtn">Live</button>
-    </div>
-</header>
-
-<canvas id="waveform"></canvas>
-
-<div id="debugPanel">
-    <div>Status: <span id="status">–</span></div>
-    <div>Mode: <span id="dbgMode">–</span></div>
-    <div>Viewport: <span id="dbgViewport">–</span></div>
-    <div>Playhead: <span id="dbgPlayhead">–</span></div>
-    <div>AudioTime: <span id="dbgAudioTime">–</span></div>
-    <div>History: <span id="dbgHistory">–</span></div>
-    <div>Last WS: <span id="dbgLastWs">–</span></div>
-    <div>Buffer: <span id="bufferInfo">–</span></div>
-</div>
-
-<script src="player-input.js"></script>
-<script src="player.js"></script>
-
-<script>
-/* Auto-hide UI on mobile */
-
-const uiElems = [
-    document.getElementById("controls"),
-    document.getElementById("debugPanel")
-];
-
-let uiTimer;
-function uiShow() {
-    uiElems.forEach(e => e.classList.remove("dimmed"));
-    if (uiTimer) clearTimeout(uiTimer);
-
-    uiTimer = setTimeout(() => {
-        if (window.innerWidth < 900) {
-            uiElems.forEach(e => e.classList.add("dimmed"));
-        }
-    }, 3000);
-}
-
-window.addEventListener("mousemove", uiShow);
-window.addEventListener("touchstart", uiShow);
-window.addEventListener("touchmove", uiShow);
-uiShow();
-</script>
-
+    
+    <button id="jumpLiveBtn">▶ LIVE</button>
 </body>
 </html>
