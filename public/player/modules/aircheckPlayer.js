@@ -29,6 +29,9 @@ export class AircheckPlayer {
         this.lastWsUpdate = null;
         this.bufferInfo = { start: null, end: null };
         this.cacheValid = false;
+        this.selectedSource = null;
+        this.sourceOptions = [];
+        this.sourceStatus = document.getElementById('sourceStatus');
         
         this.animationFrame = null;
         this.lastRenderTime = 0;
@@ -41,6 +44,14 @@ export class AircheckPlayer {
         
         this.input = new PlayerInputHandler(this, this.canvas);
         this.input.attach();
+
+        this.sourceSelect = document.getElementById('sourceSelect');
+        if (this.sourceSelect) {
+            this.sourceSelect.addEventListener('change', (event) => {
+                const next = event.target.value || null;
+                this.setActiveSource(next, { persist: true });
+            });
+        }
         
         console.log('🎵 Aircheck Player gestartet');
         this.ui.updateStatus('Initialisiere...', 'info');
@@ -74,11 +85,11 @@ export class AircheckPlayer {
     }
     
     async initializeCore() {
-        await this.fetchBufferInfo();
-        await Promise.all([
-            this.fetchPipelineState(),
-            this.initWebSocket()
-        ]);
+        await this.fetchPipelineState();
+        if (this.selectedSource) {
+            await this.fetchBufferInfo();
+        }
+        await this.initWebSocket();
         return true;
     }
     
@@ -110,7 +121,8 @@ export class AircheckPlayer {
     
     async fetchBufferInfo() {
         try {
-            const response = await fetch('/api/peaks');
+            const flowParam = this.selectedSource ? `?flow=${encodeURIComponent(this.selectedSource)}` : '';
+            const response = await fetch(`/api/peaks${flowParam}`);
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             
             const data = await response.json();
@@ -142,6 +154,7 @@ export class AircheckPlayer {
             
             const status = await response.json();
             const hasPipeline = (status?.flows || []).length > 0 || (status?.producers || []).length > 0;
+            this.updateSourceOptions(status);
             if (!hasPipeline) this.ui.updateStatus('Keine Pipeline', 'warning');
             return hasPipeline;
         } catch (error) {
@@ -166,10 +179,12 @@ export class AircheckPlayer {
         );
         this.wsManager.connect();
     }
-    
+
     handleWsMessage(data) {
         const eventTimestamp = this.normalizeEventTimestamp(data?.timestamp);
         if (!eventTimestamp) return;
+        if (this.selectedSource && data?.flow !== this.selectedSource) return;
+        if (!Array.isArray(data?.peaks) || data.peaks.length === 0) return;
         
         this.serverTime = eventTimestamp;
         this.lastWsUpdate = performance.now();
@@ -198,6 +213,74 @@ export class AircheckPlayer {
         if (timestamp > 1e15) return Math.round(timestamp / 1_000_000);
         if (timestamp > 1e12) return Math.round(timestamp / 1_000);
         return timestamp;
+    }
+
+    updateSourceOptions(status) {
+        const flowNames = (status?.flows || []).map((flow) => flow.name);
+        const producers = status?.producers || [];
+        const producerNames = producers.map((producer) => producer.name);
+        const unique = Array.from(new Set([...producerNames, ...flowNames]));
+        this.sourceOptions = unique;
+
+        if (this.sourceSelect) {
+            this.sourceSelect.innerHTML = '';
+            const allOption = document.createElement('option');
+            allOption.value = '';
+            allOption.textContent = 'Alle Quellen';
+            this.sourceSelect.appendChild(allOption);
+
+            unique.forEach((name) => {
+                const option = document.createElement('option');
+                option.value = name;
+                option.textContent = name;
+                this.sourceSelect.appendChild(option);
+            });
+        }
+
+        const stored = window.localStorage.getItem('aircheck.source');
+        const preferred = stored && unique.includes(stored) ? stored : null;
+        const runningProducer = producers.find((producer) => producer.running || producer.connected)?.name;
+        const next = preferred || runningProducer || (producerNames[0] ?? flowNames[0] ?? null);
+        this.setActiveSource(next, { persist: false, updateSelect: true });
+    }
+
+    async setActiveSource(source, { persist = true, updateSelect = false } = {}) {
+        if (this.selectedSource === source) return;
+        this.selectedSource = source;
+        this.history.setFlow(source);
+        this.cacheValid = false;
+
+        if (this.sourceSelect && updateSelect) {
+            this.sourceSelect.value = source || '';
+        }
+
+        if (persist) {
+            if (source) {
+                window.localStorage.setItem('aircheck.source', source);
+            } else {
+                window.localStorage.removeItem('aircheck.source');
+            }
+        }
+
+        if (this.sourceStatus) {
+            this.sourceStatus.textContent = source || '–';
+        }
+
+        if (!source) {
+            this.ui.setIdleState({
+                active: true,
+                title: 'Quelle wählen',
+                subtitle: 'Bitte einen Producer auswählen, um den Player zu starten.'
+            });
+            this.ui.updateStatus('Quelle fehlt', 'warning');
+            return;
+        }
+
+        this.ui.setIdleState({ active: false });
+
+        if (!this.offlineMode) {
+            await this.fetchBufferInfo();
+        }
     }
     
     startRenderLoop() {

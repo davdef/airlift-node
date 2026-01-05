@@ -52,6 +52,9 @@ Returns runtime status derived from `AirliftNode::status()`.
 
 Returns the current buffer range of peak history.
 
+- **Query params** (optional):
+  - `flow`: filter to a specific flow name.
+
 - **Response body**:
   ```json
   {
@@ -65,6 +68,9 @@ Returns the current buffer range of peak history.
 ### `GET /api/history?from=<ms>&to=<ms>`
 
 Returns historical peak points for the given inclusive range.
+
+- **Query params** (optional):
+  - `flow`: filter to a specific flow name.
 
 - **Query params**: `from`, `to` as millisecond timestamps; `from < to`.
 - **Response body**: array of peak points

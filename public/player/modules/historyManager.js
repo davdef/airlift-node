@@ -8,11 +8,23 @@ export class HistoryManager {
         this.pendingRequest = null;
         this.lastRequestTime = 0;
         this.cache = new Map();
+        this.flow = null;
         
         // NEUE PROPERTIES FÜR RETRY-LOGIK
         this.retryCount = 0;
         this.isOffline = false;
         this.lastErrorTime = 0;
+    }
+
+    setFlow(flow) {
+        if (this.flow === flow) return;
+        this.flow = flow;
+        this.history = [];
+        this.cache.clear();
+        this.pendingRequest = null;
+        this.retryCount = 0;
+        this.lastErrorTime = 0;
+        this.onHistoryUpdate(this.history);
     }
     
     async loadWindow(from, to) {
@@ -42,7 +54,7 @@ export class HistoryManager {
             return;
         }
         
-        const cacheKey = `${Math.floor(from)}-${Math.floor(to)}`;
+        const cacheKey = `${this.flow || 'all'}-${Math.floor(from)}-${Math.floor(to)}`;
         if (this.cache.has(cacheKey)) {
             this.mergeData(this.cache.get(cacheKey));
             return;
@@ -52,7 +64,8 @@ export class HistoryManager {
             this.loading = true;
             this.lastRequestTime = now;
             
-            const url = `/api/history?from=${Math.floor(from)}&to=${Math.floor(actualTo)}`;
+            const flowParam = this.flow ? `&flow=${encodeURIComponent(this.flow)}` : '';
+            const url = `/api/history?from=${Math.floor(from)}&to=${Math.floor(actualTo)}${flowParam}`;
             console.log('[History] Loading:', url);
             
             const response = await fetch(url);
