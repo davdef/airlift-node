@@ -6,7 +6,7 @@ class KaleidoscopeVisualizer extends BaseVisualizer {
         this.slices = 12;
         this.rotation = 0;
 
-        this.decay = 0.85;
+        this.decay = 0.82;
         this.smoothFFT = null;
         this.smoothTime = null;
     }
@@ -18,9 +18,11 @@ class KaleidoscopeVisualizer extends BaseVisualizer {
         const cy = h / 2;
 
         const speed = config?.speed ?? 1;
+        const sensitivity = config?.sensitivity ?? 5;
+        const intensity = Math.max(0.4, sensitivity / 5);
 
         // Rotation
-        this.rotation += deltaTime * 0.00035 * speed;
+        this.rotation += deltaTime * 0.00035 * speed * (0.8 + intensity * 0.2);
 
         // FFT glätten (einmal!)
         if (!this.smoothFFT || this.smoothFFT.length !== frequencyData.length) {
@@ -52,7 +54,7 @@ class KaleidoscopeVisualizer extends BaseVisualizer {
         ctx.translate(cx, cy);
 
         const sliceAngle = (Math.PI * 2) / this.slices;
-        const maxRadius = Math.min(cx, cy) * 0.95;
+        const maxRadius = Math.min(cx, cy) * 0.96;
         const bins = Math.min(96, this.smoothFFT.length);
         const timeBins = Math.min(128, this.smoothTime.length);
 
@@ -79,29 +81,47 @@ class KaleidoscopeVisualizer extends BaseVisualizer {
 
             ctx.scale(flip, 1);
 
+            const wavePoints = [];
             const wavePath = new Path2D();
             for (let i = 0; i < bins; i++) {
-                const amp = this.smoothFFT[i] / 255;
+                const amp = (this.smoothFFT[i] / 255) * intensity;
                 const r = (i / (bins - 1)) * maxRadius;
-                const wobble = (amp * 0.6 + 0.2) * 80;
+                const wobble = (amp * 0.7 + 0.15) * 90;
                 const offset = Math.sin(this.rotation * 2 + i * 0.25) * wobble;
                 const x = offset;
                 const y = -r;
+                wavePoints.push({ x, y, amp });
                 if (i === 0) wavePath.moveTo(x, y);
                 else wavePath.lineTo(x, y);
             }
 
+            const mirrorFill = new Path2D();
+            wavePoints.forEach((point, idx) => {
+                if (idx === 0) mirrorFill.moveTo(point.x, point.y);
+                else mirrorFill.lineTo(point.x, point.y);
+            });
+            for (let i = wavePoints.length - 1; i >= 0; i--) {
+                const point = wavePoints[i];
+                mirrorFill.lineTo(-point.x * 0.8, point.y);
+            }
+            mirrorFill.closePath();
+
             ctx.strokeStyle = config.primaryColor;
             ctx.stroke(wavePath);
+
+            ctx.fillStyle = config.secondaryColor;
+            ctx.globalAlpha = 0.35;
+            ctx.fill(mirrorFill);
+            ctx.globalAlpha = 1;
 
             ctx.fillStyle = glow;
             ctx.globalAlpha = 0.65;
             ctx.beginPath();
             for (let i = 0; i < timeBins; i++) {
-                const amp = (this.smoothTime[i] - 128) / 128;
+                const amp = ((this.smoothTime[i] - 128) / 128) * intensity;
                 const r = (i / (timeBins - 1)) * maxRadius;
                 const angle = (amp * 0.8 + 1) * 0.6;
-                const x = Math.cos(angle) * r * 0.25;
+                const x = Math.cos(angle) * r * 0.28;
                 const y = -r;
                 if (i === 0) ctx.moveTo(x, y);
                 else ctx.lineTo(x, y);
@@ -109,6 +129,18 @@ class KaleidoscopeVisualizer extends BaseVisualizer {
             ctx.lineTo(0, 0);
             ctx.closePath();
             ctx.fill();
+
+            ctx.strokeStyle = config.secondaryColor;
+            ctx.globalAlpha = 0.3;
+            ctx.beginPath();
+            for (let i = 0; i < bins; i += 6) {
+                const amp = (this.smoothFFT[i] / 255) * intensity;
+                const r = (i / (bins - 1)) * maxRadius;
+                const x = amp * 80;
+                ctx.moveTo(0, 0);
+                ctx.lineTo(x, -r);
+            }
+            ctx.stroke();
 
             ctx.globalAlpha = 1;
             ctx.restore();
