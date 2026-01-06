@@ -1,10 +1,10 @@
-class ParticleSystemVisualizer extends BaseVisualizer {
+class ParticleNebulaVisualizer extends BaseVisualizer {
     constructor(ctx, canvas) {
         super(ctx, canvas);
 
-        this.count = 96;              // Sonique-Größe
+        this.count = 140;
         this.particles = [];
-        this.decay = 0.86;
+        this.decay = 0.84;
         this.smoothFFT = null;
         this.smoothTime = null;
         this.rotation = 0;
@@ -17,17 +17,18 @@ class ParticleSystemVisualizer extends BaseVisualizer {
         const { width, height } = this.getCanvasSize();
         const cx = width / 2;
         const cy = height / 2;
-        const radius = Math.min(cx, cy) * 0.72;
-        const minRadius = radius * 0.25;
+        const maxRadius = Math.min(cx, cy) * 0.7;
+        const minRadius = maxRadius * 0.18;
 
         for (let i = 0; i < this.count; i++) {
             const angle = Math.random() * Math.PI * 2;
+            const radius = minRadius + Math.random() * (maxRadius - minRadius);
             this.particles.push({
                 angle,
-                baseRadius: minRadius + Math.random() * (radius - minRadius),
-                orbitSpeed: (0.15 + Math.random() * 0.6) * (Math.random() > 0.5 ? 1 : -1),
-                size: 1 + Math.random() * 2.2,
-                phase: Math.random() * Math.PI * 2,
+                radius,
+                drift: (0.2 + Math.random() * 0.6) * (Math.random() > 0.5 ? 1 : -1),
+                size: 0.8 + Math.random() * 2.4,
+                twinkle: Math.random() * Math.PI * 2,
                 amp: 0
             });
         }
@@ -41,10 +42,9 @@ class ParticleSystemVisualizer extends BaseVisualizer {
 
         const speed = config?.speed ?? 1;
         const sensitivity = config?.sensitivity ?? 5;
-        const intensity = Math.max(0.35, sensitivity / 6);
-        const maxRadius = Math.min(cx, cy) * 0.72;
+        const intensity = Math.max(0.4, sensitivity / 6);
+        const maxRadius = Math.min(cx, cy) * 0.7;
 
-        // FFT glätten
         if (!this.smoothFFT || this.smoothFFT.length !== frequencyData.length) {
             this.smoothFFT = new Float32Array(frequencyData.length);
         }
@@ -66,74 +66,76 @@ class ParticleSystemVisualizer extends BaseVisualizer {
                 timeData[i] * (1 - decay);
         }
 
-        this.rotation += deltaTime * 0.00025 * speed;
+        this.rotation += deltaTime * 0.00018 * speed;
 
-        // Decay-Clear
-        ctx.fillStyle = 'rgba(0,0,0,0.28)';
+        ctx.fillStyle = 'rgba(0,0,0,0.24)';
         ctx.fillRect(0, 0, w, h);
 
         const bins = Math.min(this.count, this.smoothFFT.length);
-        const timeBins = Math.min(96, this.smoothTime.length);
+        const timeBins = Math.min(120, this.smoothTime.length);
 
-        let lowEnergy = 0;
-        const lowBins = Math.min(12, bins);
-        for (let i = 0; i < lowBins; i++) {
-            lowEnergy += this.smoothFFT[i];
+        let midEnergy = 0;
+        const midStart = Math.floor(bins * 0.2);
+        const midEnd = Math.min(bins, midStart + 16);
+        for (let i = midStart; i < midEnd; i++) {
+            midEnergy += this.smoothFFT[i];
         }
-        lowEnergy = lowBins > 0 ? lowEnergy / (lowBins * 255) : 0;
+        const midAmp = midEnd > midStart ? midEnergy / ((midEnd - midStart) * 255) : 0;
 
-        const coreRadius = maxRadius * (0.18 + lowEnergy * 0.28);
-        const coreGlow = ctx.createRadialGradient(cx, cy, 0, cx, cy, coreRadius * 2.6);
-        coreGlow.addColorStop(0, this.toRgba(config.secondaryColor, 0.6));
-        coreGlow.addColorStop(0.5, this.toRgba(config.primaryColor, 0.4));
-        coreGlow.addColorStop(1, 'rgba(0,0,0,0)');
-        ctx.fillStyle = coreGlow;
+        const nebulaRadius = maxRadius * (0.35 + midAmp * 0.4);
+        const nebulaGlow = ctx.createRadialGradient(cx, cy, 0, cx, cy, nebulaRadius * 2.2);
+        nebulaGlow.addColorStop(0, this.toRgba(config.secondaryColor, 0.45));
+        nebulaGlow.addColorStop(0.5, this.toRgba(config.primaryColor, 0.2));
+        nebulaGlow.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = nebulaGlow;
         ctx.beginPath();
-        ctx.arc(cx, cy, coreRadius * 2.4, 0, Math.PI * 2);
+        ctx.arc(cx, cy, nebulaRadius * 2, 0, Math.PI * 2);
         ctx.fill();
 
+        ctx.save();
+        ctx.translate(cx, cy);
         for (let i = 0; i < this.particles.length; i++) {
             const p = this.particles[i];
             const amp = this.smoothFFT[i % bins] / 255;
-
-            // Amplitude glätten
-            const ampDecay = this.getDecay(0.88, speed);
+            const ampDecay = this.getDecay(0.9, speed);
             p.amp = p.amp * ampDecay + amp * (1 - ampDecay);
 
-            p.angle += deltaTime * 0.00045 * speed * p.orbitSpeed * (0.6 + intensity);
+            p.angle += deltaTime * 0.0004 * speed * p.drift * (0.6 + intensity);
 
-            const wobble = Math.sin(this.rotation * 2 + p.phase) * maxRadius * 0.05;
+            const wave = Math.sin(this.rotation * 2 + p.twinkle) * maxRadius * 0.04;
             const r = Math.min(
                 maxRadius,
-                p.baseRadius + p.amp * maxRadius * 0.32 + wobble
+                p.radius + wave + p.amp * maxRadius * 0.26
             );
-            const angle = p.angle + this.rotation * 0.2;
-            const x = cx + Math.cos(angle) * r;
-            const y = cy + Math.sin(angle) * r;
 
-            if (p.amp > 0.08) {
-                ctx.strokeStyle = this.toRgba(config.secondaryColor, 0.2 + p.amp * 0.5);
-                ctx.lineWidth = 1.2;
+            const angle = p.angle + Math.sin(this.rotation + p.twinkle) * 0.05;
+            const x = Math.cos(angle) * r;
+            const y = Math.sin(angle) * r;
+
+            if (p.amp > 0.12) {
+                ctx.strokeStyle = this.toRgba(config.secondaryColor, 0.15 + p.amp * 0.35);
+                ctx.lineWidth = 1;
                 ctx.beginPath();
-                const innerR = r * (0.65 - p.amp * 0.2);
-                ctx.moveTo(cx + Math.cos(angle) * innerR, cy + Math.sin(angle) * innerR);
+                ctx.moveTo(x * 0.4, y * 0.4);
                 ctx.lineTo(x, y);
                 ctx.stroke();
             }
 
+            const size = p.size + p.amp * 2.8;
+            ctx.fillStyle = this.toRgba(config.primaryColor, 0.5 + p.amp * 0.5);
             ctx.beginPath();
-            ctx.fillStyle = this.toRgba(config.primaryColor, 0.65 + p.amp * 0.35);
-            ctx.arc(x, y, p.size + p.amp * 3.2, 0, Math.PI * 2);
+            ctx.arc(x, y, size, 0, Math.PI * 2);
             ctx.fill();
         }
+        ctx.restore();
 
-        ctx.strokeStyle = this.toRgba(config.secondaryColor, 0.25);
+        ctx.strokeStyle = this.toRgba(config.secondaryColor, 0.2);
         ctx.lineWidth = 1;
         ctx.beginPath();
-        for (let i = 0; i < timeBins; i += 6) {
+        for (let i = 0; i < timeBins; i += 5) {
             const amp = (this.smoothTime[i] - 128) / 128;
-            const angle = (i / timeBins) * Math.PI * 2 + this.rotation * 0.6;
-            const r = maxRadius * (0.3 + amp * 0.08 + Math.sin(this.rotation + i * 0.12) * 0.02);
+            const angle = (i / timeBins) * Math.PI * 2 - this.rotation * 0.8;
+            const r = maxRadius * (0.38 + amp * 0.09 + Math.sin(this.rotation + i * 0.15) * 0.02);
             const x = cx + Math.cos(angle) * r;
             const y = cy + Math.sin(angle) * r;
             if (i === 0) ctx.moveTo(x, y);
