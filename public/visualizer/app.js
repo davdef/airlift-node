@@ -43,7 +43,6 @@ class AudioVisualizerApp {
         this.visualizers.frequencyBars = new FrequencyBarsVisualizer(this.ctx, this.canvas);
         this.visualizers.particleSystem = new ParticleSystemVisualizer(this.ctx, this.canvas);
         this.visualizers.particleNebula = new ParticleNebulaVisualizer(this.ctx, this.canvas);
-        this.visualizers.particleSparks = new ParticleSparksVisualizer(this.ctx, this.canvas);
         this.visualizers.spectrumCircle = new SpectrumCircleVisualizer(this.ctx, this.canvas);
         this.visualizers.kaleidoscope = new KaleidoscopeVisualizer(this.ctx, this.canvas);
         this.visualizers.aortaLine = new AortaLineVisualizer(this.ctx, this.canvas);
@@ -60,7 +59,6 @@ class AudioVisualizerApp {
             frequencyBars: 'Frequenz-Balken',
             particleSystem: 'Partikel',
             particleNebula: 'Partikel-Nebel',
-            particleSparks: 'Partikel-Funken',
             spectrumCircle: 'Spektrum',
             kaleidoscope: 'Kaleidoskop',
             aortaLine: 'Aorta Line',
