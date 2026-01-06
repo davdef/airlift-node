@@ -46,7 +46,7 @@ class SpecNHoppVisualizer extends BaseVisualizer {
         const ctx = this.ctx;
         const { width: w, height: h } = this.getCanvasSize();
         const cx = w / 2;
-        const cy = h * 0.66;
+        const cy = h * 0.8;
 
         // Clear
         ctx.fillStyle = 'rgba(0,0,0,0.25)';
@@ -78,49 +78,6 @@ class SpecNHoppVisualizer extends BaseVisualizer {
 
         ctx.save();
         ctx.translate(cx, cy);
-
-        // Plattform (stabil!)
-        ctx.strokeStyle = config.secondaryColor;
-        ctx.lineWidth = 1;
-
-        const platform = [
-            [-260, -160],
-            [ 260, -160],
-            [ 260,  160],
-            [-260,  160]
-        ];
-
-        const platformDepth = 12;
-
-        ctx.fillStyle = `${config.secondaryColor}33`;
-        ctx.beginPath();
-        platform.forEach(([x, z], i) => {
-            const p = this.project(x, 0, z, camAngle, camHeight, camPitch);
-            if (i === 0) ctx.moveTo(p.x, p.y);
-            else ctx.lineTo(p.x, p.y);
-        });
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-
-        // Plattform-Kante
-        ctx.beginPath();
-        platform.forEach(([x, z], i) => {
-            const p = this.project(x, -platformDepth, z, camAngle, camHeight, camPitch);
-            if (i === 0) ctx.moveTo(p.x, p.y);
-            else ctx.lineTo(p.x, p.y);
-        });
-        ctx.closePath();
-        ctx.stroke();
-
-        platform.forEach(([x, z]) => {
-            const p1 = this.project(x, 0, z, camAngle, camHeight, camPitch);
-            const p2 = this.project(x, -platformDepth, z, camAngle, camHeight, camPitch);
-            ctx.beginPath();
-            ctx.moveTo(p1.x, p1.y);
-            ctx.lineTo(p2.x, p2.y);
-            ctx.stroke();
-        });
 
         // Säulen (segmentiert, echtes Volumen)
         ctx.strokeStyle = config.primaryColor;
