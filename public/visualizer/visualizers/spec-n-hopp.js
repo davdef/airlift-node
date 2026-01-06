@@ -1,7 +1,6 @@
-class SpecNHoppVisualizer {
+class SpecNHoppVisualizer extends BaseVisualizer {
     constructor(ctx, canvas) {
-        this.ctx = ctx;
-        this.canvas = canvas;
+        super(ctx, canvas);
 
         this.columns = 8;
         this.maxSegments = 10;
@@ -37,8 +36,7 @@ class SpecNHoppVisualizer {
 
     draw(frequencyData, timeData, config, deltaTime) {
         const ctx = this.ctx;
-        const w = this.canvas.width;
-        const h = this.canvas.height;
+        const { width: w, height: h } = this.getCanvasSize();
         const cx = w / 2;
         const cy = h / 2;
 

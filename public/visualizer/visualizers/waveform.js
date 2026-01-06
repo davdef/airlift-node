@@ -1,7 +1,8 @@
 class WaveformVisualizer extends BaseVisualizer {
     draw(frequencyData, timeData, config, deltaTime) {
-        const centerY = this.canvas.height / 2;
-        const sliceWidth = this.canvas.width / timeData.length;
+        const { width, height } = this.getCanvasSize();
+        const centerY = height / 2;
+        const sliceWidth = width / timeData.length;
         
         this.ctx.lineWidth = 2;
         this.ctx.strokeStyle = config.primaryColor;
@@ -10,7 +11,7 @@ class WaveformVisualizer extends BaseVisualizer {
         for (let i = 0; i < timeData.length; i++) {
             const value = timeData[i] / 128.0;
             const x = i * sliceWidth;
-            const y = value * this.canvas.height / 2;
+            const y = value * height / 2;
             
             if (i === 0) {
                 this.ctx.moveTo(x, y);

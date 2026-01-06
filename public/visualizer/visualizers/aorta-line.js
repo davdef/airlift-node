@@ -1,7 +1,6 @@
-class AortaLineVisualizer {
+class AortaLineVisualizer extends BaseVisualizer {
     constructor(ctx, canvas) {
-        this.ctx = ctx;
-        this.canvas = canvas;
+        super(ctx, canvas);
 
         this.points = 128;
         this.phase = 0;
@@ -12,8 +11,7 @@ class AortaLineVisualizer {
 
     draw(frequencyData, timeData, config, deltaTime) {
         const ctx = this.ctx;
-        const w = this.canvas.width;
-        const h = this.canvas.height;
+        const { width: w, height: h } = this.getCanvasSize();
 
         // langsame Drift
         this.phase += deltaTime * 0.0004;
