@@ -17,7 +17,7 @@ class SpecNHoppVisualizer extends BaseVisualizer {
     }
 
     // 3D → 2D Projektion (OHNE Skalierung!)
-    project(x, y, z, camAngle, camHeight) {
+    project(x, y, z, camAngle, camHeight, camPitch) {
         const ca = Math.cos(camAngle);
         const sa = Math.sin(camAngle);
 
@@ -25,12 +25,20 @@ class SpecNHoppVisualizer extends BaseVisualizer {
         const rx = x * ca - z * sa;
         const rz = x * sa + z * ca;
 
-        // Perspektive (nur Tiefe!)
-        const depth = 1 / (1 + rz * 0.002);
+        // Kamera-Höhe & Pitch
+        const ry = y - camHeight;
+        const cp = Math.cos(camPitch);
+        const sp = Math.sin(camPitch);
+
+        const ryp = ry * cp - rz * sp;
+        const rzp = ry * sp + rz * cp;
+
+        // Perspektive (Tiefe mit Pitch)
+        const depth = 1 / (1 + rzp * 0.003);
 
         return {
             x: rx * depth,
-            y: (y - camHeight) * depth
+            y: ryp * depth
         };
     }
 
@@ -38,7 +46,7 @@ class SpecNHoppVisualizer extends BaseVisualizer {
         const ctx = this.ctx;
         const { width: w, height: h } = this.getCanvasSize();
         const cx = w / 2;
-        const cy = h / 2;
+        const cy = h * 0.66;
 
         // Clear
         ctx.fillStyle = 'rgba(0,0,0,0.25)';
@@ -49,7 +57,8 @@ class SpecNHoppVisualizer extends BaseVisualizer {
         this.heightPhase += deltaTime * 0.00015;
 
         const camAngle = this.angle;
-        const camHeight = Math.max(-10, Math.sin(this.heightPhase) * 80);
+        const camHeight = 140 + Math.sin(this.heightPhase) * 20;
+        const camPitch = 0.5 + Math.sin(this.heightPhase * 0.7) * 0.06;
 
         // FFT → 8 echte Bänder
         const binsPerCol = Math.max(1, Math.floor(frequencyData.length / this.columns));
@@ -81,20 +90,44 @@ class SpecNHoppVisualizer extends BaseVisualizer {
             [-260,  160]
         ];
 
+        const platformDepth = 12;
+
+        ctx.fillStyle = `${config.secondaryColor}33`;
         ctx.beginPath();
         platform.forEach(([x, z], i) => {
-            const p = this.project(x, 0, z, camAngle, 0);
+            const p = this.project(x, 0, z, camAngle, camHeight, camPitch);
+            if (i === 0) ctx.moveTo(p.x, p.y);
+            else ctx.lineTo(p.x, p.y);
+        });
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // Plattform-Kante
+        ctx.beginPath();
+        platform.forEach(([x, z], i) => {
+            const p = this.project(x, -platformDepth, z, camAngle, camHeight, camPitch);
             if (i === 0) ctx.moveTo(p.x, p.y);
             else ctx.lineTo(p.x, p.y);
         });
         ctx.closePath();
         ctx.stroke();
 
+        platform.forEach(([x, z]) => {
+            const p1 = this.project(x, 0, z, camAngle, camHeight, camPitch);
+            const p2 = this.project(x, -platformDepth, z, camAngle, camHeight, camPitch);
+            ctx.beginPath();
+            ctx.moveTo(p1.x, p1.y);
+            ctx.lineTo(p2.x, p2.y);
+            ctx.stroke();
+        });
+
         // Säulen (segmentiert, echtes Volumen)
         ctx.strokeStyle = config.primaryColor;
 
         const segHeight = 18;
-        const colHalf = 14;
+        const colRadius = 16;
+        const colSides = 16;
 
         for (let i = 0; i < this.columns; i++) {
             const a = (i / this.columns) * Math.PI * 2;
@@ -103,57 +136,55 @@ class SpecNHoppVisualizer extends BaseVisualizer {
 
             const segments = Math.min(this.maxSegments, Math.floor(this.level[i]));
 
-            const corners = [
-                [-colHalf, -colHalf],
-                [ colHalf, -colHalf],
-                [ colHalf,  colHalf],
-                [-colHalf,  colHalf]
-            ];
+            const corners = Array.from({ length: colSides }, (_, j) => {
+                const theta = (j / colSides) * Math.PI * 2;
+                return [Math.cos(theta) * colRadius, Math.sin(theta) * colRadius];
+            });
 
-            for (let s = 0; s < segments; s++) {
-                const yTop = -s * segHeight;
-                const yBot = yTop - segHeight;
+            const topY = 0;
+            const bottomY = -segments * segHeight;
 
-                // Ring
+            for (let s = 0; s <= segments; s++) {
+                const y = -s * segHeight;
                 ctx.beginPath();
                 corners.forEach(([dx, dz], j) => {
                     const p = this.project(
                         baseX + dx,
-                        yBot,
+                        y,
                         baseZ + dz,
                         camAngle,
-                        camHeight
+                        camHeight,
+                        camPitch
                     );
                     if (j === 0) ctx.moveTo(p.x, p.y);
                     else ctx.lineTo(p.x, p.y);
                 });
                 ctx.closePath();
                 ctx.stroke();
-
-                // Vertikale Kanten (sparsam)
-                if ((s & 1) === 0) {
-                    corners.forEach(([dx, dz]) => {
-                        const p1 = this.project(
-                            baseX + dx,
-                            yTop,
-                            baseZ + dz,
-                            camAngle,
-                            camHeight
-                        );
-                        const p2 = this.project(
-                            baseX + dx,
-                            yBot,
-                            baseZ + dz,
-                            camAngle,
-                            camHeight
-                        );
-                        ctx.beginPath();
-                        ctx.moveTo(p1.x, p1.y);
-                        ctx.lineTo(p2.x, p2.y);
-                        ctx.stroke();
-                    });
-                }
             }
+
+            corners.forEach(([dx, dz]) => {
+                const p1 = this.project(
+                    baseX + dx,
+                    topY,
+                    baseZ + dz,
+                    camAngle,
+                    camHeight,
+                    camPitch
+                );
+                const p2 = this.project(
+                    baseX + dx,
+                    bottomY,
+                    baseZ + dz,
+                    camAngle,
+                    camHeight,
+                    camPitch
+                );
+                ctx.beginPath();
+                ctx.moveTo(p1.x, p1.y);
+                ctx.lineTo(p2.x, p2.y);
+                ctx.stroke();
+            });
         }
 
         ctx.restore();
