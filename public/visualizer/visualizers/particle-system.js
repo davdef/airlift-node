@@ -1,7 +1,6 @@
-class ParticleSystemVisualizer {
+class ParticleSystemVisualizer extends BaseVisualizer {
     constructor(ctx, canvas) {
-        this.ctx = ctx;
-        this.canvas = canvas;
+        super(ctx, canvas);
 
         this.count = 64;              // Sonique-Größe
         this.particles = [];
@@ -13,8 +12,9 @@ class ParticleSystemVisualizer {
 
     initParticles() {
         this.particles.length = 0;
-        const cx = this.canvas.width / 2;
-        const cy = this.canvas.height / 2;
+        const { width, height } = this.getCanvasSize();
+        const cx = width / 2;
+        const cy = height / 2;
         const radius = Math.min(cx, cy) * 0.6;
 
         for (let i = 0; i < this.count; i++) {
@@ -29,8 +29,7 @@ class ParticleSystemVisualizer {
 
     draw(frequencyData, timeData, config, deltaTime) {
         const ctx = this.ctx;
-        const w = this.canvas.width;
-        const h = this.canvas.height;
+        const { width: w, height: h } = this.getCanvasSize();
         const cx = w / 2;
         const cy = h / 2;
 

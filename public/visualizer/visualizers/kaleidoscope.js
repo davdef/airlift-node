@@ -1,7 +1,6 @@
-class KaleidoscopeVisualizer {
+class KaleidoscopeVisualizer extends BaseVisualizer {
     constructor(ctx, canvas) {
-        this.ctx = ctx;
-        this.canvas = canvas;
+        super(ctx, canvas);
 
         // Sonique-Style Parameter
         this.slices = 6;
@@ -13,8 +12,7 @@ class KaleidoscopeVisualizer {
 
     draw(frequencyData, timeData, config, deltaTime) {
         const ctx = this.ctx;
-        const w = this.canvas.width;
-        const h = this.canvas.height;
+        const { width: w, height: h } = this.getCanvasSize();
         const cx = w / 2;
         const cy = h / 2;
 
