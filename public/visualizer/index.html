@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced Audio Visualizer</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <!-- Intro Overlay -->
+    <div id="intro-overlay" class="active">
+        <div class="intro-content">
+            <div class="logo-container">
+                <div class="logo" id="logo-text">SYSTEM WAVES</div>
+                <div class="subtitle">Advanced Audio Visualizer</div>
+            </div>
+            <div class="loading-bar">
+                <div class="loading-progress"></div>
+            </div>
+            <div class="intro-instruction">
+                <i class="fas fa-volume-up"></i>
+                <p>Wähle eine Audioquelle und einen Visualizer</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Container -->
+    <div class="container">
+        <!-- Visualizer Canvas -->
+        <div class="visualizer-container">
+            <canvas id="visualizer-canvas"></canvas>
+            <div class="visualizer-overlay">
+                <div class="visualizer-name" id="current-visualizer">WAVEFORM</div>
+                <div class="fps-counter">FPS: <span id="fps">0</span></div>
+            </div>
+        </div>
+
+        <!-- Control Panel -->
+        <div class="control-panel">
+            <!-- Audio Source Selection -->
+            <div class="control-section">
+                <h3><i class="fas fa-music"></i> Audioquelle</h3>
+                <div class="source-buttons">
+                    <button id="source-file" class="btn source-btn active">
+                        <i class="fas fa-file-audio"></i> Datei
+                    </button>
+                    <button id="source-system" class="btn source-btn">
+                        <i class="fas fa-desktop"></i> System-Audio
+                    </button>
+                    <button id="source-url" class="btn source-btn">
+                        <i class="fas fa-link"></i> URL
+                    </button>
+                </div>
+                
+                <div class="source-inputs">
+                    <input type="file" id="audio-file" accept="audio/*" hidden>
+                    <div id="url-input" class="hidden">
+                        <input type="text" id="audio-url" placeholder="Audio-URL eingeben">
+                        <button id="load-url" class="btn small">Laden</button>
+                    </div>
+                </div>
+                
+                <div class="now-playing">
+                    <div id="track-title">Keine Audioquelle ausgewählt</div>
+                    <div class="progress-container">
+                        <input type="range" id="audio-progress" min="0" max="100" value="0">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Visualizer Selection -->
+            <div class="control-section">
+                <h3><i class="fas fa-eye"></i> Visualizer</h3>
+                <div class="visualizer-grid" id="visualizer-buttons">
+                    <!-- Buttons werden von JS generiert -->
+                </div>
+                
+                <div class="visualizer-controls">
+                    <div class="slider-group">
+                        <label>Sensitivität</label>
+                        <input type="range" id="sensitivity" min="1" max="10" value="5" step="0.1">
+                    </div>
+                    <div class="slider-group">
+                        <label>Geschwindigkeit</label>
+                        <input type="range" id="speed" min="0.1" max="3" value="1" step="0.1">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Color & Effects -->
+            <div class="control-section">
+                <h3><i class="fas fa-palette"></i> Farbe & Effekte</h3>
+                <div class="color-picker">
+                    <input type="color" id="primary-color" value="#00ff00">
+                    <input type="color" id="secondary-color" value="#009900">
+                </div>
+                <div class="effect-buttons">
+                    <button id="effect-invert" class="btn effect-btn">
+                        <i class="fas fa-adjust"></i> Invertieren
+                    </button>
+                    <button id="effect-blur" class="btn effect-btn">
+                        <i class="fas fa-smog"></i> Weichzeichnen
+                    </button>
+                    <button id="effect-trail" class="btn effect-btn">
+                        <i class="fas fa-wind"></i> Nachzieheffekt
+                    </button>
+                </div>
+            </div>
+
+            <!-- Audio Controls -->
+            <div class="control-section audio-controls">
+                <button id="play-pause" class="btn large">
+                    <i class="fas fa-play"></i> Play
+                </button>
+                <button id="stop" class="btn">
+                    <i class="fas fa-stop"></i>
+                </button>
+                <div class="volume-control">
+                    <i class="fas fa-volume-up"></i>
+                    <input type="range" id="volume" min="0" max="100" value="80">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <footer>
+        <div class="footer-info">
+            <span id="audio-info">Audio: Nicht verbunden</span>
+            <span> | </span>
+            <span id="visualizer-info">Visualizer: Basis</span>
+            <span> | </span>
+            <span>FPS: <span id="footer-fps">0</span></span>
+        </div>
+    </footer>
+
+    <!-- Scripts -->
+    <script src="audio-capture.js"></script>
+    <script src="visualizers/base.js"></script>
+    <script src="visualizers/waveform.js"></script>
+    <script src="visualizers/frequency-bars.js"></script>
+    <script src="visualizers/particle-system.js"></script>
+    <script src="visualizers/spectrum-circle.js"></script>
+    <script src="visualizers/kaleidoscope.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
