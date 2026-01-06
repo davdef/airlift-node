@@ -16,8 +16,8 @@ class AudioVisualizerApp {
         this.config = {
             sensitivity: 5,
             speed: 1,
-            primaryColor: '#00ff00',
-            secondaryColor: '#009900'
+            primaryColor: '#5aa0ff',
+            secondaryColor: '#8cc2ff'
         };
 
         this.init();
