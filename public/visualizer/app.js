@@ -62,6 +62,8 @@ class AudioVisualizerApp {
         this.visualizers.particleSystem = new ParticleSystemVisualizer(this.ctx, this.canvas);
         this.visualizers.spectrumCircle = new SpectrumCircleVisualizer(this.ctx, this.canvas);
         this.visualizers.kaleidoscope = new KaleidoscopeVisualizer(this.ctx, this.canvas);
+        this.visualizers.aortaLine = new AortaLineVisualizer(this.ctx, this.canvas);
+        this.visualizers.specNHopp = new SpecNHoppVisualizer(this.ctx, this.canvas);
         
         // UI-Buttons generieren
         this.createVisualizerButtons();
@@ -74,7 +76,9 @@ class AudioVisualizerApp {
             frequencyBars: 'Frequenz-Balken',
             particleSystem: 'Partikel-System',
             spectrumCircle: 'Spektrum-Kreis',
-            kaleidoscope: 'Kaleidoskop'
+            kaleidoscope: 'Kaleidoskop',
+            aortaLine: 'Aorta',
+            specNHopp: 'Spec´n´Hopp'
         };
         
         Object.entries(visualizers).forEach(([id, name]) => {
