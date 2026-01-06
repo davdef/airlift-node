@@ -33,15 +33,18 @@ class ParticleSystemVisualizer extends BaseVisualizer {
         const cx = w / 2;
         const cy = h / 2;
 
+        const speed = config?.speed ?? 1;
+
         // FFT glätten
         if (!this.smoothFFT || this.smoothFFT.length !== frequencyData.length) {
             this.smoothFFT = new Float32Array(frequencyData.length);
         }
 
+        const decay = this.getDecay(this.decay, speed);
         for (let i = 0; i < frequencyData.length; i++) {
             this.smoothFFT[i] =
-                this.smoothFFT[i] * this.decay +
-                frequencyData[i] * (1 - this.decay);
+                this.smoothFFT[i] * decay +
+                frequencyData[i] * (1 - decay);
         }
 
         // Decay-Clear
@@ -57,7 +60,8 @@ class ParticleSystemVisualizer extends BaseVisualizer {
             const amp = this.smoothFFT[i % bins] / 255;
 
             // Amplitude glätten
-            p.amp = p.amp * 0.9 + amp * 0.1;
+            const ampDecay = this.getDecay(0.9, speed);
+            p.amp = p.amp * ampDecay + amp * (1 - ampDecay);
 
             const r = p.baseRadius + p.amp * 120;
             const x = cx + Math.cos(p.angle) * r;

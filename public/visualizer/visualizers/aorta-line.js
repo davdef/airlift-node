@@ -13,8 +13,10 @@ class AortaLineVisualizer extends BaseVisualizer {
         const ctx = this.ctx;
         const { width: w, height: h } = this.getCanvasSize();
 
+        const speed = config?.speed ?? 1;
+
         // langsame Drift
-        this.phase += deltaTime * 0.0004;
+        this.phase += deltaTime * 0.0004 * speed;
 
         // Decay-Clear
         ctx.fillStyle = 'rgba(0,0,0,0.15)';
@@ -22,9 +24,10 @@ class AortaLineVisualizer extends BaseVisualizer {
 
         const bins = Math.min(this.points, frequencyData.length);
 
+        const decay = this.getDecay(this.decay, speed);
         for (let i = 0; i < bins; i++) {
             const target = (frequencyData[i] / 255 - 0.5) * h * 0.6;
-            this.state[i] = this.state[i] * this.decay + target * (1 - this.decay);
+            this.state[i] = this.state[i] * decay + target * (1 - decay);
         }
 
         ctx.beginPath();

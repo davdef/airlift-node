@@ -30,14 +30,17 @@ class AortaTunnelVisualizer extends BaseVisualizer {
         const cx = w / 2;
         const cy = h / 2;
 
+        const speed = config?.speed ?? 1;
+
         // FFT glätten
         if (!this.smoothFFT || this.smoothFFT.length !== frequencyData.length) {
             this.smoothFFT = new Float32Array(frequencyData.length);
         }
+        const decay = this.getDecay(this.decay, speed);
         for (let i = 0; i < frequencyData.length; i++) {
             this.smoothFFT[i] =
-                this.smoothFFT[i] * this.decay +
-                frequencyData[i] * (1 - this.decay);
+                this.smoothFFT[i] * decay +
+                frequencyData[i] * (1 - decay);
         }
 
         // sanfter Decay-Clear
@@ -51,7 +54,7 @@ class AortaTunnelVisualizer extends BaseVisualizer {
 
         // Ringe nach vorne bewegen
         for (const ring of this.rings) {
-            ring.z -= deltaTime * 0.0002 * this.speed;
+            ring.z -= deltaTime * 0.0002 * this.speed * speed;
             if (ring.z <= 0) ring.z += 1;
         }
 
