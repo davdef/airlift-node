@@ -52,9 +52,11 @@ class SpecNHoppVisualizer extends BaseVisualizer {
         ctx.fillStyle = 'rgba(0,0,0,0.25)';
         ctx.fillRect(0, 0, w, h);
 
+        const speed = config?.speed ?? 1;
+
         // Kamera
-        this.angle += deltaTime * 0.00025;
-        this.heightPhase += deltaTime * 0.00015;
+        this.angle += deltaTime * 0.00025 * speed;
+        this.heightPhase += deltaTime * 0.00015 * speed;
 
         const camAngle = this.angle;
         const camHeight = 140 + Math.sin(this.heightPhase) * 20;
@@ -71,8 +73,10 @@ class SpecNHoppVisualizer extends BaseVisualizer {
             const amp = (sum / (end - start)) / 255;
             const target = amp * this.maxSegments;
 
-            this.vel[i] += (target - this.level[i]) * this.stiffness;
-            this.vel[i] *= this.damping;
+            const stiffness = this.stiffness * speed;
+            const damping = this.getDecay(this.damping, speed);
+            this.vel[i] += (target - this.level[i]) * stiffness;
+            this.vel[i] *= damping;
             this.level[i] += this.vel[i];
         }
 

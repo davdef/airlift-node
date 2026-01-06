@@ -12,6 +12,11 @@ class BaseVisualizer {
             dpr
         };
     }
+
+    getDecay(baseDecay, speed = 1) {
+        const clampedSpeed = Math.min(3, Math.max(0.1, speed ?? 1));
+        return Math.pow(baseDecay, clampedSpeed);
+    }
     
     draw(frequencyData, timeData, config, deltaTime) {
         // Basis-Implementierung
