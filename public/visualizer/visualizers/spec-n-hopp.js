@@ -46,7 +46,7 @@ class SpecNHoppVisualizer extends BaseVisualizer {
         const ctx = this.ctx;
         const { width: w, height: h } = this.getCanvasSize();
         const cx = w / 2;
-        const cy = h * 0.8;
+        const cy = h;
 
         // Clear
         ctx.fillStyle = 'rgba(0,0,0,0.25)';
