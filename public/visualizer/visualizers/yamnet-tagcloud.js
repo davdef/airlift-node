@@ -35,9 +35,6 @@ class YamnetTagCloudVisualizer {
             other: '#607d8b'
         };
 
-        // Testdaten
-        this.testTags = this.getTestTags();
-
         console.log('🌀 YAMNet Tag Cloud (Desktop-unified)');
     }
 
@@ -82,7 +79,7 @@ class YamnetTagCloudVisualizer {
         if (this.isActive) return;
         this.isActive = true;
 
-        this.startWithTestData();
+        this.connectionStatus = 'connecting';
         this.startAnimation();
         setTimeout(() => this.startEventSource(), 100);
 
@@ -104,42 +101,6 @@ class YamnetTagCloudVisualizer {
 
         this.activeTags.clear();
         console.log('⏸️ Tag Cloud deaktiviert');
-    }
-
-    /* ------------------------------------------------------------------ */
-    /* Testdaten                                                          */
-    /* ------------------------------------------------------------------ */
-
-    getTestTags() {
-        return [
-            { id: '0',   name: 'Speech',        confidence: 0.75, category: 'speech' },
-            { id: '139', name: 'Music',         confidence: 0.45, category: 'music' },
-            { id: '402', name: 'Singing',       confidence: 0.35, category: 'music' },
-            { id: '2',   name: 'Conversation',  confidence: 0.25, category: 'speech' },
-            { id: '145', name: 'Guitar',        confidence: 0.20, category: 'instrument' },
-            { id: '146', name: 'Drum',          confidence: 0.18, category: 'instrument' },
-            { id: '1',   name: 'Child speech',  confidence: 0.15, category: 'speech' },
-            { id: '423', name: 'Pop music',     confidence: 0.12, category: 'music' }
-        ];
-    }
-
-    startWithTestData() {
-        const now = Date.now();
-        this.activeTags.clear();
-
-        this.testTags.slice(0, this.getMaxTags()).forEach((tag, index) => {
-            this.activeTags.set(tag.id, {
-                data: tag,
-                currentConfidence: tag.confidence,
-                targetConfidence: tag.confidence,
-                color: this.colors[tag.category] || this.colors.other,
-                created: now,
-                lastUpdate: now,
-                position: this.getInitialPosition(index)
-            });
-        });
-
-        this.connectionStatus = 'demo';
     }
 
     /* ------------------------------------------------------------------ */
@@ -325,4 +286,3 @@ class YamnetTagCloudVisualizer {
 
 // Global
 window.YamnetTagCloudVisualizer = YamnetTagCloudVisualizer;
-
