@@ -61,6 +61,13 @@ header h1 {
     color: rgba(216, 228, 240, 0.7);
 }
 
+.header-controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-left: auto;
+}
+
 /* Intro Overlay */
 #intro-overlay {
     position: fixed;
@@ -662,13 +669,16 @@ footer {
     
     /* Header */
     .app-header {
-        flex-direction: column;
-        gap: 15px;
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 12px;
         padding: 15px;
     }
     
     .header-left {
-        text-align: center;
+        text-align: left;
+        flex: 1 1 auto;
     }
     
     .header-left img {
@@ -677,8 +687,9 @@ footer {
     
     .header-controls {
         display: flex;
-        justify-content: center;
-        gap: 20px;
+        justify-content: flex-end;
+        gap: 12px;
+        margin-left: auto;
     }
     
     .header-controls .btn {
@@ -785,9 +796,9 @@ footer {
         min-height: 300px !important;
     }
     
-    /* Mehr Padding auf Mobile für bessere Lesbarkeit */
+    /* Canvas ohne Padding, damit das Zeichnen exakt passt */
     #visualizer-canvas {
-        padding: 10px;
+        padding: 0;
         box-sizing: border-box;
     }
 }
