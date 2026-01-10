@@ -51,6 +51,14 @@ class YamnetTagCloudVisualizer {
         return { width, height };
     }
     
+    getCanvasMetrics() {
+        const rect = this.canvas.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
+        const width = rect.width || this.canvas.width / dpr;
+        const height = rect.height || this.canvas.height / dpr;
+        return { width, height };
+    }
+    
     getScaleFactor() {
         const { width, height } = this.getCanvasMetrics();
         const area = width * height;
@@ -347,9 +355,56 @@ class YamnetTagCloudVisualizer {
     drawUnified(ctx, width, height, tagsArray) {
         // Kreisförmige Anordnung für alle Layouts
         const centerX = width / 2;
+        const spacing = height / (tagsArray.length + 1);
+        const time = Date.now() * 0.001;
+        
+        tagsArray.forEach((tagState, index) => {
+            const confidence = tagState.currentConfidence;
+            if (confidence < 0.01) return;
+            
+            // Position
+            let x = centerX;
+            let y = spacing * (index + 1);
+            
+            // Sanfte horizontale Bewegung
+            x += Math.sin(time * 0.8 + index) * 20 * confidence;
+            
+            // Schriftgröße (kleiner auf Mobile)
+            const fontSize = (16 + confidence * 20) * this.scaleFactor;
+            
+            this.drawMobileTag(ctx, tagState, x, y, fontSize, time);
+        });
+    }
+    
+    drawMobileLandscape(ctx, width, height, tagsArray) {
+        // Horizontale Liste für Smartphone-Querformat
         const centerY = height / 2;
         const time = Date.now() * 0.001;
-        const radius = Math.min(width, height) * 0.32;
+        
+        tagsArray.forEach((tagState, index) => {
+            const confidence = tagState.currentConfidence;
+            if (confidence < 0.01) return;
+            
+            // Position
+            let x = spacing * (index + 1);
+            let y = centerY;
+            
+            // Sanfte vertikale Bewegung
+            y += Math.cos(time * 0.7 + index) * 15 * confidence;
+            
+            // Schriftgröße
+            const fontSize = (14 + confidence * 18) * this.scaleFactor;
+            
+            this.drawMobileTag(ctx, tagState, x, y, fontSize, time);
+        });
+    }
+    
+    drawDesktop(ctx, width, height, tagsArray) {
+        // Kreisförmige Anordnung für Desktop/Tablet
+        const centerX = width / 2;
+        const centerY = height / 2;
+        const time = Date.now() * 0.001;
+        const radius = Math.min(width, height) * 0.3;
         
         tagsArray.forEach((tagState, index) => {
             const confidence = tagState.currentConfidence;
@@ -368,14 +423,10 @@ class YamnetTagCloudVisualizer {
             y += Math.cos(time * 1.5 + index) * orbit;
             
             // Schriftgröße
-            const fontSize = (18 + confidence * 28) * this.scaleFactor;
+            const fontSize = (20 + confidence * 30) * this.scaleFactor;
             
             this.drawTag(ctx, tagState, x, y, fontSize, time);
         });
-    }
-    
-    drawMobileTag(ctx, tagState, x, y, fontSize, time) {
-        this.drawTag(ctx, tagState, x, y, fontSize, time);
     }
     
     drawTag(ctx, tagState, x, y, fontSize, time) {
