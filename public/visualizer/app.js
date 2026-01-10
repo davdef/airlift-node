@@ -48,6 +48,7 @@ class AudioVisualizerApp {
         this.visualizers.aortaLine = new AortaLineVisualizer(this.ctx, this.canvas);
         this.visualizers.aortaTunnel = new AortaTunnelVisualizer(this.ctx, this.canvas);
         this.visualizers.specNHopp = new SpecNHoppVisualizer(this.ctx, this.canvas);
+        this.visualizers.tagCloud = new TagCloudVisualizer(this.ctx, this.canvas);
     }
 
     createVisualizerButtons() {
@@ -63,15 +64,18 @@ class AudioVisualizerApp {
             kaleidoscope: 'Kaleidoskop',
             aortaLine: 'Aorta Line',
             aortaTunnel: 'Aorta Tunnel',
-            specNHopp: "Spec’n’Hopp"
+            specNHopp: "Spec’n’Hopp",
+            tagCloud: 'Tag-Wolke'
         };
 
+        this.visualizerLabels = visualizers;
         container.innerHTML = '';
 
         Object.entries(visualizers).forEach(([id, name]) => {
             const btn = document.createElement('button');
             btn.className = 'visualizer-btn';
             btn.textContent = name;
+            btn.dataset.visualizer = id;
             btn.addEventListener('click', () => this.setVisualizer(id));
             container.appendChild(btn);
         });
@@ -80,15 +84,16 @@ class AudioVisualizerApp {
     setVisualizer(id) {
         if (!this.visualizers[id]) return;
 
+        this.currentVisualizer?.setActive?.(false);
         document.querySelectorAll('.visualizer-btn')
             .forEach(b => b.classList.remove('active'));
 
-        const btn = [...document.querySelectorAll('.visualizer-btn')]
-            .find(b => b.textContent ===
-                document.querySelector(`[data-visualizer="${id}"]`)?.textContent);
+        const btn = document.querySelector(`[data-visualizer="${id}"]`);
+        btn?.classList.add('active');
 
         this.currentVisualizer = this.visualizers[id];
-        document.getElementById('current-visualizer').textContent = id;
+        this.currentVisualizer?.setActive?.(true);
+        document.getElementById('current-visualizer').textContent = this.visualizerLabels?.[id] ?? id;
     }
 
     setupEventListeners() {
