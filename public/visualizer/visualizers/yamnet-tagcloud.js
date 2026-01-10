@@ -372,13 +372,14 @@ class YamnetTagCloudVisualizer {
             // Schriftgröße (kleiner auf Mobile)
             const fontSize = (16 + confidence * 20) * this.scaleFactor;
             
-            this.drawMobileTag(ctx, tagState, x, y, fontSize, time);
+            this.drawTag(ctx, tagState, x, y, fontSize, time);
         });
     }
     
     drawMobileLandscape(ctx, width, height, tagsArray) {
         // Horizontale Liste für Smartphone-Querformat
         const centerY = height / 2;
+        const spacing = width / (tagsArray.length + 1);
         const time = Date.now() * 0.001;
         
         tagsArray.forEach((tagState, index) => {
@@ -395,7 +396,7 @@ class YamnetTagCloudVisualizer {
             // Schriftgröße
             const fontSize = (14 + confidence * 18) * this.scaleFactor;
             
-            this.drawMobileTag(ctx, tagState, x, y, fontSize, time);
+            this.drawTag(ctx, tagState, x, y, fontSize, time);
         });
     }
     
