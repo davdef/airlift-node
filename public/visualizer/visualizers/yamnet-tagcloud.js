@@ -14,9 +14,6 @@ class YamnetTagCloudVisualizer {
         this.apiBaseUrl = window.location.origin;
         this.streamEndpoint = `${this.apiBaseUrl}/api/yamnet/stream`;
         
-        // Mobile Detection
-        this.isMobile = this.checkIfMobile();
-        this.isPortrait = window.innerHeight > window.innerWidth;
         this.scaleFactor = this.getScaleFactor();
         
         // Farben
@@ -43,15 +40,19 @@ class YamnetTagCloudVisualizer {
         // Test-Daten für sofortige Anzeige
         this.testTags = this.getTestTags();
         
-        console.log(`📱 YAMNet Tag Cloud - ${this.isMobile ? 'Mobile' : 'Desktop'} ${this.isPortrait ? 'Portrait' : 'Landscape'}`);
+        console.log('📱 YAMNet Tag Cloud bereit');
     }
     
-    checkIfMobile() {
-        return window.innerWidth <= 768 || /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    getCanvasMetrics() {
+        const rect = this.canvas.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
+        const width = rect.width || this.canvas.width / dpr;
+        const height = rect.height || this.canvas.height / dpr;
+        return { width, height };
     }
     
     getScaleFactor() {
-        const { width, height } = this.canvas;
+        const { width, height } = this.getCanvasMetrics();
         const area = width * height;
         
         if (area < 200000) return 0.6;      // Sehr klein
@@ -75,10 +76,13 @@ class YamnetTagCloudVisualizer {
     }
     
     getMaxTags() {
-        if (this.isMobile) {
-            return this.isPortrait ? 5 : 7;
-        }
-        return 10; // Desktop
+        const { width, height } = this.getCanvasMetrics();
+        const area = width * height;
+        
+        if (area < 200000) return 5;
+        if (area < 500000) return 7;
+        if (area < 1000000) return 9;
+        return 12;
     }
     
     activate() {
@@ -141,30 +145,13 @@ class YamnetTagCloudVisualizer {
     getInitialPosition(index) {
         const totalTags = this.testTags.length;
         
-        if (this.isMobile && this.isPortrait) {
-            // Mobile Hochkant: Vertikale Liste
-            return {
-                type: 'vertical',
-                x: 0.5, // 50% von Breite
-                y: (index + 1) / (totalTags + 1) // Gleichmäßig verteilt
-            };
-        } else if (this.isMobile && !this.isPortrait) {
-            // Mobile Querformat: Horizontale Liste
-            return {
-                type: 'horizontal',
-                x: (index + 1) / (totalTags + 1),
-                y: 0.5 // 50% von Höhe
-            };
-        } else {
-            // Desktop: Kreisförmig
-            const angle = (index / totalTags) * Math.PI * 2;
-            const distance = 0.3 + (index % 3) * 0.1;
-            return {
-                type: 'circular',
-                angle: angle,
-                distance: distance
-            };
-        }
+        const angle = (index / totalTags) * Math.PI * 2;
+        const distance = 0.25 + (index % 3) * 0.12;
+        return {
+            type: 'circular',
+            angle: angle,
+            distance: distance
+        };
     }
     
     startEventSource() {
@@ -331,7 +318,7 @@ class YamnetTagCloudVisualizer {
             return;
         }
         
-        const { width, height } = this.canvas;
+        const { width, height } = this.getCanvasMetrics();
         const ctx = this.ctx;
         
         // Canvas mit sehr leichtem Fade (für Trail-Effekt)
@@ -341,8 +328,8 @@ class YamnetTagCloudVisualizer {
         // Tags zeichnen
         this.drawTags(ctx, width, height);
         
-        // Status-Overlay (nur auf Mobile wenn Platz)
-        if (this.isMobile && width > 300) {
+        // Status-Overlay (nur wenn genug Platz)
+        if (width > 320) {
             this.drawMobileStatus(ctx, width, height);
         }
     }
@@ -354,70 +341,15 @@ class YamnetTagCloudVisualizer {
         const tagsArray = Array.from(this.activeTags.values())
             .sort((a, b) => b.targetConfidence - a.targetConfidence);
         
-        // Je nach Gerätetyp unterschiedlich zeichnen
-        if (this.isMobile && this.isPortrait) {
-            this.drawMobilePortrait(ctx, width, height, tagsArray);
-        } else if (this.isMobile && !this.isPortrait) {
-            this.drawMobileLandscape(ctx, width, height, tagsArray);
-        } else {
-            this.drawDesktop(ctx, width, height, tagsArray);
-        }
+        this.drawUnified(ctx, width, height, tagsArray);
     }
     
-    drawMobilePortrait(ctx, width, height, tagsArray) {
-        // Vertikale Liste für Smartphone-Hochkant
-        const centerX = width / 2;
-        const spacing = height / (tagsArray.length + 1);
-        const time = Date.now() * 0.001;
-        
-        tagsArray.forEach((tagState, index) => {
-            const confidence = tagState.currentConfidence;
-            if (confidence < 0.01) return;
-            
-            // Position
-            let x = centerX;
-            let y = spacing * (index + 1);
-            
-            // Sanfte horizontale Bewegung
-            x += Math.sin(time * 0.8 + index) * 20 * confidence;
-            
-            // Schriftgröße (kleiner auf Mobile)
-            const fontSize = 16 + confidence * 20;
-            
-            this.drawMobileTag(ctx, tagState, x, y, fontSize, time);
-        });
-    }
-    
-    drawMobileLandscape(ctx, width, height, tagsArray) {
-        // Horizontale Liste für Smartphone-Querformat
-        const centerY = height / 2;
-        const spacing = width / (tagsArray.length + 1);
-        const time = Date.now() * 0.001;
-        
-        tagsArray.forEach((tagState, index) => {
-            const confidence = tagState.currentConfidence;
-            if (confidence < 0.01) return;
-            
-            // Position
-            let x = spacing * (index + 1);
-            let y = centerY;
-            
-            // Sanfte vertikale Bewegung
-            y += Math.cos(time * 0.7 + index) * 15 * confidence;
-            
-            // Schriftgröße
-            const fontSize = 14 + confidence * 18;
-            
-            this.drawMobileTag(ctx, tagState, x, y, fontSize, time);
-        });
-    }
-    
-    drawDesktop(ctx, width, height, tagsArray) {
-        // Kreisförmige Anordnung für Desktop/Tablet
+    drawUnified(ctx, width, height, tagsArray) {
+        // Kreisförmige Anordnung für alle Layouts
         const centerX = width / 2;
         const centerY = height / 2;
         const time = Date.now() * 0.001;
-        const radius = Math.min(width, height) * 0.3;
+        const radius = Math.min(width, height) * 0.32;
         
         tagsArray.forEach((tagState, index) => {
             const confidence = tagState.currentConfidence;
@@ -436,46 +368,14 @@ class YamnetTagCloudVisualizer {
             y += Math.cos(time * 1.5 + index) * orbit;
             
             // Schriftgröße
-            const fontSize = 20 + confidence * 30;
+            const fontSize = (18 + confidence * 28) * this.scaleFactor;
             
             this.drawTag(ctx, tagState, x, y, fontSize, time);
         });
     }
     
     drawMobileTag(ctx, tagState, x, y, fontSize, time) {
-        const confidence = tagState.currentConfidence;
-        const color = tagState.color;
-        
-        // Für Mobile: Einfacher, ohne Schatten für Performance
-        ctx.font = `bold ${fontSize}px 'Segoe UI', Arial, sans-serif`;
-        ctx.fillStyle = this.hexToRgba(color, Math.min(1, confidence * 1.5));
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        
-        // Tag-Text (evtl. kürzen auf Mobile)
-        let displayName = tagState.data.name;
-        if (fontSize < 20 && displayName.length > 12) {
-            displayName = displayName.substring(0, 10) + '...';
-        }
-        
-        ctx.fillText(displayName, x, y);
-        
-        // Confidence nur anzeigen wenn genug Platz
-        if (fontSize > 16) {
-            ctx.font = `${Math.max(10, fontSize * 0.3)}px 'Segoe UI', Arial, sans-serif`;
-            ctx.fillStyle = `rgba(255, 255, 255, ${Math.min(1, confidence * 1.2)})`;
-            ctx.fillText(`${Math.round(confidence * 100)}%`, x, y + fontSize * 0.5);
-        }
-        
-        // Pulsierender Ring bei hoher Confidence
-        if (confidence > 0.3) {
-            const pulse = Math.sin(time * 3) * 0.2 + 0.8;
-            ctx.beginPath();
-            ctx.arc(x, y, fontSize * 0.6, 0, Math.PI * 2);
-            ctx.strokeStyle = this.hexToRgba(color, pulse * 0.2);
-            ctx.lineWidth = 1;
-            ctx.stroke();
-        }
+        this.drawTag(ctx, tagState, x, y, fontSize, time);
     }
     
     drawTag(ctx, tagState, x, y, fontSize, time) {
@@ -495,7 +395,12 @@ class YamnetTagCloudVisualizer {
         ctx.shadowColor = this.hexToRgba(color, opacity * 0.3);
         ctx.shadowBlur = 8 * confidence;
         
-        ctx.fillText(tagState.data.name, x, y);
+        let displayName = tagState.data.name;
+        if (fontSize < 18 && displayName.length > 12) {
+            displayName = displayName.substring(0, 10) + '...';
+        }
+        
+        ctx.fillText(displayName, x, y);
         
         // Confidence
         const confFontSize = Math.max(12, fontSize * 0.3);
@@ -560,11 +465,9 @@ class YamnetTagCloudVisualizer {
     
     onResize() {
         // Bei Größenänderung neu berechnen
-        this.isMobile = this.checkIfMobile();
-        this.isPortrait = window.innerHeight > window.innerWidth;
         this.scaleFactor = this.getScaleFactor();
         
-        console.log(`📱 Resized: ${this.isMobile ? 'Mobile' : 'Desktop'} ${this.isPortrait ? 'Portrait' : 'Landscape'}`);
+        console.log('📱 Resized: Tag Cloud skaliert');
         
         // Tags neu positionieren
         this.repositionTags();
