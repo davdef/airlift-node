@@ -50,8 +50,16 @@ class YamnetTagCloudVisualizer {
         return window.innerWidth <= 768 || /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
     }
     
+    getCanvasMetrics() {
+        const rect = this.canvas.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
+        const width = rect.width || this.canvas.width / dpr;
+        const height = rect.height || this.canvas.height / dpr;
+        return { width, height };
+    }
+    
     getScaleFactor() {
-        const { width, height } = this.canvas;
+        const { width, height } = this.getCanvasMetrics();
         const area = width * height;
         
         if (area < 200000) return 0.6;      // Sehr klein
@@ -331,7 +339,7 @@ class YamnetTagCloudVisualizer {
             return;
         }
         
-        const { width, height } = this.canvas;
+        const { width, height } = this.getCanvasMetrics();
         const ctx = this.ctx;
         
         // Canvas mit sehr leichtem Fade (für Trail-Effekt)
@@ -382,7 +390,7 @@ class YamnetTagCloudVisualizer {
             x += Math.sin(time * 0.8 + index) * 20 * confidence;
             
             // Schriftgröße (kleiner auf Mobile)
-            const fontSize = 16 + confidence * 20;
+            const fontSize = (16 + confidence * 20) * this.scaleFactor;
             
             this.drawMobileTag(ctx, tagState, x, y, fontSize, time);
         });
@@ -406,7 +414,7 @@ class YamnetTagCloudVisualizer {
             y += Math.cos(time * 0.7 + index) * 15 * confidence;
             
             // Schriftgröße
-            const fontSize = 14 + confidence * 18;
+            const fontSize = (14 + confidence * 18) * this.scaleFactor;
             
             this.drawMobileTag(ctx, tagState, x, y, fontSize, time);
         });
@@ -436,7 +444,7 @@ class YamnetTagCloudVisualizer {
             y += Math.cos(time * 1.5 + index) * orbit;
             
             // Schriftgröße
-            const fontSize = 20 + confidence * 30;
+            const fontSize = (20 + confidence * 30) * this.scaleFactor;
             
             this.drawTag(ctx, tagState, x, y, fontSize, time);
         });
