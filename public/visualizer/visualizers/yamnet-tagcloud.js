@@ -226,7 +226,7 @@ class YamnetTagCloudVisualizer {
 
         tags.forEach((t, i) => {
             const c = t.currentConfidence;
-            if (c < 0.01) return;
+            if (c < 0.005) return;
 
             const angle = t.position.angle + time * 0.15;
             const dist = t.position.distance * (0.7 + c * 0.6);
@@ -237,27 +237,34 @@ class YamnetTagCloudVisualizer {
             x += Math.sin(time * 1.2 + i) * 20 * c;
             y += Math.cos(time * 1.4 + i) * 20 * c;
 
-            const fontSize = (22 + c * 30) * scale;
+            const fontSize = (24 + c * 36) * scale;
             this.drawTag(ctx, t, x, y, fontSize, time);
         });
     }
 
     drawTag(ctx, tag, x, y, fontSize, time) {
         const c = tag.currentConfidence;
-        const opacity = Math.min(1, c * 1.4);
+        const opacity = Math.min(1, 0.2 + c * 3);
+        const outlineOpacity = Math.min(0.7, opacity + 0.2);
 
         ctx.save();
         ctx.font = `bold ${fontSize}px Segoe UI, Arial, sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
+        ctx.strokeStyle = `rgba(0, 0, 0, ${outlineOpacity})`;
+        ctx.lineWidth = Math.max(1, fontSize * 0.08);
         ctx.fillStyle = this.hexToRgba(tag.color, opacity);
         ctx.shadowColor = this.hexToRgba(tag.color, opacity * 0.3);
-        ctx.shadowBlur = 10 * c;
+        ctx.shadowBlur = 8 + 18 * c;
 
+        ctx.strokeText(tag.data.name, x, y);
         ctx.fillText(tag.data.name, x, y);
 
-        ctx.font = `${Math.max(11, fontSize * 0.3)}px Segoe UI`;
+        ctx.font = `${Math.max(12, fontSize * 0.32)}px Segoe UI`;
         ctx.fillStyle = `rgba(255,255,255,${opacity})`;
+        ctx.strokeStyle = `rgba(0, 0, 0, ${outlineOpacity * 0.8})`;
+        ctx.lineWidth = Math.max(1, fontSize * 0.05);
+        ctx.strokeText(`${Math.round(c * 100)}%`, x, y + fontSize * 0.55);
         ctx.fillText(`${Math.round(c * 100)}%`, x, y + fontSize * 0.55);
 
         if (c > 0.2) {
