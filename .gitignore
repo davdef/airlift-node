@@ -1,6 +1,7 @@
 /target
 /aircheck
 /server
+!/server/yamnet_server.py
 *.wav
 *.mp3
 .env
