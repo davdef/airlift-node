@@ -242,8 +242,8 @@ class YamnetAnalyzer:
             self.running = False
             return
         
-        # KLEINE CHUNKS für schnelle Updates
-        chunk_duration = 0.5  # 0.5 Sekunden
+        # CHUNK-GRÖSSE für stabilere Updates
+        chunk_duration = 1.0  # 1.0 Sekunden
         chunk_size = int(16000 * chunk_duration)
         
         analysis_count = 0
@@ -457,6 +457,7 @@ def get_analysis():
 def stream_analysis():
     """Server-Sent Events Stream für Echtzeit-Updates"""
     def generate():
+        delay_seconds = 3.0
         last_keepalive = time.time()
         last_analysis_id = None
         empty_count = 0
@@ -470,6 +471,9 @@ def stream_analysis():
                 
                 # Nur senden wenn sich was geändert hat
                 if analysis.get('analysisId') != last_analysis_id:
+                    wait_time = (analysis.get('timestamp', time.time()) + delay_seconds) - time.time()
+                    if wait_time > 0:
+                        time.sleep(wait_time)
                     yield f"data: {json.dumps(analysis)}\n\n"
                     last_analysis_id = analysis.get('analysisId')
                     last_keepalive = time.time()
@@ -593,7 +597,8 @@ if __name__ == '__main__':
     
     print(f"\n🎯 Stream: {STREAM_URL}")
     print("📈 Update-Rate: ~10Hz (100ms Interval)")
-    print("🎯 Chunk-Größe: 0.5 Sekunden")
+    print("🎯 Chunk-Größe: 1.0 Sekunden")
+    print("⏱️  SSE Verzögerung: 3.0 Sekunden")
     print("🎯 Confidence-Schwelle: 0.5%")
     
     # Starte Analyse-Thread
