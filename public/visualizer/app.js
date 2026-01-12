@@ -163,6 +163,8 @@ class AudioVisualizerApp {
 
         const playBtn = document.getElementById('play-btn');
         const stopBtn = document.getElementById('stop-btn');
+        const fullscreenBtn = document.getElementById('fullscreen-btn');
+        const visualizerContainer = document.querySelector('.visualizer-container');
 
         const updatePlayButtonState = () => {
             if (!playBtn) return;
@@ -208,6 +210,32 @@ class AudioVisualizerApp {
                 // Button-Status zurücksetzen
                 updatePlayButtonState();
             });
+        }
+
+        const updateFullscreenButtonState = () => {
+            if (!fullscreenBtn) return;
+            const isFullscreen = Boolean(document.fullscreenElement);
+            fullscreenBtn.innerHTML = isFullscreen
+                ? '<i class="fas fa-compress"></i>'
+                : '<i class="fas fa-expand"></i>';
+            fullscreenBtn.title = isFullscreen ? 'Vollbild verlassen' : 'Vollbild';
+        };
+
+        if (fullscreenBtn && visualizerContainer) {
+            fullscreenBtn.addEventListener('click', async () => {
+                try {
+                    if (document.fullscreenElement) {
+                        await document.exitFullscreen();
+                    } else {
+                        await visualizerContainer.requestFullscreen();
+                    }
+                } catch (error) {
+                    console.error('Fehler beim Umschalten des Vollbildmodus:', error);
+                }
+            });
+
+            document.addEventListener('fullscreenchange', updateFullscreenButtonState);
+            updateFullscreenButtonState();
         }
 
         // Sensitivität Slider

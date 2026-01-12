@@ -176,6 +176,10 @@ header h1 {
     pointer-events: none;
 }
 
+.visualizer-overlay button {
+    pointer-events: auto;
+}
+
 .visualizer-name {
     position: absolute;
     top: 12px;
@@ -192,13 +196,29 @@ header h1 {
 
 .fps-counter {
     position: absolute;
-    right: 12px;
-    bottom: 12px;
+    left: 12px;
+    top: 12px;
     background: rgba(20, 23, 28, 0.9);
     padding: 4px 10px;
     border-radius: 12px;
     font-size: 0.75rem;
     color: rgba(216, 228, 240, 0.75);
+}
+
+.fullscreen-btn {
+    position: absolute;
+    left: 12px;
+    bottom: 12px;
+    padding: 6px 10px;
+    border-radius: 10px;
+    background: rgba(20, 23, 28, 0.9);
+    border: 1px solid #2a3240;
+    color: rgba(216, 228, 240, 0.85);
+    font-size: 0.8rem;
+}
+
+.fullscreen-btn:hover {
+    background: rgba(30, 36, 48, 0.95);
 }
 
 /* Control Panel - KORRIGIERT: Nur Layout-Änderungen */
