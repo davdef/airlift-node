@@ -20,6 +20,7 @@ export class RfmStage {
             videoUrl: null,
             yamnetEndpoint: null,
             hlsScriptUrl: 'https://cdn.jsdelivr.net/npm/hls.js@1.5.18/dist/hls.min.js',
+            videoStallTimeoutMs: 4000,
             ...options
         };
 
@@ -31,6 +32,8 @@ export class RfmStage {
 
         this.state = 'init'; // init | video | canvas | error
         this._resizeObserver = null;
+        this._lastVideoTime = 0;
+        this._lastVideoProgressTs = 0;
     }
 
     /* ------------------------------------------------------------ */
@@ -115,13 +118,36 @@ _startVideoProbe() {
     this._videoProbeTimer = setInterval(() => {
         if (!this.video) return;
 
+        const now = Date.now();
+        const currentTime = this.video.currentTime || 0;
+
+        if (currentTime > this._lastVideoTime + 0.05) {
+            this._lastVideoTime = currentTime;
+            this._lastVideoProgressTs = now;
+        }
+
         // HAVE_FUTURE_DATA = 3
         if (
             this.video.readyState >= 3 &&
-            this.video.currentTime > 0 &&
+            currentTime > 0 &&
             !this.video.paused
         ) {
             this._showVideo();
+        }
+
+        if (
+            this.state === 'video' &&
+            (this.video.paused || this.video.ended)
+        ) {
+            this._showCanvas();
+        }
+
+        if (
+            this.state === 'video' &&
+            this._lastVideoProgressTs > 0 &&
+            now - this._lastVideoProgressTs > this.options.videoStallTimeoutMs
+        ) {
+            this._showCanvas();
         }
     }, 500);
 }
@@ -183,11 +209,25 @@ _attachVideoListeners(video) {
     });
 
     video.addEventListener('playing', () => {
+        this._lastVideoProgressTs = Date.now();
         this._showVideo();
+    });
+
+    video.addEventListener('timeupdate', () => {
+        if (video.currentTime > this._lastVideoTime + 0.05) {
+            this._lastVideoTime = video.currentTime;
+            this._lastVideoProgressTs = Date.now();
+        }
     });
 
     video.addEventListener('stalled', () => {
         this._showCanvas();
+    });
+
+    video.addEventListener('pause', () => {
+        if (!video.ended) {
+            this._showCanvas();
+        }
     });
 
     video.addEventListener('error', () => {
