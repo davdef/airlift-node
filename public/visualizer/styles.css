@@ -149,10 +149,12 @@ header h1 {
     gap: 16px;
     overflow: hidden;
     min-height: 0;
+    align-items: stretch;
 }
 
+/* Visualizer Container */
 .visualizer-container {
-    flex: 1 1 0;
+    flex: 1 1 auto;
     position: relative;
     background: #000;
     border-radius: 12px;
@@ -196,7 +198,7 @@ header h1 {
     color: rgba(216, 228, 240, 0.75);
 }
 
-/* Control Panel */
+/* Control Panel - KORRIGIERT: Nur Layout-Änderungen */
 .control-panel {
     width: 320px;
     background: var(--panel);
@@ -227,7 +229,7 @@ header h1 {
     gap: 8px;
 }
 
-/* Buttons */
+/* Buttons - UNVERÄNDERT */
 .btn {
     background: var(--blue);
     color: var(--bg);
@@ -416,13 +418,14 @@ input[type="range"]::-webkit-slider-thumb {
     width: 100%;
 }
 
-/* Footer */
+/* Footer - KORRIGIERT: Mit safe-area-inset */
 footer {
     padding: 8px 16px;
     background: var(--panel);
     border-top: 1px solid #222;
     font-size: 0.85rem;
     color: rgba(216, 228, 240, 0.7);
+    padding-bottom: max(8px, env(safe-area-inset-bottom, 8px));
 }
 
 .footer-info {
@@ -467,22 +470,22 @@ footer {
     }
 }
 
-@media (max-width: 768px) {
-    body {
-        overflow: auto;
-    }
-
+/* QUERFORMAT-FIX: Gleiche Höhe wie Canvas, Panel scrollbar */
+@media (max-width: 768px) and (orientation: landscape) {
     .container {
-        overflow: visible;
-        min-height: auto;
+        align-items: stretch; /* WICHTIG: Gleiche Höhe */
+        height: calc(100vh - 56px - 40px); /* Viewport minus Header/Footer */
     }
-
-    .logo {
-        font-size: 2.5rem;
+    
+    .control-panel {
+        align-self: stretch; /* Nimmt volle Höhe */
+        height: 100%; /* Gleiche Höhe wie Canvas */
+        overflow-y: auto; /* Scrollen bei Bedarf */
     }
-
-    .visualizer-grid {
-        grid-template-columns: 1fr;
+    
+    .visualizer-container {
+        align-self: stretch; /* Nimmt volle Höhe */
+        height: 100%; /* Gleiche Höhe wie Panel */
     }
 }
 /* Visualizer Container */
@@ -750,11 +753,12 @@ footer {
     }
 }
 
-/* Portrait vs Landscape */
+/* Portrait vs Landscape - NUR LANDSCAPE KORRIGIERT */
 @media (max-height: 600px) and (orientation: landscape) {
     .container {
         flex-direction: row;
         align-items: stretch;
+        height: calc(100dvh - 56px - 40px); /* Berücksichtigt Adresszeile */
     }
 
     .visualizer-container {
@@ -763,17 +767,16 @@ footer {
     }
     
     .control-panel {
-        width: min(45vw, 420px);
+        width: 200px; /* Reduzierte Breite für Querformat */
         margin-top: 0;
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 15px;
-        align-content: start;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        overflow-y: auto;
+        overflow-x: hidden;
     }
     
-    .visualizer-grid {
-        grid-column: span 2;
-    }
+    /* Keine Änderungen an Buttons oder Slidern - nur Layout */
 }
 
 /* WICHTIG: Canvas Container */
@@ -804,5 +807,35 @@ footer {
     #visualizer-canvas {
         padding: 0;
         box-sizing: border-box;
+    }
+}
+
+/* SPEZIELLE KORREKTUR FÜR QUERFORMAT - NEU HINZUGEFÜGT */
+@media (max-width: 768px) and (orientation: landscape) {
+    /* Container-Höhe berücksichtigt Adresszeile */
+    .container {
+        height: calc(100dvh - 56px - 40px);
+        padding: 8px;
+        gap: 8px;
+    }
+    
+    /* Panel auf schmale Breite reduziert */
+    .control-panel {
+        width: 200px; /* Halbe Breite von Desktop */
+        min-width: 200px;
+        max-width: 200px;
+        padding: 12px;
+        overflow-y: auto;
+    }
+    
+    /* Visualizer-Buttons in einer Spalte für schmalere Breite */
+    .visualizer-grid {
+        grid-template-columns: 1fr;
+        gap: 4px;
+    }
+    
+    /* Footer sicherstellen */
+    footer {
+        margin-top: 0;
     }
 }
