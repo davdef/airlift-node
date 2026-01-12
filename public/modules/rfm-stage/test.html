@@ -5,12 +5,32 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>RFM Stage Test</title>
   <link rel="stylesheet" href="rfm-stage.css">
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #f5f5f5;
+      color: #1b1b1b;
+    }
+    .content {
+      max-width: 720px;
+      margin: 40px auto;
+      padding: 0 16px 60px;
+    }
+    #stage-root {
+      width: 100%;
+    }
+  </style>
 </head>
 <body>
 
-<h1>RFM Stage – Test</h1>
-
-<div id="stage-root"></div>
+<main class="content">
+  <h1>RFM Stage – Test</h1>
+  <p>
+    Testbereich wie im Content einer Webseite: begrenzte Breite, nicht Vollbild.
+  </p>
+  <div id="stage-root"></div>
+</main>
 
 <script type="module">
   import { RfmStage } from './rfm-stage.js';

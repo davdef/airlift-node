@@ -40,20 +40,9 @@ export class RfmStage {
     mount() {
         this._buildDOM();
 
-this.video.style.position = 'absolute';
-this.video.style.inset = '0';
-this.video.style.width = '100%';
-this.video.style.height = '100%';
-this.video.style.objectFit = 'cover';
-this.video.style.zIndex = '2';
-
-this.canvas.style.position = 'absolute';
-this.canvas.style.inset = '0';
-this.canvas.style.zIndex = '1';
-
         this._setupCanvas();
         this._setupVideo();
-this._startVideoProbe();
+        this._startVideoProbe();
         this._setupResizeHandling();
 
         this._showCanvas(); // Default: Visual sichtbar
@@ -90,7 +79,7 @@ this._startVideoProbe();
         this.rootEl.innerHTML = '';
 
         const stage = document.createElement('div');
-        stage.className = 'rfm-stage';
+        stage.className = 'rfm-stage rfm-stage--canvas';
 
         const visual = document.createElement('div');
         visual.className = 'rfm-stage-visual';
@@ -115,6 +104,7 @@ this._startVideoProbe();
         this.canvas = canvas;
         this.ctx = canvas.getContext('2d');
         this.visualEl = visual;
+        this.stageEl = stage;
     }
 
     /* ------------------------------------------------------------ */
@@ -307,22 +297,22 @@ _loadHlsScript() {
     /* State Switching                                              */
     /* ------------------------------------------------------------ */
 
-_showVideo() {
-    if (this.state === 'video') return;
+_showVideo(force = false) {
+    if (!force && this.state === 'video') return;
     this.state = 'video';
 
-    this.canvas.style.display = 'none';
-    this.video.style.display = 'block';
+    this.stageEl.classList.remove('rfm-stage--canvas');
+    this.stageEl.classList.add('rfm-stage--video');
 
     this.tagCloud?.deactivate?.();
 }
 
-_showCanvas() {
-    if (this.state === 'canvas') return;
+_showCanvas(force = false) {
+    if (!force && this.state === 'canvas') return;
     this.state = 'canvas';
 
-    this.video.style.display = 'none';
-    this.canvas.style.display = 'block';
+    this.stageEl.classList.remove('rfm-stage--video');
+    this.stageEl.classList.add('rfm-stage--canvas');
 
     this.tagCloud?.activate?.();
 }
@@ -333,18 +323,12 @@ _showCanvas() {
 
 showVideoDebug() {
     console.warn('[RfmStage][DEBUG] force video');
-    this.video.style.display = 'block';
-    this.canvas.style.display = 'none';
+    this._showVideo(true);
 }
 
 showCanvasDebug() {
     console.warn('[RfmStage][DEBUG] force canvas');
-    this.video.style.display = 'none';
-    this.canvas.style.display = 'block';
-
-    if (this.tagCloud?.activate) {
-        this.tagCloud.activate();
-    }
+    this._showCanvas(true);
 }
 
 

@@ -1,0 +1,41 @@
+.rfm-stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  overflow: hidden;
+}
+
+.rfm-stage-visual {
+  position: absolute;
+  inset: 0;
+}
+
+.rfm-stage-video,
+.rfm-stage-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.rfm-stage-video {
+  object-fit: cover;
+}
+
+.rfm-stage-canvas {
+  display: block;
+  pointer-events: none;
+}
+
+.rfm-stage--video .rfm-stage-video,
+.rfm-stage--canvas .rfm-stage-canvas {
+  opacity: 1;
+  visibility: visible;
+}
+
+.rfm-stage--video .rfm-stage-canvas,
+.rfm-stage--canvas .rfm-stage-video {
+  opacity: 0;
+  visibility: hidden;
+}

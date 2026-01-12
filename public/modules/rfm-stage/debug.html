@@ -4,23 +4,42 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>RFM Stage Debug</title>
+  <link rel="stylesheet" href="rfm-stage.css">
+  <style>
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #f5f5f5;
+      color: #1b1b1b;
+    }
+    .content {
+      max-width: 720px;
+      margin: 40px auto;
+      padding: 0 16px 60px;
+    }
+    #stage-root {
+      width: 100%;
+    }
+  </style>
 </head>
 <body>
 
-<h1>RFM Stage – Debug</h1>
+<main class="content">
+  <h1>RFM Stage – Debug</h1>
 
-<div id="stage-root" style="max-width:640px"></div>
+  <div id="stage-root"></div>
 
-<p>
-  <button id="btn-video">Video erzwingen</button>
-  <button id="btn-canvas">Canvas erzwingen</button>
-</p>
+  <p>
+    <button id="btn-video">Video erzwingen</button>
+    <button id="btn-canvas">Canvas erzwingen</button>
+  </p>
 
-<!-- Live-Audio separat -->
-<audio
-  controls
-  src="https://icecast.radiorfm.de/rfm.ogg">
-</audio>
+  <!-- Live-Audio separat -->
+  <audio
+    controls
+    src="https://icecast.radiorfm.de/rfm.ogg">
+  </audio>
+</main>
 
 <script type="module">
   import { RfmStage } from './rfm-stage.js';
