@@ -7,7 +7,9 @@ class AudioVisualizerApp {
         this.audioCapture = new AudioCapture();
 
         this.currentVisualizer = null;
+        this.currentVisualizerId = null;
         this.visualizers = {};
+        this.visualizerOrder = [];
 
         this.lastTime = 0;
         this.fps = 0;
@@ -71,26 +73,28 @@ class AudioVisualizerApp {
         if (!container) return;
 
         // VISUALIZER-LISTE MIT ALLEN OPTIONEN
-        const visualizers = {
-            waveform: 'Wellenform',
-            frequencyBars: 'Frequenz-Balken',
-            particleNebula: 'Partikel-Nebel',
-            particleSparks: 'Partikel-Sparks',
-            spectrumCircle: 'Spektrum',
-            kaleidoscope: 'Kaleidoskop',
-            aortaLine: 'Aorta-Linie',
-            aortaTunnel: 'Aorta-Tunnel',
-            specNHopp: "Spec'n'Hopp"
-        };
+        const visualizers = [
+            { id: 'waveform', name: 'Wellenform' },
+            { id: 'frequencyBars', name: 'Frequenz-Balken' },
+            { id: 'particleNebula', name: 'Partikel-Nebel' },
+            { id: 'particleSparks', name: 'Partikel-Sparks' },
+            { id: 'spectrumCircle', name: 'Spektrum' },
+            { id: 'kaleidoscope', name: 'Kaleidoskop' },
+            { id: 'aortaLine', name: 'Aorta-Linie' },
+            { id: 'aortaTunnel', name: 'Aorta-Tunnel' },
+            { id: 'specNHopp', name: "Spec'n'Hopp" }
+        ];
         
         // YAMNET NUR HINZUFÜGEN WENN VORHANDEN
         if (this.visualizers.yamnetTagCloud) {
-            visualizers.yamnetTagCloud = 'Tag-Wolke';
+            visualizers.push({ id: 'yamnetTagCloud', name: 'Tag-Wolke' });
         }
 
         container.innerHTML = '';
 
-        Object.entries(visualizers).forEach(([id, name]) => {
+        this.visualizerOrder = visualizers.map(({ id }) => id);
+
+        visualizers.forEach(({ id, name }) => {
             const btn = document.createElement('button');
             btn.className = 'visualizer-btn';
             btn.textContent = name;
@@ -128,6 +132,7 @@ class AudioVisualizerApp {
 
         // Neuen Visualizer setzen
         this.currentVisualizer = this.visualizers[id];
+        this.currentVisualizerId = id;
         
         // Spezielle Aktivierung für YAMNet Tag Cloud
         if (id === 'yamnetTagCloud' && 
@@ -236,6 +241,53 @@ class AudioVisualizerApp {
 
             document.addEventListener('fullscreenchange', updateFullscreenButtonState);
             updateFullscreenButtonState();
+        }
+
+        if (visualizerContainer) {
+            const swipeState = {
+                startX: 0,
+                startY: 0,
+                startTime: 0
+            };
+            const minSwipeDistance = 50;
+            const maxSwipeTime = 600;
+
+            const changeVisualizerBySwipe = (direction) => {
+                if (!this.visualizerOrder.length) return;
+                const currentIndex = this.visualizerOrder.indexOf(this.currentVisualizerId);
+                const safeIndex = currentIndex >= 0 ? currentIndex : 0;
+                const nextIndex = (safeIndex + direction + this.visualizerOrder.length) % this.visualizerOrder.length;
+                const nextId = this.visualizerOrder[nextIndex];
+                if (nextId && nextId !== this.currentVisualizerId) {
+                    this.setVisualizer(nextId);
+                }
+            };
+
+            visualizerContainer.addEventListener('touchstart', (event) => {
+                if (event.touches.length !== 1) return;
+                const touch = event.touches[0];
+                swipeState.startX = touch.clientX;
+                swipeState.startY = touch.clientY;
+                swipeState.startTime = Date.now();
+            }, { passive: true });
+
+            visualizerContainer.addEventListener('touchend', (event) => {
+                if (!event.changedTouches.length) return;
+                const touch = event.changedTouches[0];
+                const deltaX = touch.clientX - swipeState.startX;
+                const deltaY = touch.clientY - swipeState.startY;
+                const elapsed = Date.now() - swipeState.startTime;
+
+                if (elapsed > maxSwipeTime) return;
+                if (Math.abs(deltaX) <= minSwipeDistance) return;
+                if (Math.abs(deltaX) <= Math.abs(deltaY)) return;
+
+                if (deltaX < 0) {
+                    changeVisualizerBySwipe(1);
+                } else {
+                    changeVisualizerBySwipe(-1);
+                }
+            }, { passive: true });
         }
 
         // Sensitivität Slider
