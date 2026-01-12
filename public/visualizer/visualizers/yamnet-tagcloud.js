@@ -39,6 +39,12 @@ class YamnetTagCloudVisualizer {
             other: '#607d8b'
         };
 
+        this.theme = 'dark'; // 'dark' | 'light'
+        this.backgroundColors = {
+           dark: 'rgba(10,20,40,1)',
+           light: 'rgba(205,205,205,1)' // helles Grau, nicht Reinweiß
+        };
+
         console.log('🌀 YAMNet Tag Cloud (Desktop-unified)');
     }
 
@@ -242,8 +248,11 @@ class YamnetTagCloudVisualizer {
         const { width, height } = this.getCanvasMetrics();
         const ctx = this.ctx;
 
-        ctx.fillStyle = 'rgba(10,20,40,1)';
-        ctx.fillRect(0, 0, width, height);
+const bg = this.backgroundColors[this.theme] 
+    || this.backgroundColors.dark;
+
+ctx.fillStyle = bg;
+ctx.fillRect(0, 0, width, height);
 
         this.drawDesktopUnified(ctx, width, height);
     }

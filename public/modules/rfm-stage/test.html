@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>RFM Stage Test</title>
+  <link rel="stylesheet" href="rfm-stage.css">
+</head>
+<body>
+
+<h1>RFM Stage – Test</h1>
+
+<div id="stage-root"></div>
+
+<script type="module">
+  import { RfmStage } from './rfm-stage.js';
+
+  const stage = new RfmStage(
+    document.getElementById('stage-root'),
+    {
+      videoUrl: 'https://dv.radiorfm.de/hls/stream.m3u8',
+      yamnetEndpoint: '/api/yamnet/stream'
+    }
+  );
+
+  stage.mount();
+</script>
+
+</body>
+</html>

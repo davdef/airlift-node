@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>RFM Stage Debug</title>
+</head>
+<body>
+
+<h1>RFM Stage – Debug</h1>
+
+<div id="stage-root" style="max-width:640px"></div>
+
+<p>
+  <button id="btn-video">Video erzwingen</button>
+  <button id="btn-canvas">Canvas erzwingen</button>
+</p>
+
+<!-- Live-Audio separat -->
+<audio
+  controls
+  src="https://icecast.radiorfm.de/rfm.ogg">
+</audio>
+
+<script type="module">
+  import { RfmStage } from './rfm-stage.js';
+
+  const stage = new RfmStage(
+    document.getElementById('stage-root'),
+    {
+      videoUrl: 'https://dv.radiorfm.de/hls/stream.m3u8', // echtes Video!
+      yamnetEndpoint: '/api/yamnet/stream',
+      debug: true
+    }
+  );
+
+  stage.mount();
+
+  document.getElementById('btn-video')
+    .addEventListener('click', () => stage.showVideoDebug());
+
+  document.getElementById('btn-canvas')
+    .addEventListener('click', () => stage.showCanvasDebug());
+</script>
+
+</body>
+</html>
