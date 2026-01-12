@@ -19,6 +19,7 @@ export class RfmStage {
         this.options = {
             videoUrl: null,
             yamnetEndpoint: null,
+            hlsScriptUrl: 'https://cdn.jsdelivr.net/npm/hls.js@1.5.18/dist/hls.min.js',
             ...options
         };
 
@@ -136,7 +137,7 @@ _startVideoProbe() {
 }
 
 
-_setupVideo() {
+async _setupVideo() {
     if (!this.options.videoUrl) return;
 
     const video = this.video;
@@ -145,28 +146,45 @@ _setupVideo() {
     video.playsInline = true;
     video.autoplay = true;
 
-    if (window.Hls && window.Hls.isSupported()) {
-        this.hls = new window.Hls({
-            lowLatencyMode: true,
-            maxBufferLength: 6
-        });
+    const initHlsIfSupported = () => {
+        if (window.Hls && window.Hls.isSupported()) {
+            this._initHls(video);
+            return true;
+        }
+        return false;
+    };
 
-        this.hls.loadSource(this.options.videoUrl);
-        this.hls.attachMedia(video);
-
-this.hls.on(Hls.Events.FRAG_BUFFERED, () => {
-    if (this.video.currentTime > 0) {
-        this._showVideo();
-    }
-});
-
-        this.hls.on(window.Hls.Events.ERROR, () => {
-            this._showCanvas();
-        });
-    } else {
-        video.src = this.options.videoUrl;
+    if (!initHlsIfSupported()) {
+        const hlsLoaded = await this._loadHlsScript();
+        if (!hlsLoaded || !initHlsIfSupported()) {
+            video.src = this.options.videoUrl;
+        }
     }
 
+    this._attachVideoListeners(video);
+}
+
+_initHls(video) {
+    this.hls = new window.Hls({
+        lowLatencyMode: true,
+        maxBufferLength: 6
+    });
+
+    this.hls.loadSource(this.options.videoUrl);
+    this.hls.attachMedia(video);
+
+    this.hls.on(window.Hls.Events.FRAG_BUFFERED, () => {
+        if (this.video.currentTime > 0) {
+            this._showVideo();
+        }
+    });
+
+    this.hls.on(window.Hls.Events.ERROR, () => {
+        this._showCanvas();
+    });
+}
+
+_attachVideoListeners(video) {
     // Umschalt-Trigger
     video.addEventListener('canplay', () => {
         if (video.readyState >= 3) {
@@ -185,6 +203,36 @@ this.hls.on(Hls.Events.FRAG_BUFFERED, () => {
     video.addEventListener('error', () => {
         this._showCanvas();
     });
+}
+
+_loadHlsScript() {
+    if (window.Hls) {
+        return Promise.resolve(true);
+    }
+
+    if (!this.options.hlsScriptUrl) {
+        return Promise.resolve(false);
+    }
+
+    if (this._hlsScriptPromise) {
+        return this._hlsScriptPromise;
+    }
+
+    this._hlsScriptPromise = new Promise((resolve) => {
+        const script = document.createElement('script');
+        script.src = this.options.hlsScriptUrl;
+        script.async = true;
+        script.onload = () => resolve(true);
+        script.onerror = () => {
+            if (this.debug) {
+                console.warn('[RfmStage] HLS script konnte nicht geladen werden');
+            }
+            resolve(false);
+        };
+        document.head.appendChild(script);
+    });
+
+    return this._hlsScriptPromise;
 }
 
     async _tryStartVideo() {
