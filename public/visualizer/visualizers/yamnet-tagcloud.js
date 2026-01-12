@@ -242,7 +242,7 @@ class YamnetTagCloudVisualizer {
         const { width, height } = this.getCanvasMetrics();
         const ctx = this.ctx;
 
-        ctx.fillStyle = 'rgba(10,20,40,0.08)';
+        ctx.fillStyle = 'rgba(10,20,40,1)';
         ctx.fillRect(0, 0, width, height);
 
         this.drawDesktopUnified(ctx, width, height);
