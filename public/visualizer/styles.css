@@ -199,17 +199,17 @@ header h1 {
     width: 320px;
     background: var(--panel);
     border-radius: 12px;
-    padding: 20px;
+    padding: 16px;
     border: 1px solid #222;
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: 12px;
     overflow-y: auto;
 }
 
 .control-section {
     background: var(--panel-light);
-    padding: 16px;
+    padding: 12px;
     border-radius: 10px;
     border: 1px solid #222;
 }
@@ -290,8 +290,8 @@ header h1 {
 .visualizer-grid {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
-    gap: 5px;
-    margin-bottom: 16px;
+    gap: 4px;
+    margin-bottom: 12px;
 }
 
 .visualizer-btn {
@@ -503,9 +503,7 @@ footer {
 /* Visualizer Overlay */
 .visualizer-overlay {
     position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
+    inset: 0;
     padding: 20px;
     display: flex;
     justify-content: space-between;
@@ -536,26 +534,26 @@ footer {
 .control-panel {
     background: rgba(20, 30, 50, 0.9);
     border-radius: 12px;
-    padding: 20px;
-    margin-top: 20px;
+    padding: 14px;
+    margin-top: 12px;
     border: 1px solid rgba(90, 160, 255, 0.2);
 }
 
 .visualizer-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-    gap: 10px;
-    margin-bottom: 20px;
+    gap: 6px;
+    margin-bottom: 12px;
 }
 
 .visualizer-btn {
     background: rgba(40, 50, 80, 0.8);
     color: #a0c0ff;
     border: 1px solid rgba(90, 160, 255, 0.3);
-    padding: 12px 16px;
+    padding: 8px 10px;
     border-radius: 8px;
     cursor: pointer;
-    font-size: 14px;
+    font-size: 12px;
     font-weight: 500;
     transition: all 0.3s ease;
 }
@@ -649,22 +647,22 @@ footer {
     
     /* Control Panel */
     .control-panel {
-        padding: 15px !important;
-        margin-top: 15px !important;
+        padding: 12px !important;
+        margin-top: 10px !important;
     }
     
     /* Visualizer Buttons - Scrollbar für viele Buttons */
     .visualizer-grid {
         grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)) !important;
-        gap: 8px !important;
-        max-height: 200px;
+        gap: 6px !important;
+        max-height: 260px;
         overflow-y: auto;
         padding-right: 5px;
     }
     
     .visualizer-btn {
-        padding: 10px 12px !important;
-        font-size: 13px !important;
+        padding: 8px 10px !important;
+        font-size: 12px !important;
     }
     
     /* Header */
@@ -749,14 +747,24 @@ footer {
 
 /* Portrait vs Landscape */
 @media (max-height: 600px) and (orientation: landscape) {
+    .container {
+        flex-direction: row;
+        align-items: stretch;
+    }
+
     .visualizer-container {
-        height: 60vh !important;
+        height: auto !important;
+        min-height: 0 !important;
+        flex: 1 1 auto;
     }
     
     .control-panel {
+        width: min(38vw, 360px);
+        margin-top: 0;
         display: grid;
         grid-template-columns: 1fr 1fr;
         gap: 15px;
+        align-content: start;
     }
     
     .visualizer-grid {
