@@ -54,11 +54,12 @@ class YamnetTagCloudVisualizer {
     getScaleFactor() {
         const { width, height } = this.getCanvasMetrics();
         const area = width * height;
+        const boost = 1.5;
 
-        if (area < 200_000) return 0.6;
-        if (area < 500_000) return 0.8;
-        if (area < 1_000_000) return 0.9;
-        return 1.0;
+        if (area < 200_000) return 0.6 * boost;
+        if (area < 500_000) return 0.8 * boost;
+        if (area < 1_000_000) return 0.9 * boost;
+        return 1.0 * boost;
     }
 
     getMaxTags() {
