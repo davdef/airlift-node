@@ -148,15 +148,17 @@ header h1 {
     padding: 16px;
     gap: 16px;
     overflow: hidden;
+    min-height: 0;
 }
 
 .visualizer-container {
-    flex: 1;
+    flex: 1 1 0;
     position: relative;
     background: #000;
     border-radius: 12px;
     overflow: hidden;
     border: 1px solid #222;
+    min-height: 0;
 }
 
 #visualizer-canvas {
@@ -205,6 +207,8 @@ header h1 {
     flex-direction: column;
     gap: 12px;
     overflow-y: auto;
+    overflow-x: hidden;
+    min-height: 0;
 }
 
 .control-section {
@@ -470,6 +474,7 @@ footer {
 
     .container {
         overflow: visible;
+        min-height: auto;
     }
 
     .logo {
@@ -484,8 +489,6 @@ footer {
 .visualizer-container {
     position: relative;
     width: 100%;
-    height: 70vh;
-    min-height: 400px;
     background: linear-gradient(135deg, #0a1428 0%, #1a2b4a 100%);
     border-radius: 16px;
     overflow: hidden;
@@ -537,6 +540,8 @@ footer {
     padding: 14px;
     margin-top: 12px;
     border: 1px solid rgba(90, 160, 255, 0.2);
+    overflow-y: auto;
+    overflow-x: hidden;
 }
 
 .visualizer-grid {
@@ -640,8 +645,8 @@ footer {
 @media (max-width: 768px) {
     /* Visualizer Container */
     .visualizer-container {
-        height: 50vh !important;
-        min-height: 300px !important;
+        height: auto !important;
+        min-height: 0 !important;
         border-radius: 12px !important;
     }
     
@@ -731,8 +736,8 @@ footer {
 /* Sehr kleine Displays */
 @media (max-width: 480px) {
     .visualizer-container {
-        height: 45vh !important;
-        min-height: 250px !important;
+        height: auto !important;
+        min-height: 0 !important;
     }
     
     .visualizer-grid {
@@ -753,13 +758,12 @@ footer {
     }
 
     .visualizer-container {
-        height: auto !important;
+        flex: 1 1 0;
         min-height: 0 !important;
-        flex: 1 1 auto;
     }
     
     .control-panel {
-        width: min(38vw, 360px);
+        width: min(45vw, 420px);
         margin-top: 0;
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -774,19 +778,11 @@ footer {
 
 /* WICHTIG: Canvas Container */
 .visualizer-container {
-    position: relative;
-    width: 100%;
-    height: 70vh;
-    min-height: 400px;
-    background: linear-gradient(135deg, #0a1428 0%, #1a2b4a 100%);
-    border-radius: 16px;
-    overflow: hidden; /* WICHTIG: Verhindert Überlauf */
     box-sizing: border-box; /* WICHTIG: Padding/Border in Größe einbeziehen */
 }
 
 /* Canvas selbst */
 #visualizer-canvas {
-    display: block;
     width: 100% !important;
     height: 100% !important;
     box-sizing: border-box;
@@ -800,8 +796,8 @@ footer {
 /* Mobile Anpassungen */
 @media (max-width: 768px) {
     .visualizer-container {
-        height: 50vh !important;
-        min-height: 300px !important;
+        height: auto !important;
+        min-height: 0 !important;
     }
     
     /* Canvas ohne Padding, damit das Zeichnen exakt passt */
