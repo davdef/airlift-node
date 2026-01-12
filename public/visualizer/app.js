@@ -164,6 +164,20 @@ class AudioVisualizerApp {
         const playBtn = document.getElementById('play-btn');
         const stopBtn = document.getElementById('stop-btn');
 
+        const updatePlayButtonState = () => {
+            if (!playBtn) return;
+
+            if (this.audioCapture.isCapturing) {
+                playBtn.classList.add('playing');
+                playBtn.innerHTML = '<i class="fas fa-arrows-rotate"></i>';
+                playBtn.title = 'Aktualisieren';
+            } else {
+                playBtn.classList.remove('playing');
+                playBtn.innerHTML = '<i class="fas fa-play"></i>';
+                playBtn.title = 'Play';
+            }
+        };
+
         // Play-Button
         if (playBtn) {
             playBtn.addEventListener('click', async () => {
@@ -178,9 +192,7 @@ class AudioVisualizerApp {
                     this.audioCapture.startStream(STREAM_URL);
                     
                     // Button-Status aktualisieren
-                    playBtn.classList.add('playing');
-                    playBtn.innerHTML = '<i class="fas fa-arrows-rotate"></i>';
-                    playBtn.title = 'Aktualisieren';
+                    updatePlayButtonState();
                     
                 } catch (error) {
                     console.error('Fehler beim Starten des Streams:', error);
@@ -194,11 +206,7 @@ class AudioVisualizerApp {
                 this.audioCapture.stop();
                 
                 // Button-Status zurücksetzen
-                if (playBtn) {
-                    playBtn.classList.remove('playing');
-                    playBtn.innerHTML = '<i class="fas fa-arrows-rotate"></i>';
-                    playBtn.title = 'Aktualisieren';
-                }
+                updatePlayButtonState();
             });
         }
 
@@ -251,6 +259,7 @@ class AudioVisualizerApp {
 
         // Audio-Info aktualisieren
         this.updateAudioInfo();
+        updatePlayButtonState();
     }
 
     updateAudioInfo() {
@@ -267,6 +276,12 @@ resizeCanvas() {
     // WICHTIG: Verwende getBoundingClientRect für genaue Größe
     const rect = container.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
+
+    this.canvasSize = {
+        width: rect.width,
+        height: rect.height,
+        dpr
+    };
     
     // Setze die tatsächliche Canvas-Größe (in Pixel)
     this.canvas.width = Math.floor(rect.width * dpr);
@@ -344,12 +359,14 @@ resizeCanvas() {
                 }
             } else {
                 // Warte auf Audio-Daten
+                const canvasWidth = this.canvasSize?.width ?? (this.canvas.width / (window.devicePixelRatio || 1));
+                const canvasHeight = this.canvasSize?.height ?? (this.canvas.height / (window.devicePixelRatio || 1));
                 this.ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
                 this.ctx.font = '24px Arial';
                 this.ctx.textAlign = 'center';
                 this.ctx.fillText('Warte auf Audio...', 
-                    this.canvas.width / 2, 
-                    this.canvas.height / 2);
+                    canvasWidth / 2, 
+                    canvasHeight / 2);
             }
             
         } else if (this.currentVisualizer && this.currentVisualizer.drawWithoutAudio) {
@@ -360,24 +377,29 @@ resizeCanvas() {
                 console.error('Fehler beim Zeichnen ohne Audio:', error);
             }
             
+        } else if (this.currentVisualizer && this.currentVisualizer.isAudioIndependent) {
+            return;
         } else {
+            const canvasWidth = this.canvasSize?.width ?? (this.canvas.width / (window.devicePixelRatio || 1));
+            const canvasHeight = this.canvasSize?.height ?? (this.canvas.height / (window.devicePixelRatio || 1));
+
             // Kein Audio, leeren Canvas anzeigen
             this.ctx.fillStyle = 'rgba(10, 20, 40, 0.8)';
-            this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+            this.ctx.fillRect(0, 0, canvasWidth, canvasHeight);
             
             // Start-Hinweis
             this.ctx.fillStyle = 'rgba(90, 160, 255, 0.7)';
             this.ctx.font = '28px Arial';
             this.ctx.textAlign = 'center';
             this.ctx.fillText('RFM Visualizer', 
-                this.canvas.width / 2, 
-                this.canvas.height / 2 - 30);
+                canvasWidth / 2, 
+                canvasHeight / 2 - 30);
             
             this.ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
             this.ctx.font = '18px Arial';
             this.ctx.fillText('Klicke auf Play, um den Stream zu starten', 
-                this.canvas.width / 2, 
-                this.canvas.height / 2 + 20);
+                canvasWidth / 2, 
+                canvasHeight / 2 + 20);
             
             // Aktuellen Visualizer anzeigen
             if (this.currentVisualizer) {
@@ -388,8 +410,8 @@ resizeCanvas() {
                 this.ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
                 this.ctx.font = '14px Arial';
                 this.ctx.fillText(`Visualizer: ${visualizerName || 'Unbekannt'}`, 
-                    this.canvas.width / 2, 
-                    this.canvas.height / 2 + 60);
+                    canvasWidth / 2, 
+                    canvasHeight / 2 + 60);
             }
         }
     }

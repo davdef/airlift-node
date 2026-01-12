@@ -3,6 +3,7 @@ class YamnetTagCloudVisualizer {
     constructor(ctx, canvas) {
         this.ctx = ctx;
         this.canvas = canvas;
+        this.isAudioIndependent = true;
 
         // State
         this.activeTags = new Map();
