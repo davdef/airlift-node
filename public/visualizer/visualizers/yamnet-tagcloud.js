@@ -17,6 +17,9 @@ class YamnetTagCloudVisualizer {
         // Animation
         this.animationFrame = null;
         this.lastAnimTime = 0;
+        this.lastEventTime = 0;
+        this.lastTickIntervalMs = 1000;
+        this.animationTauSeconds = 0.35;
 
         // Farben
         this.colors = {
@@ -152,28 +155,49 @@ class YamnetTagCloudVisualizer {
 
         const now = Date.now();
         const maxTags = this.getMaxTags();
+        const nextTags = analysis.topClasses.slice(0, maxTags);
+        const nextIds = new Set(nextTags.map(tag => String(tag.id)));
+        const totalConfidence = nextTags.reduce((sum, tag) => sum + tag.confidence, 0);
 
-        analysis.topClasses.slice(0, maxTags).forEach((tag, index) => {
+        if (this.lastEventTime) {
+            const interval = now - this.lastEventTime;
+            this.lastTickIntervalMs = Math.min(2000, Math.max(300, interval));
+        }
+        this.lastEventTime = now;
+
+        nextTags.forEach((tag, index) => {
             const id = String(tag.id);
+            const normalizedConfidence = totalConfidence > 0
+                ? tag.confidence / totalConfidence
+                : tag.confidence;
             if (this.activeTags.has(id)) {
                 const t = this.activeTags.get(id);
-                t.targetConfidence = tag.confidence;
+                t.data = tag;
+                t.color = this.colors[tag.category] || this.colors.other;
+                t.targetConfidence = normalizedConfidence;
                 t.lastUpdate = now;
+                t.fadingOut = false;
             } else {
                 this.activeTags.set(id, {
                     data: tag,
                     currentConfidence: 0,
-                    targetConfidence: tag.confidence,
+                    targetConfidence: normalizedConfidence,
                     color: this.colors[tag.category] || this.colors.other,
                     created: now,
                     lastUpdate: now,
-                    position: this.getInitialPosition(index)
+                    position: this.getInitialPosition(index),
+                    fadingOut: false
                 });
             }
         });
 
         [...this.activeTags.entries()].forEach(([id, t]) => {
-            if (now - t.lastUpdate > 5000) this.activeTags.delete(id);
+            if (!nextIds.has(id)) {
+                t.targetConfidence = 0;
+                t.lastUpdate = now;
+                t.fadingOut = true;
+            }
+            if (now - t.lastUpdate > 15000) this.activeTags.delete(id);
         });
     }
 
@@ -194,11 +218,19 @@ class YamnetTagCloudVisualizer {
     updateAnimations(ts) {
         const dt = Math.min(ts - (this.lastAnimTime || ts), 100) / 1000;
         this.lastAnimTime = ts;
-        const speed = 10 * dt;
+        const tau = Math.max(0.15, Math.min(1.0, (this.lastTickIntervalMs / 1000) / 3));
+        this.animationTauSeconds = tau;
+        const lerpFactor = 1 - Math.exp(-dt / this.animationTauSeconds);
+        const toRemove = [];
 
-        this.activeTags.forEach(t => {
-            t.currentConfidence += (t.targetConfidence - t.currentConfidence) * speed;
+        this.activeTags.forEach((t, id) => {
+            t.currentConfidence += (t.targetConfidence - t.currentConfidence) * lerpFactor;
+            if (t.fadingOut && t.currentConfidence < 0.002) {
+                toRemove.push(id);
+            }
         });
+
+        toRemove.forEach(id => this.activeTags.delete(id));
     }
 
     /* ------------------------------------------------------------------ */
