@@ -247,7 +247,8 @@ class AudioVisualizerApp {
             const swipeState = {
                 startX: 0,
                 startY: 0,
-                startTime: 0
+                startTime: 0,
+                isDragging: false
             };
             const minSwipeDistance = 50;
             const maxSwipeTime = 600;
@@ -288,6 +289,32 @@ class AudioVisualizerApp {
                     changeVisualizerBySwipe(-1);
                 }
             }, { passive: true });
+
+            visualizerContainer.addEventListener('mousedown', (event) => {
+                if (event.button !== 0) return;
+                swipeState.isDragging = true;
+                swipeState.startX = event.clientX;
+                swipeState.startY = event.clientY;
+                swipeState.startTime = Date.now();
+            });
+
+            window.addEventListener('mouseup', (event) => {
+                if (!swipeState.isDragging) return;
+                swipeState.isDragging = false;
+                const deltaX = event.clientX - swipeState.startX;
+                const deltaY = event.clientY - swipeState.startY;
+                const elapsed = Date.now() - swipeState.startTime;
+
+                if (elapsed > maxSwipeTime) return;
+                if (Math.abs(deltaX) <= minSwipeDistance) return;
+                if (Math.abs(deltaX) <= Math.abs(deltaY)) return;
+
+                if (deltaX < 0) {
+                    changeVisualizerBySwipe(1);
+                } else {
+                    changeVisualizerBySwipe(-1);
+                }
+            });
         }
 
         // Sensitivität Slider
@@ -333,6 +360,28 @@ class AudioVisualizerApp {
                     } else {
                         playBtn.click();
                     }
+                }
+            }
+        });
+
+        document.addEventListener('keydown', (e) => {
+            if (e.target.matches('input, textarea, button')) return;
+            if (e.code === 'ArrowLeft') {
+                e.preventDefault();
+                if (this.visualizerOrder.length) {
+                    const currentIndex = this.visualizerOrder.indexOf(this.currentVisualizerId);
+                    const safeIndex = currentIndex >= 0 ? currentIndex : 0;
+                    const nextIndex = (safeIndex - 1 + this.visualizerOrder.length) % this.visualizerOrder.length;
+                    this.setVisualizer(this.visualizerOrder[nextIndex]);
+                }
+            }
+            if (e.code === 'ArrowRight') {
+                e.preventDefault();
+                if (this.visualizerOrder.length) {
+                    const currentIndex = this.visualizerOrder.indexOf(this.currentVisualizerId);
+                    const safeIndex = currentIndex >= 0 ? currentIndex : 0;
+                    const nextIndex = (safeIndex + 1) % this.visualizerOrder.length;
+                    this.setVisualizer(this.visualizerOrder[nextIndex]);
                 }
             }
         });
