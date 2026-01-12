@@ -179,8 +179,8 @@ class AudioVisualizerApp {
                     
                     // Button-Status aktualisieren
                     playBtn.classList.add('playing');
-                    playBtn.innerHTML = '<i class="fas fa-pause"></i>';
-                    playBtn.title = 'Pause';
+                    playBtn.innerHTML = '<i class="fas fa-arrows-rotate"></i>';
+                    playBtn.title = 'Aktualisieren';
                     
                 } catch (error) {
                     console.error('Fehler beim Starten des Streams:', error);
@@ -196,8 +196,8 @@ class AudioVisualizerApp {
                 // Button-Status zurücksetzen
                 if (playBtn) {
                     playBtn.classList.remove('playing');
-                    playBtn.innerHTML = '<i class="fas fa-play"></i>';
-                    playBtn.title = 'Play';
+                    playBtn.innerHTML = '<i class="fas fa-arrows-rotate"></i>';
+                    playBtn.title = 'Aktualisieren';
                 }
             });
         }
