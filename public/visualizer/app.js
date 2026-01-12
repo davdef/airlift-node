@@ -196,8 +196,8 @@ class AudioVisualizerApp {
                 // Button-Status zurücksetzen
                 if (playBtn) {
                     playBtn.classList.remove('playing');
-                    playBtn.innerHTML = '<i class="fas fa-play"></i>';
-                    playBtn.title = 'Play';
+                    playBtn.innerHTML = '<i class="fas fa-arrows-rotate"></i>';
+                    playBtn.title = 'Aktualisieren';
                 }
             });
         }
