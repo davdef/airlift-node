@@ -20,7 +20,8 @@ body {
     background: var(--bg);
     color: var(--text);
     font-family: system-ui, sans-serif;
-    min-height: 100vh;
+    min-height: 100dvh;
+    height: 100dvh;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -171,12 +172,14 @@ header h1 {
 
 .visualizer-overlay {
     position: absolute;
-    top: 16px;
-    right: 16px;
+    inset: 0;
     display: flex;
     flex-direction: column;
-    align-items: flex-end;
+    align-items: center;
+    justify-content: center;
     gap: 8px;
+    text-align: center;
+    pointer-events: none;
 }
 
 .visualizer-name {
@@ -452,390 +455,44 @@ footer {
 }
 
 /* Responsive */
-@media (max-width: 1200px) {
+@media (orientation: portrait) {
     .container {
         flex-direction: column;
+    }
+
+    .visualizer-container {
+        width: 100%;
+        flex: 1 1 auto;
+        min-height: 0;
     }
 
     .control-panel {
         width: 100%;
-        flex-direction: row;
-        flex-wrap: wrap;
-        max-height: 45vh;
-    }
-
-    .control-section {
-        flex: 1;
-        min-width: 250px;
+        max-height: 40dvh;
     }
 }
 
-/* QUERFORMAT-FIX: Gleiche Höhe wie Canvas, Panel scrollbar */
-@media (max-width: 768px) and (orientation: landscape) {
-    .container {
-        align-items: stretch; /* WICHTIG: Gleiche Höhe */
-        height: calc(100vh - 56px - 40px); /* Viewport minus Header/Footer */
-    }
-    
-    .control-panel {
-        align-self: stretch; /* Nimmt volle Höhe */
-        height: 100%; /* Gleiche Höhe wie Canvas */
-        overflow-y: auto; /* Scrollen bei Bedarf */
-    }
-    
-    .visualizer-container {
-        align-self: stretch; /* Nimmt volle Höhe */
-        height: 100%; /* Gleiche Höhe wie Panel */
-    }
-}
-/* Visualizer Container */
-.visualizer-container {
-    position: relative;
-    width: 100%;
-    background: linear-gradient(135deg, #0a1428 0%, #1a2b4a 100%);
-    border-radius: 16px;
-    overflow: hidden;
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
-    border: 1px solid rgba(90, 160, 255, 0.2);
-}
-
-/* Canvas */
-#visualizer-canvas {
-    display: block;
-    width: 100%;
-    height: 100%;
-}
-
-/* Visualizer Overlay */
-.visualizer-overlay {
-    position: absolute;
-    inset: 0;
-    padding: 20px;
-    display: flex;
-    justify-content: space-between;
-    pointer-events: none;
-}
-
-.visualizer-name {
-    background: rgba(0, 0, 0, 0.7);
-    color: #5aa0ff;
-    padding: 8px 16px;
-    border-radius: 8px;
-    font-weight: bold;
-    font-size: 14px;
-    border: 1px solid rgba(90, 160, 255, 0.3);
-}
-
-.fps-counter {
-    background: rgba(0, 0, 0, 0.7);
-    color: #5aff8c;
-    padding: 8px 16px;
-    border-radius: 8px;
-    font-family: monospace;
-    font-size: 14px;
-    border: 1px solid rgba(90, 255, 140, 0.3);
-}
-
-/* Control Panel */
-.control-panel {
-    background: rgba(20, 30, 50, 0.9);
-    border-radius: 12px;
-    padding: 14px;
-    margin-top: 12px;
-    border: 1px solid rgba(90, 160, 255, 0.2);
-    overflow-y: auto;
-    overflow-x: hidden;
-}
-
-.visualizer-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-    gap: 6px;
-    margin-bottom: 12px;
-}
-
-.visualizer-btn {
-    background: rgba(40, 50, 80, 0.8);
-    color: #a0c0ff;
-    border: 1px solid rgba(90, 160, 255, 0.3);
-    padding: 8px 10px;
-    border-radius: 8px;
-    cursor: pointer;
-    font-size: 12px;
-    font-weight: 500;
-    transition: all 0.3s ease;
-}
-
-.visualizer-btn:hover {
-    background: rgba(60, 80, 120, 0.9);
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-}
-
-/* Sliders */
-.slider-group {
-    margin: 15px 0;
-}
-
-.slider-group label {
-    display: block;
-    margin-bottom: 8px;
-    color: #8cc2ff;
-    font-size: 14px;
-    font-weight: 500;
-}
-
-.slider-group input[type="range"] {
-    width: 100%;
-    height: 6px;
-    border-radius: 3px;
-    background: rgba(60, 80, 120, 0.6);
-    outline: none;
-    -webkit-appearance: none;
-}
-
-.slider-group input[type="range"]::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    width: 20px;
-    height: 20px;
-    border-radius: 50%;
-    background: #5aa0ff;
-    cursor: pointer;
-    border: 2px solid white;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
-}
-
-/* Header Buttons */
-.header-controls .btn {
-    background: linear-gradient(135deg, #5aa0ff, #8cc2ff);
-    color: white;
-    border: none;
-    width: 60px;
-    height: 60px;
-    border-radius: 12px;
-    font-size: 24px;
-    cursor: pointer;
-    transition: all 0.3s ease;
-    box-shadow: 0 4px 12px rgba(90, 160, 255, 0.3);
-}
-
-.header-controls .btn:hover {
-    transform: translateY(-3px);
-    box-shadow: 0 6px 20px rgba(90, 160, 255, 0.4);
-}
-
-.header-controls .btn:active {
-    transform: translateY(-1px);
-}
-
-/* Footer */
-footer {
-    margin-top: 20px;
-    padding: 15px;
-    background: rgba(20, 30, 50, 0.9);
-    border-radius: 12px;
-    text-align: center;
-    color: #8cc2ff;
-    font-size: 14px;
-    border: 1px solid rgba(90, 160, 255, 0.2);
-}
-
-.footer-info span {
-    margin: 0 10px;
-}
-
-/* Mobile Optimierungen */
-@media (max-width: 768px) {
-    /* Visualizer Container */
-    .visualizer-container {
-        height: auto !important;
-        min-height: 0 !important;
-        border-radius: 12px !important;
-    }
-    
-    /* Control Panel */
-    .control-panel {
-        padding: 12px !important;
-        margin-top: 10px !important;
-    }
-    
-    /* Visualizer Buttons - Scrollbar für viele Buttons */
-    .visualizer-grid {
-        grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)) !important;
-        gap: 6px !important;
-        max-height: 260px;
-        overflow-y: auto;
-        padding-right: 5px;
-    }
-    
-    .visualizer-btn {
-        padding: 8px 10px !important;
-        font-size: 12px !important;
-    }
-    
-    /* Header */
-    .app-header {
-        flex-direction: row;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 12px;
-        padding: 15px;
-    }
-    
-    .header-left {
-        text-align: left;
-        flex: 1 1 auto;
-    }
-    
-    .header-left img {
-        height: 40px;
-    }
-    
-    .header-controls {
-        display: flex;
-        justify-content: flex-end;
-        gap: 12px;
-        margin-left: auto;
-    }
-    
-    .header-controls .btn {
-        width: 50px !important;
-        height: 50px !important;
-        font-size: 20px !important;
-    }
-    
-    /* Sliders größer für Touch */
-    .slider-group input[type="range"] {
-        height: 10px !important;
-    }
-    
-    .slider-group input[type="range"]::-webkit-slider-thumb {
-        width: 24px !important;
-        height: 24px !important;
-    }
-    
-    /* Footer kleiner */
-    footer {
-        font-size: 12px !important;
-        padding: 10px !important;
-    }
-    
-    /* Visualizer Overlay */
-    .visualizer-overlay {
-        padding: 10px !important;
-    }
-    
-    .visualizer-name {
-        font-size: 12px !important;
-        padding: 6px 12px !important;
-    }
-    
-    .fps-counter {
-        font-size: 12px !important;
-        padding: 6px 12px !important;
-    }
-}
-
-/* Sehr kleine Displays */
-@media (max-width: 480px) {
-    .visualizer-container {
-        height: auto !important;
-        min-height: 0 !important;
-    }
-    
-    .visualizer-grid {
-        grid-template-columns: repeat(2, 1fr) !important;
-    }
-    
-    .header-controls .btn {
-        width: 45px !important;
-        height: 45px !important;
-    }
-}
-
-/* Portrait vs Landscape - NUR LANDSCAPE KORRIGIERT */
-@media (max-height: 600px) and (orientation: landscape) {
+@media (orientation: landscape) {
     .container {
         flex-direction: row;
-        align-items: stretch;
-        height: calc(100dvh - 56px - 40px); /* Berücksichtigt Adresszeile */
     }
 
-    .visualizer-container {
-        flex: 1 1 0;
-        min-height: 0 !important;
-    }
-    
     .control-panel {
-        width: 200px; /* Reduzierte Breite für Querformat */
-        margin-top: 0;
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-        overflow-y: auto;
-        overflow-x: hidden;
-    }
-    
-    /* Keine Änderungen an Buttons oder Slidern - nur Layout */
-}
-
-/* WICHTIG: Canvas Container */
-.visualizer-container {
-    box-sizing: border-box; /* WICHTIG: Padding/Border in Größe einbeziehen */
-}
-
-/* Canvas selbst */
-#visualizer-canvas {
-    width: 100% !important;
-    height: 100% !important;
-    box-sizing: border-box;
-}
-
-/* Debug-Modus für Grenzen */
-.debug-bounds #visualizer-canvas {
-    border: 2px solid red !important;
-}
-
-/* Mobile Anpassungen */
-@media (max-width: 768px) {
-    .visualizer-container {
-        height: auto !important;
-        min-height: 0 !important;
-    }
-    
-    /* Canvas ohne Padding, damit das Zeichnen exakt passt */
-    #visualizer-canvas {
-        padding: 0;
-        box-sizing: border-box;
+        width: 320px;
     }
 }
 
-/* SPEZIELLE KORREKTUR FÜR QUERFORMAT - NEU HINZUGEFÜGT */
-@media (max-width: 768px) and (orientation: landscape) {
-    /* Container-Höhe berücksichtigt Adresszeile */
+@media (orientation: landscape) and (max-height: 600px) {
     .container {
-        height: calc(100dvh - 56px - 40px);
         padding: 8px;
         gap: 8px;
     }
-    
-    /* Panel auf schmale Breite reduziert */
+
     .control-panel {
-        width: 200px; /* Halbe Breite von Desktop */
-        min-width: 200px;
-        max-width: 200px;
-        padding: 12px;
-        overflow-y: auto;
+        width: 220px;
     }
-    
-    /* Visualizer-Buttons in einer Spalte für schmalere Breite */
+
     .visualizer-grid {
         grid-template-columns: 1fr;
-        gap: 4px;
-    }
-    
-    /* Footer sicherstellen */
-    footer {
-        margin-top: 0;
     }
 }
