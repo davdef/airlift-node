@@ -457,7 +457,7 @@ def get_analysis():
 def stream_analysis():
     """Server-Sent Events Stream für Echtzeit-Updates"""
     def generate():
-        delay_seconds = 3.0
+        delay_seconds = 10.0
         last_keepalive = time.time()
         last_analysis_id = None
         empty_count = 0
