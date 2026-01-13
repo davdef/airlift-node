@@ -279,6 +279,13 @@ export class RfmStage {
             this._onVideoUnavailable(error.name);
         });
     }
+
+    _hasRecentFrames() {
+        if (this.state !== 'video') return false;
+        if (!this._mon.video.lastFrame) return false;
+        const timeSinceFrame = performance.now() - this._mon.video.lastFrame;
+        return timeSinceFrame <= this.timings.videoStallTimeout;
+    }
     
     _onVideoAvailable(latency) {
         this._mon.video.consecutiveFails = 0;
@@ -301,6 +308,10 @@ export class RfmStage {
     }
     
     _onVideoUnavailable(reason) {
+        if (this.state === 'video' && this._hasRecentFrames()) {
+            this._log('debug', `📡 Video poll failed (${reason}), aber Frames laufen → ignoriere`);
+            return;
+        }
         this._mon.video.consecutiveFails++;
         this._mon.video.consecutiveSuccess = 0;
         this._mon.video.score = 0;
