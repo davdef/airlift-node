@@ -174,181 +174,230 @@ class YamnetAnalyzer:
         return colors.get(category, '#607d8b')
     
     def start_analysis(self):
-        """Startet die kontinuierliche Analyse mit DEBUG"""
+        """Startet die kontinuierliche Analyse mit Reconnect-Mechanismus"""
         self.running = True
         
         print("🔧 DEBUG: Starting analysis thread")
         
-        # Teste FFmpeg zuerst
-        print("🔧 DEBUG: Testing FFmpeg...")
-        test_cmd = ['ffmpeg', '-version']
-        try:
-            result = subprocess.run(test_cmd, capture_output=True, text=True)
-            print(f"✅ FFmpeg verfügbar: {result.stdout.split()[2]}")
-        except Exception as e:
-            print(f"❌ FFmpeg nicht verfügbar: {e}")
-            self.running = False
-            return
+        max_reconnect_attempts = 10
+        reconnect_delay = 10  # Sekunden zwischen Reconnect-Versuchen
         
-        # Teste Stream-Zugriff
-        print(f"🔧 DEBUG: Testing stream access: {self.stream_url}")
-        test_stream_cmd = ['curl', '-I', '-s', self.stream_url]
-        try:
-            result = subprocess.run(test_stream_cmd, capture_output=True, text=True, timeout=5)
-            if '200 OK' in result.stdout:
-                print("✅ Stream ist erreichbar")
-            else:
-                print(f"⚠️  Stream nicht erreichbar: {result.stdout[:100]}")
-        except Exception as e:
-            print(f"⚠️  Stream test failed: {e}")
-        
-        # FFmpeg für OGG → PCM 16kHz
-        ffmpeg_cmd = [
-            'ffmpeg',
-            '-i', self.stream_url,
-            '-f', 's16le',
-            '-acodec', 'pcm_s16le',
-            '-ac', '1',
-            '-ar', '16000',
-            '-loglevel', 'error',  # Wichtig: 'error' statt 'quiet'
-            'pipe:1'
-        ]
-        
-        print(f"🎯 Starte Analyse von: {self.stream_url}")
-        print(f"🔧 DEBUG: FFmpeg command: {' '.join(ffmpeg_cmd)}")
-        
-        try:
-            self.ffmpeg_process = subprocess.Popen(
-                ffmpeg_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,  # Capture stderr for debugging
-                bufsize=10**6
-            )
+        while self.running:
+            reconnect_attempts = 0
             
-            print("✅ FFmpeg process started")
-            
-            # Warte kurz bis Prozess startet
-            time.sleep(0.5)
-            
-            # Prüfe ob Prozess noch läuft
-            if self.ffmpeg_process.poll() is not None:
-                stderr = self.ffmpeg_process.stderr.read().decode('utf-8', errors='ignore')
-                print(f"❌ FFmpeg process died immediately. Stderr: {stderr[:200]}")
-                self.running = False
-                return
-            
-        except Exception as e:
-            print(f"❌ FFmpeg start failed: {e}")
-            self.running = False
-            return
-        
-        # CHUNK-GRÖSSE für stabilere Updates
-        chunk_duration = 1.0  # 1.0 Sekunden
-        chunk_size = int(16000 * chunk_duration)
-        
-        analysis_count = 0
-        last_sent_time = 0
-        consecutive_empty_reads = 0
-        
-        print("🔧 DEBUG: Entering main analysis loop...")
-        
-        try:
-            while self.running:
-                # Prüfe ob FFmpeg Prozess noch läuft
-                if self.ffmpeg_process.poll() is not None:
-                    stderr = self.ffmpeg_process.stderr.read().decode('utf-8', errors='ignore')
-                    print(f"⚠️  FFmpeg process died. Stderr: {stderr[:500]}")
-                    break
-                
-                # Audio-Daten lesen
-                raw_bytes = self.ffmpeg_process.stdout.read(chunk_size * 2)
-                
-                if not raw_bytes:
-                    consecutive_empty_reads += 1
-                    if consecutive_empty_reads > 5:
-                        print(f"⚠️  {consecutive_empty_reads} consecutive empty reads")
-                        # Versuche stderr zu lesen
+            while reconnect_attempts < max_reconnect_attempts and self.running:
+                try:
+                    # Teste FFmpeg zuerst
+                    print("🔧 DEBUG: Testing FFmpeg...")
+                    test_cmd = ['ffmpeg', '-version']
+                    result = subprocess.run(test_cmd, capture_output=True, text=True)
+                    print(f"✅ FFmpeg verfügbar: {result.stdout.split()[2]}")
+                    
+                    # Stream-Test überspringen - Icecast gibt manchmal 400 für HEAD
+                    print(f"🎯 Versuche Verbindung zu: {self.stream_url}")
+                    print("⚠️  Stream-Test übersprungen (Icecast gibt manchmal 400 für HEAD)")
+                    
+                    # FFmpeg für OGG → PCM 16kHz
+                    ffmpeg_cmd = [
+                        'ffmpeg',
+                        '-i', self.stream_url,
+                        '-f', 's16le',
+                        '-acodec', 'pcm_s16le',
+                        '-ac', '1',
+                        '-ar', '16000',
+                        '-reconnect', '1',
+                        '-reconnect_streamed', '1',
+                        '-reconnect_delay_max', '5',
+                        '-timeout', '15000000',  # 15 Sekunden timeout
+                        '-loglevel', 'error',
+                        'pipe:1'
+                    ]
+                    
+                    print(f"🔧 DEBUG: Reconnect attempt {reconnect_attempts + 1}/{max_reconnect_attempts}")
+                    
+                    self.ffmpeg_process = subprocess.Popen(
+                        ffmpeg_cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        bufsize=10**6,
+                        start_new_session=True
+                    )
+                    
+                    print("✅ FFmpeg process started")
+                    
+                    # Warte bis Prozess stabil ist
+                    time.sleep(3)
+                    
+                    # Prüfe ob Prozess noch läuft
+                    if self.ffmpeg_process.poll() is not None:
+                        stderr = ""
                         try:
-                            stderr_line = self.ffmpeg_process.stderr.readline()
-                            if stderr_line:
-                                print(f"🔧 DEBUG: FFmpeg stderr: {stderr_line.decode('utf-8', errors='ignore')}")
+                            stderr = self.ffmpeg_process.stderr.read().decode('utf-8', errors='ignore')
                         except:
                             pass
+                        if stderr:
+                            print(f"❌ FFmpeg process died. Stderr: {stderr[:500]}")
+                        else:
+                            print("❌ FFmpeg process died without error output")
+                        time.sleep(reconnect_delay)
+                        reconnect_attempts += 1
+                        continue
                     
-                    if consecutive_empty_reads > 20:
-                        print("❌ Too many empty reads, restarting...")
-                        break
+                    print("🎯 FFmpeg läuft, beginne mit Audio-Analyse")
                     
-                    time.sleep(0.01)
-                    continue
-                
-                consecutive_empty_reads = 0
-                
-                if len(raw_bytes) < chunk_size * 2 * 0.3:
-                    print(f"⚠️  Not enough data: {len(raw_bytes)} bytes (expected: {chunk_size * 2})")
-                    continue
-                
-                # Konvertieren
-                try:
-                    audio_int16 = np.frombuffer(raw_bytes, dtype=np.int16)
-                    audio_float32 = audio_int16.astype(np.float32) / 32768.0
+                    # Haupt-Analyse-Schleife
+                    chunk_duration = 1.0
+                    chunk_size = int(16000 * chunk_duration)
                     
-                    # Debug: Erste Analyse
-                    if analysis_count == 0:
-                        print(f"🔧 DEBUG: First audio chunk - shape: {audio_float32.shape}, "
-                              f"min: {audio_float32.min():.3f}, max: {audio_float32.max():.3f}, "
-                              f"mean: {audio_float32.mean():.3f}")
+                    analysis_count = 0
+                    last_sent_time = 0
+                    consecutive_empty_reads = 0
+                    max_empty_reads = 50  # Reduziert für schnelleres Reconnect
                     
-                except Exception as e:
-                    print(f"❌ Audio conversion failed: {e}")
-                    continue
-                
-                # YAMNet-Analyse
-                analysis = self.analyze_audio(audio_float32)
-                self.latest_analysis = analysis
-                
-                # Debug erste Analyse
-                if analysis_count == 0 and analysis['topClasses']:
-                    print(f"🎯 First analysis successful: {len(analysis['topClasses'])} tags")
-                
-                # Nur senden wenn genug Zeit vergangen (max 10Hz = 100ms)
-                current_time = time.time()
-                if current_time - last_sent_time >= 0.1:  # 100ms Mindestabstand
-                    try:
-                        self.analysis_queue.put_nowait(analysis)
-                        last_sent_time = current_time
+                    last_data_time = time.time()
+                    
+                    while self.running:
+                        current_time = time.time()
                         
-                        if analysis_count % 20 == 0:  # Alle 20 Analysen loggen
-                            if analysis['topClasses']:
+                        # Prüfe ob FFmpeg Prozess noch läuft
+                        if self.ffmpeg_process.poll() is not None:
+                            stderr = ""
+                            try:
+                                stderr = self.ffmpeg_process.stderr.read().decode('utf-8', errors='ignore')
+                            except:
+                                pass
+                            if stderr:
+                                print(f"⚠️  FFmpeg process died. Reason: {stderr[:200]}")
+                            else:
+                                print("⚠️  FFmpeg process died (no stderr)")
+                            break
+                        
+                        # Prüfe ob zu lange keine Daten kamen
+                        if current_time - last_data_time > 30:  # 30 Sekunden ohne Daten
+                            print(f"⚠️  No data for 30 seconds, reconnecting...")
+                            break
+                        
+                        # Audio-Daten lesen
+                        try:
+                            raw_bytes = self.ffmpeg_process.stdout.read(chunk_size * 2)
+                        except Exception as e:
+                            print(f"❌ Read error: {e}")
+                            break
+                        
+                        if not raw_bytes:
+                            consecutive_empty_reads += 1
+                            
+                            # Prüfe stderr auf Fehlermeldungen
+                            try:
+                                stderr_line = self.ffmpeg_process.stderr.readline()
+                                if stderr_line:
+                                    error_msg = stderr_line.decode('utf-8', errors='ignore').strip()
+                                    if error_msg:
+                                        print(f"🔧 DEBUG: FFmpeg stderr: {error_msg}")
+                                        # Bei bestimmten Fehlern sofort reconnect
+                                        if any(err in error_msg for err in ['Connection timed out', 'Server returned', '404 Not Found', '400 Bad Request']):
+                                            print("⚠️  Stream connection error detected, reconnecting...")
+                                            break
+                            except:
+                                pass
+                            
+                            if consecutive_empty_reads > max_empty_reads:
+                                print(f"⚠️  Too many empty reads ({consecutive_empty_reads}), reconnecting...")
+                                break
+                            
+                            # Kurz warten bevor nächster Versuch
+                            time.sleep(0.05)
+                            continue
+                        
+                        # Daten erhalten
+                        consecutive_empty_reads = 0
+                        last_data_time = current_time
+                        
+                        if len(raw_bytes) < chunk_size * 2 * 0.3:
+                            print(f"⚠️  Not enough data: {len(raw_bytes)} bytes")
+                            continue
+                        
+                        # Konvertieren und analysieren
+                        try:
+                            audio_int16 = np.frombuffer(raw_bytes, dtype=np.int16)
+                            audio_float32 = audio_int16.astype(np.float32) / 32768.0
+                            
+                            # Debug erste Analyse
+                            if analysis_count == 0:
+                                print(f"🔧 DEBUG: First audio chunk - shape: {audio_float32.shape}, "
+                                      f"min: {audio_float32.min():.3f}, max: {audio_float32.max():.3f}, "
+                                      f"mean: {audio_float32.mean():.3f}")
+                            
+                            analysis = self.analyze_audio(audio_float32)
+                            self.latest_analysis = analysis
+                            
+                            current_time = time.time()
+                            if current_time - last_sent_time >= 0.1:  # 100ms Mindestabstand
+                                try:
+                                    self.analysis_queue.put_nowait(analysis)
+                                    last_sent_time = current_time
+                                    
+                                    if analysis_count == 0 and analysis['topClasses']:
+                                        top_tag = analysis['topClasses'][0]
+                                        print(f"🎯 First analysis successful: {top_tag['name']} ({top_tag['confidence']:.1%})")
+                                    
+                                except queue.Full:
+                                    try:
+                                        self.analysis_queue.get_nowait()
+                                        self.analysis_queue.put_nowait(analysis)
+                                        last_sent_time = current_time
+                                    except:
+                                        pass
+                            
+                            analysis_count += 1
+                            
+                            # Status-Log alle 30 Analysen
+                            if analysis_count % 30 == 0 and analysis['topClasses']:
                                 top_tag = analysis['topClasses'][0]
                                 print(f"📊 Analysis #{analysis_count}: {top_tag['name']} ({top_tag['confidence']:.1%}), "
-                                      f"Total: {analysis['totalConfidence']:.2f}, Tags: {len(analysis['topClasses'])}")
-                            
-                    except queue.Full:
-                        # Queue voll -> ältesten entfernen
+                                      f"Tags: {len(analysis['topClasses'])}")
+                                
+                        except Exception as e:
+                            print(f"❌ Analysis error: {e}")
+                            import traceback
+                            traceback.print_exc()
+                            break
+                    
+                    # Verlasse innere Schleife (FFmpeg gestorben/fehlerhaft)
+                    print(f"🔄 Analysis loop ended after {analysis_count} analyses")
+                    
+                    # Bereinige alten Prozess
+                    if self.ffmpeg_process:
                         try:
-                            self.analysis_queue.get_nowait()
-                            self.analysis_queue.put_nowait(analysis)
-                            last_sent_time = current_time
+                            self.ffmpeg_process.terminate()
+                            self.ffmpeg_process.wait(timeout=2)
                         except:
-                            pass
-                
-                analysis_count += 1
-                
-        except Exception as e:
-            print(f"❌ Analysefehler: {type(e).__name__}: {e}")
-            import traceback
-            traceback.print_exc()
+                            try:
+                                self.ffmpeg_process.kill()
+                            except:
+                                pass
+                        finally:
+                            self.ffmpeg_process = None
+                    
+                    # Kurze Pause vor Reconnect
+                    time.sleep(2)
+                    
+                except Exception as e:
+                    print(f"❌ Setup error: {type(e).__name__}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    time.sleep(reconnect_delay)
+                    reconnect_attempts += 1
             
-        finally:
-            print(f"🔄 Analysis loop ended after {analysis_count} analyses")
-            self.stop()
-            
-            # Automatischer Neustart nach 3 Sekunden
-            if self.running:  # Falls nicht manuell gestoppt
-                print("🔄 Attempting restart in 3 seconds...")
-                time.sleep(3)
-                self.start_analysis()
+            # Wenn max reconnect attempts erreicht, längere Pause
+            if self.running and reconnect_attempts >= max_reconnect_attempts:
+                print(f"⚠️  Max reconnect attempts ({max_reconnect_attempts}) reached. Waiting 30 seconds...")
+                for i in range(30):
+                    if not self.running:
+                        break
+                    time.sleep(1)
+        
+        print("⏹️  Analyse komplett gestoppt")
     
     def analyze_audio(self, audio_data):
         """Führt YAMNet-Analyse durch und gibt relevante Klassen zurück"""
@@ -455,47 +504,66 @@ def get_analysis():
 
 @app.route('/api/yamnet/stream')
 def stream_analysis():
-    """Server-Sent Events Stream für Echtzeit-Updates"""
+    """Server-Sent Events Stream für Echtzeit-Updates mit verbesserter Fehlerbehandlung"""
     def generate():
-        delay_seconds = 10.0
         last_keepalive = time.time()
         last_analysis_id = None
         empty_count = 0
+        max_empty_cycles = 60  # 1 Minute bei 1s timeout
         
         print(f"🔧 DEBUG: SSE stream started, queue size: {analyzer.analysis_queue.qsize()}")
         
+        # Sofort eine Keep-Alive-Nachricht senden
+        yield f"data: {{\"status\": \"connected\", \"timestamp\": {time.time()}, \"queueSize\": {analyzer.analysis_queue.qsize()}, \"analyzerRunning\": {analyzer.running}}}\n\n"
+        
         while True:
             try:
-                # Versuche neue Analyse zu bekommen
-                analysis = analyzer.analysis_queue.get(timeout=1.0)
+                # Prüfe ob Analyzer noch läuft
+                if not analyzer.running:
+                    yield f"data: {{\"error\": \"analyzer_stopped\", \"message\": \"Analyzer not running\", \"timestamp\": {time.time()}}}\n\n"
+                    time.sleep(2)
+                    continue
                 
-                # Nur senden wenn sich was geändert hat
-                if analysis.get('analysisId') != last_analysis_id:
-                    wait_time = (analysis.get('timestamp', time.time()) + delay_seconds) - time.time()
-                    if wait_time > 0:
-                        time.sleep(wait_time)
-                    yield f"data: {json.dumps(analysis)}\n\n"
-                    last_analysis_id = analysis.get('analysisId')
-                    last_keepalive = time.time()
-                    empty_count = 0
-                    
-                    # Debug: Erste Nachricht
-                    if empty_count == 0:
-                        print(f"✅ SSE: First data sent, {len(analysis.get('topClasses', []))} tags")
-                else:
-                    empty_count += 1
+                # Falls keine Analyse existiert, aber Analyzer läuft
+                if analyzer.latest_analysis is None and analyzer.running:
+                    yield f"data: {{\"status\": \"waiting_for_first_analysis\", \"timestamp\": {time.time()}, \"message\": \"Waiting for first audio analysis...\"}}\n\n"
+                    time.sleep(1)
+                    continue
+                
+                # Versuche neue Analyse zu bekommen
+                try:
+                    analysis = analyzer.analysis_queue.get(timeout=1.0)
+                except queue.Empty:
+                    analysis = analyzer.latest_analysis  # Nimm die letzte Analyse
+                
+                if analysis:
+                    # Nur senden wenn sich was geändert hat
+                    if analysis.get('analysisId') != last_analysis_id:
+                        yield f"data: {json.dumps(analysis)}\n\n"
+                        last_analysis_id = analysis.get('analysisId')
+                        last_keepalive = time.time()
+                        empty_count = 0
+                    else:
+                        empty_count += 1
                 
             except queue.Empty:
                 empty_count += 1
                 
-                # Alle 3 Sekunden Keep-Alive senden
-                if time.time() - last_keepalive > 3:
-                    yield f"data: {{\"keepalive\": true, \"timestamp\": {time.time()}, \"queueSize\": {analyzer.analysis_queue.qsize()}}}\n\n"
+                # Wenn zu lange keine Daten, debug info
+                if empty_count > 10 and empty_count % 5 == 0:
+                    print(f"🔧 DEBUG: SSE queue empty for {empty_count} cycles, "
+                          f"queue: {analyzer.analysis_queue.qsize()}, "
+                          f"analyzer running: {analyzer.running}")
+                
+                # Keep-Alive alle 5 Sekunden
+                if time.time() - last_keepalive > 5:
+                    yield f"data: {{\"keepalive\": true, \"timestamp\": {time.time()}, \"queueSize\": {analyzer.analysis_queue.qsize()}, \"analyzerRunning\": {analyzer.running}, \"emptyCycles\": {empty_count}}}\n\n"
                     last_keepalive = time.time()
                 
-                # Bei zu vielen leeren Queues debug info
-                if empty_count > 10 and empty_count % 10 == 0:
-                    print(f"🔧 DEBUG: SSE queue empty for {empty_count} cycles, analyzer running: {analyzer.running}")
+            except Exception as e:
+                print(f"❌ SSE generation error: {e}")
+                yield f"data: {{\"error\": \"stream_error\", \"message\": \"{str(e)}\", \"timestamp\": {time.time()}}}\n\n"
+                time.sleep(1)
     
     return Response(
         generate(),
@@ -582,6 +650,36 @@ def health_check():
         'ffmpegAlive': analyzer.ffmpeg_process is not None and analyzer.ffmpeg_process.poll() is None
     })
 
+@app.route('/api/yamnet/restart', methods=['POST'])
+def restart_analyzer():
+    """Manueller Restart des Analyzers"""
+    global analyzer, analysis_thread
+    
+    print("🔄 Manueller Restart angefordert")
+    
+    # Stoppe alten Analyzer
+    analyzer.stop()
+    
+    # Warte auf Thread
+    if analysis_thread.is_alive():
+        analysis_thread.join(timeout=5)
+    
+    # Neue Instanz erstellen
+    analyzer = YamnetAnalyzer(STREAM_URL)
+    
+    # Neuen Thread starten
+    analysis_thread = threading.Thread(target=analyzer.start_analysis, daemon=True)
+    analysis_thread.start()
+    
+    time.sleep(2)  # Kurze Pause
+    
+    return jsonify({
+        'status': 'restarted',
+        'timestamp': time.time(),
+        'analyzerRunning': analyzer.running,
+        'threadAlive': analysis_thread.is_alive()
+    })
+
 if __name__ == '__main__':
     print("🚀 RFM YAMNet API Server (DEBUG VERSION)")
     print("=" * 60)
@@ -598,7 +696,7 @@ if __name__ == '__main__':
     print(f"\n🎯 Stream: {STREAM_URL}")
     print("📈 Update-Rate: ~10Hz (100ms Interval)")
     print("🎯 Chunk-Größe: 1.0 Sekunden")
-    print("⏱️  SSE Verzögerung: 3.0 Sekunden")
+    print("🔄 Reconnect: Automatisch nach Verbindungsabbruch")
     print("🎯 Confidence-Schwelle: 0.5%")
     
     # Starte Analyse-Thread
@@ -621,6 +719,7 @@ if __name__ == '__main__':
     print("  GET /api/yamnet/classes      - Alle 521 Klassen")
     print("  GET /api/yamnet/debug        - Debug-Informationen")
     print("  GET /api/yamnet/health       - Health Check")
+    print("  POST /api/yamnet/restart     - Manueller Restart")
     
     print(f"\n📡 Server läuft auf: http://localhost:5000")
     print("   Nginx Proxy: /api/yamnet/* → http://localhost:5000/api/yamnet/*")
