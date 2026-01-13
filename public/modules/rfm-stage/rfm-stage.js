@@ -21,6 +21,7 @@ export class RfmStage {
                 transitionDuration: 400,       // Fade-Animation
                 pollingWhenCanvas: 1500,       // Im Canvas alle 1.5s prüfen
                 pollingWhenVideo: 2000,        // Im Video alle 2s prüfen
+                playlistStaleTimeout: 4000,    // Playlist muss sich bewegen (ms)
             },
             
             // 🎯 SWITCHING LOGIK
@@ -70,6 +71,8 @@ export class RfmStage {
                 buffering: false,
                 bufferStart: 0,
                 lastCheck: 0,
+                lastPlaylistSignature: null,
+                lastPlaylistChangeAt: 0,
                 score: 0,
             },
             viz: {
@@ -259,21 +262,112 @@ export class RfmStage {
         }
         
         this._mon.video.lastCheck = Date.now();
-        
+
+        if (this.state === 'video') {
+            fetch(this.options.videoUrl, {
+                method: 'HEAD',
+                cache: 'no-cache',
+                signal: AbortSignal.timeout(this.timings.videoCheckTimeout)
+            })
+            .then(response => {
+                const available = response.ok;
+                const latency = Date.now() - this._mon.video.lastCheck;
+                
+                if (available) {
+                    this._onVideoAvailable(latency);
+                } else {
+                    this._onVideoUnavailable(response.status);
+                }
+            })
+            .catch(error => {
+                this._onVideoUnavailable(error.name);
+            });
+        } else {
+            this._checkPlaylistFreshness();
+        }
+    }
+
+    _hasRecentFrames() {
+        if (this.state !== 'video') return false;
+        if (!this._mon.video.lastFrame) return false;
+        const timeSinceFrame = performance.now() - this._mon.video.lastFrame;
+        return timeSinceFrame <= this.timings.videoStallTimeout;
+    }
+
+    _parsePlaylistInfo(playlistText) {
+        const lines = playlistText
+            .split(/\r?\n/)
+            .map(line => line.trim())
+            .filter(Boolean);
+        let mediaSequence = null;
+        let lastSegmentUri = null;
+        let endList = false;
+
+        for (const line of lines) {
+            if (line.startsWith('#EXT-X-MEDIA-SEQUENCE:')) {
+                const value = Number(line.split(':')[1]);
+                if (Number.isFinite(value)) {
+                    mediaSequence = value;
+                }
+            }
+            if (line === '#EXT-X-ENDLIST') {
+                endList = true;
+            }
+        }
+
+        for (let i = lines.length - 1; i >= 0; i -= 1) {
+            const line = lines[i];
+            if (!line.startsWith('#')) {
+                lastSegmentUri = line;
+                break;
+            }
+        }
+
+        return { mediaSequence, lastSegmentUri, endList };
+    }
+
+    _checkPlaylistFreshness() {
         fetch(this.options.videoUrl, {
-            method: 'HEAD',
+            method: 'GET',
             cache: 'no-cache',
             signal: AbortSignal.timeout(this.timings.videoCheckTimeout)
         })
         .then(response => {
-            const available = response.ok;
-            const latency = Date.now() - this._mon.video.lastCheck;
-            
-            if (available) {
-                this._onVideoAvailable(latency);
-            } else {
+            if (!response.ok) {
                 this._onVideoUnavailable(response.status);
+                return null;
             }
+            return response.text();
+        })
+        .then(text => {
+            if (!text) return;
+            const latency = Date.now() - this._mon.video.lastCheck;
+            const info = this._parsePlaylistInfo(text);
+
+            if (info.endList) {
+                this._onVideoUnavailable('endlist');
+                return;
+            }
+
+            if (!info.lastSegmentUri && info.mediaSequence === null) {
+                this._onVideoUnavailable('playlist empty');
+                return;
+            }
+
+            const signature = `${info.mediaSequence ?? 'na'}|${info.lastSegmentUri ?? 'na'}`;
+            if (signature === this._mon.video.lastPlaylistSignature) {
+                const sinceChange = Date.now() - this._mon.video.lastPlaylistChangeAt;
+                if (sinceChange >= this.timings.playlistStaleTimeout) {
+                    this._onVideoUnavailable('stale playlist');
+                } else {
+                    this._log('debug', `📼 Playlist unverändert (${sinceChange}ms)`);
+                }
+                return;
+            }
+
+            this._mon.video.lastPlaylistSignature = signature;
+            this._mon.video.lastPlaylistChangeAt = Date.now();
+            this._onVideoAvailable(latency);
         })
         .catch(error => {
             this._onVideoUnavailable(error.name);
