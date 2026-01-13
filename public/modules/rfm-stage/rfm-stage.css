@@ -17,6 +17,7 @@
   inset: 0;
   width: 100%;
   height: 100%;
+  transition: opacity 350ms ease;
 }
 
 .rfm-stage-video {
@@ -35,7 +36,14 @@
 }
 
 .rfm-stage--video .rfm-stage-canvas,
-.rfm-stage--canvas .rfm-stage-video {
+.rfm-stage--canvas .rfm-stage-video,
+.rfm-stage--init .rfm-stage-video,
+.rfm-stage--init .rfm-stage-canvas {
   opacity: 0;
   visibility: hidden;
+}
+
+.rfm-stage-audio {
+  width: 100%;
+  margin-top: 12px;
 }
