@@ -244,6 +244,10 @@ class YamnetAnalyzer:
                         continue
                     
                     print("🎯 FFmpeg läuft, beginne mit Audio-Analyse")
+
+                    if STREAM_DELAY_SECONDS > 0:
+                        print(f"⏳ Warte {STREAM_DELAY_SECONDS:.1f}s für Stream-Delay-Abgleich")
+                        time.sleep(STREAM_DELAY_SECONDS)
                     
                     # Haupt-Analyse-Schleife
                     chunk_duration = 1.0
@@ -483,6 +487,7 @@ class YamnetAnalyzer:
 
 # Globale Instanz
 STREAM_URL = "https://icecast.radiorfm.de/rfm.ogg"
+STREAM_DELAY_SECONDS = 8.5
 analyzer = YamnetAnalyzer(STREAM_URL)
 
 # Starte Analyse-Thread
@@ -696,6 +701,7 @@ if __name__ == '__main__':
     print(f"\n🎯 Stream: {STREAM_URL}")
     print("📈 Update-Rate: ~10Hz (100ms Interval)")
     print("🎯 Chunk-Größe: 1.0 Sekunden")
+    print(f"⏳ Stream-Delay: {STREAM_DELAY_SECONDS:.1f} Sekunden")
     print("🔄 Reconnect: Automatisch nach Verbindungsabbruch")
     print("🎯 Confidence-Schwelle: 0.5%")
     
