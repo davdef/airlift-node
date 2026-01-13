@@ -8,112 +8,108 @@ export class RfmStage {
         this.rootEl = rootEl;
         this.options = {
             videoUrl: null,
+            audioUrl: null,
             yamnetEndpoint: null,
             hlsScriptUrl: 'https://cdn.jsdelivr.net/npm/hls.js@1.5.18/dist/hls.min.js',
-            
-            // ⚡ STRAFFE TIMINGS (alles in ms)
             timings: {
-                videoCheckInterval: 1000,      // Jede Sekunde Video prüfen
-                videoCheckTimeout: 800,        // HEAD request timeout
-                videoStallTimeout: 1200,       // Keine Frames → Wechsel nach 1.2s
-                videoRecoverDelay: 500,        // Nach Fehler warten bis retry
-                switchCooldown: 300,           // Mindestzeit zwischen Switches
-                transitionDuration: 400,       // Fade-Animation
-                pollingWhenCanvas: 1500,       // Im Canvas alle 1.5s prüfen
-                pollingWhenVideo: 2000,        // Im Video alle 2s prüfen
-                playlistStaleTimeout: 4000,    // Playlist muss sich bewegen (ms)
+                pollInterval: 1500,
+                playlistTimeout: 1000,
+                playlistStaleTimeout: 5000,
+                stallTimeout: 1500,
+                switchCooldown: 400,
+                transitionDuration: 350,
+                videoStartTimeout: 5000,
             },
-            
-            // 🎯 SWITCHING LOGIK
             switching: {
-                consecutiveFailsToSwitch: 2,   // 2 Fehler → Wechsel
-                immediateSwitchToVideo: true,  // Video sofort wenn verfügbar
-                requireVideoFrames: true,      // Muss Frames bekommen sonst Fehler
-                maxVideoRetries: 3,            // Max Versuche bevor Canvas bleibt
-                minMediaTimeAdvance: 0.15,     // Mindest-Fortschritt (s) für "neue" Frames
+                initFailsToCanvas: 2,
+                playlistAdvanceRequired: 2,
+                minPlaylistAdvance: 1,
+                maxHlsRetries: 3,
             },
-            
-            // 🐛 DEBUG
+            audio: {
+                controls: false,
+                autoplay: true,
+                muted: false,
+                preload: 'none',
+            },
             debug: {
-                logLevel: 'info',  // 'error' | 'warn' | 'info' | 'debug'
+                logLevel: 'info',
                 showMetrics: false,
-                exposeGlobal: true,
+                exposeGlobal: false,
             },
-            
-            ...options
+            ...options,
         };
 
-        // 🔧 Normalisiere Timings
         this.timings = { ...this.options.timings };
         this.switching = { ...this.options.switching };
+        this.audioConfig = { ...this.options.audio };
         this.debug = { ...this.options.debug };
-        
+
         if (this.debug.exposeGlobal) {
             window.rfmStage = this;
         }
 
-        this.state = 'init'; // init | video | canvas
+        this.state = 'init';
+        this.stageEl = null;
         this.video = null;
+        this.audio = null;
         this.canvas = null;
         this.ctx = null;
         this.tagCloud = null;
         this.hls = null;
 
-        // 📊 MONITORING
         this._mon = {
-            video: {
-                lastFrame: 0,
-                lastMediaTime: -Infinity,
-                lastMediaTimeAtSwitch: -Infinity,
+            playlist: {
+                lastSignature: null,
+                lastAdvanceAt: 0,
+                advanceCount: 0,
                 consecutiveFails: 0,
-                consecutiveSuccess: 0,
-                totalRetries: 0,
-                buffering: false,
-                bufferStart: 0,
-                lastCheck: 0,
-                lastPlaylistSignature: null,
-                lastPlaylistChangeAt: 0,
-                score: 0,
             },
-            viz: {
-                lastData: 0,
-                dataRate: 0,
-                score: 100, // Start mit hohem Score
+            played: {
+                mediaSequence: null,
+                segmentUri: null,
+            },
+            video: {
+                lastFrameAt: 0,
+                hlsRetries: 0,
             },
             switching: {
-                lastSwitch: 0,
-                switchCount: 0,
+                lastSwitchAt: 0,
                 cooldownUntil: 0,
-            }
+            },
         };
-        
-        this._timers = {};
-        
+
+        this._timers = {
+            poll: null,
+            stall: null,
+            metrics: null,
+        };
+
         this._injectStyles();
         this._log('info', '🚀 RFM Stage initialisiert', this.timings);
     }
 
     /* ---------------- LOGGING ---------------- */
-    
+
     _log(level, message, data = null) {
         const levels = { error: 0, warn: 1, info: 2, debug: 3 };
-        const currentLevel = levels[this.debug.logLevel] || 1;
-        const messageLevel = levels[level] || 1;
-        
+        const currentLevel = levels[this.debug.logLevel] ?? 1;
+        const messageLevel = levels[level] ?? 1;
+
         if (messageLevel > currentLevel) return;
-        
+
         const ts = performance.now().toFixed(1);
         const prefix = `[${ts}ms]`;
-        
+
         const colors = {
             info: '#4ECDC4',
-            warn: '#FFD166', 
+            warn: '#FFD166',
             error: '#FF6B6B',
-            debug: '#607D8B'
+            debug: '#607D8B',
         };
-        
+
         const style = `color: ${colors[level] || '#fff'}; font-weight: bold`;
-        
+
         if (data) {
             console.log(`%c${prefix} ${message}`, style, data);
         } else {
@@ -122,17 +118,17 @@ export class RfmStage {
     }
 
     /* ---------------- STYLES ---------------- */
-    
+
     _injectStyles() {
         if (document.getElementById('rfm-stage-styles')) return;
-        
+
         const style = document.createElement('style');
         style.id = 'rfm-stage-styles';
         style.textContent = `
             .rfm-stage {
                 position: relative;
                 width: 100%;
-                aspect-ratio: 16/9;
+                aspect-ratio: 16 / 9;
                 background: #000;
                 overflow: hidden;
             }
@@ -140,8 +136,8 @@ export class RfmStage {
                 position: absolute;
                 inset: 0;
             }
-            .rfm-stage-visual video,
-            .rfm-stage-visual canvas {
+            .rfm-stage-video,
+            .rfm-stage-canvas {
                 position: absolute;
                 inset: 0;
                 width: 100%;
@@ -149,17 +145,24 @@ export class RfmStage {
                 object-fit: cover;
                 transition: opacity ${this.timings.transitionDuration}ms ease;
             }
-            .rfm-stage--video canvas {
-                opacity: 0;
+            .rfm-stage-canvas {
                 pointer-events: none;
             }
-            .rfm-stage--canvas video {
+            .rfm-stage--video .rfm-stage-canvas,
+            .rfm-stage--canvas .rfm-stage-video,
+            .rfm-stage--init .rfm-stage-canvas,
+            .rfm-stage--init .rfm-stage-video {
                 opacity: 0;
-                pointer-events: none;
+                visibility: hidden;
             }
-            .rfm-stage--init video,
-            .rfm-stage--init canvas {
-                opacity: 0;
+            .rfm-stage--video .rfm-stage-video,
+            .rfm-stage--canvas .rfm-stage-canvas {
+                opacity: 1;
+                visibility: visible;
+            }
+            .rfm-stage-audio {
+                width: 100%;
+                margin-top: 12px;
             }
         `;
         document.head.appendChild(style);
@@ -170,8 +173,7 @@ export class RfmStage {
     async mount() {
         this._log('info', '📦 MOUNT');
         this._buildDOM();
-        
-        // Visualizer vorbereiten
+
         await this._waitForVisualizer();
         if (window.YamnetTagCloudVisualizer) {
             this.tagCloud = new window.YamnetTagCloudVisualizer(this.ctx, this.canvas);
@@ -180,118 +182,84 @@ export class RfmStage {
             }
             this.tagCloud.theme = 'light';
         }
-        
-        // Starte Monitoring
-        this._startMonitoring();
-        
-        // Initialer Check
-        this._checkVideoAvailability();
+
+        this._startPolling();
+        this._pollPlaylist();
     }
 
     destroy() {
         this._log('info', '🧨 DESTROY');
-        this._clearAllTimers();
+        this._stopAllTimers();
         this.tagCloud?.deactivate?.();
-        
+
         if (this.hls) {
             this.hls.destroy();
             this.hls = null;
         }
-        
+
         if (this.video) {
             this.video.pause();
-            this.video.src = '';
+            this.video.removeAttribute('src');
+            this.video.load();
         }
-        
+
+        if (this.audio) {
+            this.audio.pause();
+            this.audio.removeAttribute('src');
+            this.audio.load();
+        }
+
         this.rootEl.innerHTML = '';
     }
 
-    /* ---------------- MONITORING ---------------- */
+    /* ---------------- POLLING ---------------- */
 
-    _startMonitoring() {
-        this._clearAllTimers();
-        
-        // Video Frame Monitoring
-        if ('requestVideoFrameCallback' in this.video) {
-            const trackFrames = (_, metadata) => {
-                const now = performance.now();
-                this._mon.video.lastFrame = now;
-                if (typeof metadata?.mediaTime === 'number') {
-                    this._mon.video.lastMediaTime = metadata.mediaTime;
-                } else if (typeof this.video?.currentTime === 'number') {
-                    this._mon.video.lastMediaTime = this.video.currentTime;
-                }
-                
-                // Buffering detection
-                if (this.video.readyState < 3) {
-                    if (!this._mon.video.buffering) {
-                        this._mon.video.buffering = true;
-                        this._mon.video.bufferStart = now;
-                        this._log('debug', '📦 Video buffering start');
-                    }
-                } else if (this._mon.video.buffering) {
-                    this._mon.video.buffering = false;
-                    const duration = now - this._mon.video.bufferStart;
-                    this._log('debug', `📦 Video buffering end (${duration.toFixed(0)}ms)`);
-                }
-                
-                if (this.state === 'video') {
-                    this.video.requestVideoFrameCallback(trackFrames);
-                }
-            };
-            this.video.requestVideoFrameCallback(trackFrames);
-        }
-        
-        // Video Availability Polling
-        this._timers.videoPoll = setInterval(() => {
-            this._checkVideoAvailability();
-        }, this.state === 'video' ? this.timings.pollingWhenVideo : this.timings.pollingWhenCanvas);
-        
-        // Stall Detection (nur im Video-Modus)
-        this._resetStallTimer();
-        
-        // Debug Metrics
+    _startPolling() {
+        if (this._timers.poll) clearInterval(this._timers.poll);
+        this._timers.poll = setInterval(() => {
+            if (this.state !== 'video') {
+                this._pollPlaylist();
+            }
+        }, this.timings.pollInterval);
+
         if (this.debug.showMetrics) {
             this._timers.metrics = setInterval(() => this._logMetrics(), 1000);
+        } else if (this._timers.metrics) {
+            clearInterval(this._timers.metrics);
+            this._timers.metrics = null;
         }
     }
-    
-    _checkVideoAvailability() {
-        if (!this.options.videoUrl || Date.now() < this._mon.switching.cooldownUntil) {
-            return;
-        }
-        
-        this._mon.video.lastCheck = Date.now();
 
-        if (this.state === 'video') {
-            fetch(this.options.videoUrl, {
-                method: 'HEAD',
-                cache: 'no-cache',
-                signal: AbortSignal.timeout(this.timings.videoCheckTimeout)
-            })
+    _pollPlaylist() {
+        if (!this.options.videoUrl) return;
+        if (Date.now() < this._mon.switching.cooldownUntil) return;
+
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), this.timings.playlistTimeout);
+        const start = Date.now();
+
+        fetch(this.options.videoUrl, {
+            method: 'GET',
+            cache: 'no-cache',
+            signal: controller.signal,
+        })
             .then(response => {
-                const available = response.ok;
-                const latency = Date.now() - this._mon.video.lastCheck;
-                
-                if (available) {
-                    this._onVideoAvailable(latency);
-                } else {
-                    this._onVideoUnavailable(response.status);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
                 }
+                return response.text();
+            })
+            .then(text => {
+                const latency = Date.now() - start;
+                const info = this._parsePlaylistInfo(text);
+                this._handlePlaylist(info, latency);
             })
             .catch(error => {
-                this._onVideoUnavailable(error.name);
+                this._handlePlaylistFailure(error.name || 'fetch error');
+            })
+            .finally(() => {
+                clearTimeout(timeout);
             });
-        } else {
-            this._checkPlaylistFreshness();
-        }
-    }
-
-    _hasRecentFrames() {
-        if (this.state !== 'video') return false;
-        if (!this._mon.video.lastFrame) return false;
-        const timeSinceFrame = performance.now() - this._mon.video.lastFrame;
-        return timeSinceFrame <= this.timings.videoStallTimeout;
     }
 
     _parsePlaylistInfo(playlistText) {
@@ -299,6 +267,7 @@ export class RfmStage {
             .split(/\r?\n/)
             .map(line => line.trim())
             .filter(Boolean);
+
         let mediaSequence = null;
         let lastSegmentUri = null;
         let endList = false;
@@ -326,239 +295,177 @@ export class RfmStage {
         return { mediaSequence, lastSegmentUri, endList };
     }
 
-    _checkPlaylistFreshness() {
-        fetch(this.options.videoUrl, {
-            method: 'GET',
-            cache: 'no-cache',
-            signal: AbortSignal.timeout(this.timings.videoCheckTimeout)
-        })
-        .then(response => {
-            if (!response.ok) {
-                this._onVideoUnavailable(response.status);
-                return null;
-            }
-            return response.text();
-        })
-        .then(text => {
-            if (!text) return;
-            const latency = Date.now() - this._mon.video.lastCheck;
-            const info = this._parsePlaylistInfo(text);
-
-            if (info.endList) {
-                this._onVideoUnavailable('endlist');
-                return;
-            }
-
-            if (!info.lastSegmentUri && info.mediaSequence === null) {
-                this._onVideoUnavailable('playlist empty');
-                return;
-            }
-
-            const signature = `${info.mediaSequence ?? 'na'}|${info.lastSegmentUri ?? 'na'}`;
-            if (signature === this._mon.video.lastPlaylistSignature) {
-                const sinceChange = Date.now() - this._mon.video.lastPlaylistChangeAt;
-                if (sinceChange >= this.timings.playlistStaleTimeout) {
-                    this._onVideoUnavailable('stale playlist');
-                } else {
-                    this._log('debug', `📼 Playlist unverändert (${sinceChange}ms)`);
-                }
-                return;
-            }
-
-            this._mon.video.lastPlaylistSignature = signature;
-            this._mon.video.lastPlaylistChangeAt = Date.now();
-            this._onVideoAvailable(latency);
-        })
-        .catch(error => {
-            this._onVideoUnavailable(error.name);
-        });
-    }
-
-    _hasRecentFrames() {
-        if (this.state !== 'video') return false;
-        if (!this._mon.video.lastFrame) return false;
-        const timeSinceFrame = performance.now() - this._mon.video.lastFrame;
-        return timeSinceFrame <= this.timings.videoStallTimeout;
-    }
-    
-    _onVideoAvailable(latency) {
-        this._mon.video.consecutiveFails = 0;
-        this._mon.video.consecutiveSuccess++;
-        this._mon.video.score = Math.max(0, 100 - latency / 10);
-        
-        // 💡 VIDEO VERFÜGBAR - Entscheidung
-        if (this.state !== 'video') {
-            if (this.switching.immediateSwitchToVideo) {
-                this._log('info', `🎬 Video verfügbar (${latency}ms) → SOFORT`);
-                this._switchToVideo();
-            } else if (this._mon.video.consecutiveSuccess >= 2) {
-                this._log('info', `🎬 Video stabil (${latency}ms, ${this._mon.video.consecutiveSuccess}x) → WECHSEL`);
-                this._switchToVideo();
-            }
-        } else {
-            // Im Video-Modus: Bestätige Verfügbarkeit
-            this._resetStallTimer();
-        }
-    }
-    
-    _onVideoUnavailable(reason) {
-        if (this.state === 'video' && this._hasRecentFrames()) {
-            this._log('debug', `📡 Video poll failed (${reason}), aber Frames laufen → ignoriere`);
+    _handlePlaylist(info, latency) {
+        if (info.endList || (!info.lastSegmentUri && info.mediaSequence === null)) {
+            this._handlePlaylistFailure(info.endList ? 'endlist' : 'empty');
             return;
         }
-        this._mon.video.consecutiveFails++;
-        this._mon.video.consecutiveSuccess = 0;
-        this._mon.video.score = 0;
-        // ⚠️ totalRetries wird NUR bei tatsächlichen HLS-Fehlern erhöht, nicht hier!
-        
-        this._log('debug', `📡 Video fail #${this._mon.video.consecutiveFails}: ${reason}`);
-        
-        // 💡 VIDEO NICHT VERFÜGBAR - Entscheidung
-        if (this.state === 'video') {
-            if (this._mon.video.consecutiveFails >= this.switching.consecutiveFailsToSwitch) {
-                this._log('warn', `❌ Video down (${reason}) → CANVAS`);
-                this._switchToCanvas();
+
+        this._mon.playlist.consecutiveFails = 0;
+
+        const signature = `${info.mediaSequence ?? 'na'}|${info.lastSegmentUri ?? 'na'}`;
+        const now = Date.now();
+
+        if (signature !== this._mon.playlist.lastSignature) {
+            this._mon.playlist.lastSignature = signature;
+            this._mon.playlist.lastAdvanceAt = now;
+
+            if (this._playlistHasNewContent(info)) {
+                this._mon.playlist.advanceCount += 1;
+                this._log('debug', `📼 Playlist weiter (${this._mon.playlist.advanceCount})`, info);
+            } else {
+                this._mon.playlist.advanceCount = 0;
+                this._log('debug', '📼 Playlist ok, aber keine neuen Segmente');
             }
-        } else if (this.state === 'init' && this._mon.video.consecutiveFails >= 2) {
-            this._log('info', '🎨 Kein Video beim Start → CANVAS');
+        } else if (now - this._mon.playlist.lastAdvanceAt > this.timings.playlistStaleTimeout) {
+            this._handlePlaylistFailure('stale playlist');
+            return;
+        }
+
+        if (this.state !== 'video') {
+            if (this._mon.playlist.advanceCount >= this.switching.playlistAdvanceRequired) {
+                this._log('info', `🎬 Video verfügbar (${latency}ms, neue Segmente) → Video`);
+                this._switchToVideo();
+            }
+        }
+    }
+
+    _handlePlaylistFailure(reason) {
+        this._mon.playlist.consecutiveFails += 1;
+        this._mon.playlist.advanceCount = 0;
+
+        this._log('debug', `📡 Playlist fail #${this._mon.playlist.consecutiveFails}: ${reason}`);
+
+        if (this.state === 'init' && this._mon.playlist.consecutiveFails >= this.switching.initFailsToCanvas) {
+            this._log('info', '🎨 Kein Video beim Start → Canvas');
+            this._switchToCanvas();
+        }
+
+        if (this.state === 'video') {
+            this._log('warn', `❌ Playlist Probleme (${reason}) → Canvas`);
             this._switchToCanvas();
         }
     }
-    
-    _resetStallTimer() {
-        if (this._timers.stall) clearTimeout(this._timers.stall);
-        
-        if (this.state === 'video') {
-            this._timers.stall = setTimeout(() => {
-                const timeSinceFrame = performance.now() - this._mon.video.lastFrame;
-                if (timeSinceFrame > this.timings.videoStallTimeout) {
-                    this._log('warn', `⏱️ Stall (${timeSinceFrame.toFixed(0)}ms keine Frames)`);
-                    this._switchToCanvas();
-                }
-            }, this.timings.videoStallTimeout);
+
+    _playlistHasNewContent(info) {
+        const { mediaSequence, lastSegmentUri } = info;
+        const { mediaSequence: playedSeq, segmentUri: playedUri } = this._mon.played;
+
+        if (playedSeq === null && playedUri === null) return true;
+
+        if (mediaSequence !== null && playedSeq !== null) {
+            return mediaSequence >= playedSeq + this.switching.minPlaylistAdvance;
         }
+
+        if (lastSegmentUri && playedUri) {
+            return lastSegmentUri !== playedUri;
+        }
+
+        return true;
     }
 
     /* ---------------- VIDEO SETUP ---------------- */
 
     async _switchToVideo() {
-        if (this.state === 'video' || !this._canSwitch()) return;
-        
+        if (this.state === 'video' || !this._canSwitch('video')) return;
+
         this._log('info', '▶️ VIDEO MODE');
         this._setCooldown();
-        
         this.state = 'video';
-        this._mon.switching.lastSwitch = Date.now();
-        this._mon.switching.switchCount++;
-        
+        this._mon.switching.lastSwitchAt = Date.now();
+        this._mon.playlist.advanceCount = 0;
+
         this.stageEl.className = 'rfm-stage rfm-stage--video';
-        this._startMonitoring();
-        
-        // Visualizer stoppen
         this.tagCloud?.deactivate?.();
-        
-        // HLS starten (asynchron)
-        setTimeout(async () => {
-            try {
-                await this._setupHls();
-                this._mon.video.lastFrame = performance.now();
-                this._resetStallTimer();
-                this._log('debug', 'HLS gestartet');
-            } catch (error) {
-                this._log('error', `HLS Fehler: ${error.message}`);
-                this._switchToCanvas();
-            }
-        }, 10);
+
+        try {
+            await this._setupHlsPlayback();
+            this._mon.video.lastFrameAt = performance.now();
+            this._startFrameTracking();
+            this._resetStallTimer();
+        } catch (error) {
+            this._log('error', `HLS Fehler: ${error.message}`);
+            this._mon.video.hlsRetries += 1;
+            this._switchToCanvas();
+        }
     }
-    
-    async _setupHls() {
+
+    async _setupHlsPlayback() {
+        await this._ensureHls();
+
+        if (!window.Hls?.isSupported()) {
+            throw new Error('HLS nicht unterstützt');
+        }
+
         if (this.hls) {
             this.hls.destroy();
             this.hls = null;
         }
-        
-        await this._ensureHls();
-        
-        if (!window.Hls?.isSupported()) {
-            throw new Error('HLS nicht unterstützt');
-        }
-        
-        return new Promise((resolve, reject) => {
-            let resolved = false;
-            const timeout = setTimeout(() => {
-                if (!resolved) {
-                    reject(new Error('HLS Timeout'));
-                }
-            }, 5000);
-            
-            this.hls = new window.Hls({
-                lowLatencyMode: true,
-                maxBufferLength: 2,        // 🔥 KURZ!
-                backBufferLength: 0,
-                maxMaxBufferLength: 4,
-                liveSyncDurationCount: 1,
-                liveMaxLatencyDurationCount: 2,
-            });
-            
-            this.hls.attachMedia(this.video);
-            
-            // Erfolg wenn erste Frames da sind (und tatsächlich "neu" sind)
-            if ('requestVideoFrameCallback' in this.video) {
-                const lastMediaTimeAtSwitch = this._mon.video.lastMediaTimeAtSwitch;
-                const minAdvance = this.switching.minMediaTimeAdvance ?? 0;
-                const waitForFreshFrame = (_, metadata) => {
-                    const mediaTime = typeof metadata?.mediaTime === 'number'
-                        ? metadata.mediaTime
-                        : this.video.currentTime;
-                    const isFresh = !this.switching.requireVideoFrames
-                        || mediaTime > lastMediaTimeAtSwitch + minAdvance;
-                    if (isFresh && !resolved) {
-                        resolved = true;
-                        clearTimeout(timeout);
-                        resolve();
-                        return;
-                    }
-                    if (!resolved) {
-                        this.video.requestVideoFrameCallback(waitForFreshFrame);
-                    }
-                };
-                this.video.requestVideoFrameCallback(waitForFreshFrame);
-            } else {
-                this.video.addEventListener('loadeddata', () => {
-                    if (!resolved) {
-                        resolved = true;
-                        clearTimeout(timeout);
-                        resolve();
-                    }
-                }, { once: true });
+
+        this.hls = new window.Hls({
+            lowLatencyMode: true,
+            maxBufferLength: 2,
+            backBufferLength: 0,
+            maxMaxBufferLength: 4,
+            liveSyncDurationCount: 1,
+            liveMaxLatencyDurationCount: 2,
+        });
+
+        this.hls.on(window.Hls.Events.ERROR, (_, data) => {
+            if (data.fatal) {
+                this._log('error', `HLS fatal: ${data.details}`);
+                this._mon.video.hlsRetries += 1;
+                this._switchToCanvas();
             }
-            
-            // Fehler-Handling
-            this.hls.on(window.Hls.Events.ERROR, (_, data) => {
-                if (data.fatal && !resolved) {
-                    resolved = true;
-                    clearTimeout(timeout);
-                    reject(new Error(`HLS fatal: ${data.details}`));
-                }
-            });
-            
-            this.hls.loadSource(this.options.videoUrl);
-            this.hls.startLoad();
-            
-        }).then(() => {
-            return this.video.play().catch(err => {
-                this._log('warn', `Playback failed: ${err.message}`);
-            });
-        }).catch(error => {
-            // 🔴 NUR HIER totalRetries erhöhen!
-            this._mon.video.totalRetries++;
-            throw error;
+        });
+
+        this.hls.on(window.Hls.Events.FRAG_CHANGED, (_, data) => {
+            if (data?.frag) {
+                this._mon.played.mediaSequence = Number.isFinite(data.frag.sn) ? data.frag.sn : this._mon.played.mediaSequence;
+                this._mon.played.segmentUri = data.frag.relurl || data.frag.url || this._mon.played.segmentUri;
+            }
+        });
+
+        this.hls.attachMedia(this.video);
+        this.hls.loadSource(this.options.videoUrl);
+        this.hls.startLoad();
+
+        await this._waitForVideoStart();
+        await this.video.play().catch(error => {
+            this._log('warn', `Playback failed: ${error.message}`);
         });
     }
-    
+
+    _waitForVideoStart() {
+        return new Promise((resolve, reject) => {
+            let settled = false;
+            const timeout = setTimeout(() => {
+                if (!settled) {
+                    settled = true;
+                    reject(new Error('Video Start Timeout'));
+                }
+            }, this.timings.videoStartTimeout);
+
+            const onStarted = () => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timeout);
+                this._mon.video.lastFrameAt = performance.now();
+                resolve();
+            };
+
+            if ('requestVideoFrameCallback' in this.video) {
+                this.video.requestVideoFrameCallback(() => onStarted());
+            } else {
+                this.video.addEventListener('playing', onStarted, { once: true });
+                this.video.addEventListener('loadeddata', onStarted, { once: true });
+            }
+        });
+    }
+
     async _ensureHls() {
         if (window.Hls) return;
-        
+
         return new Promise((resolve, reject) => {
             const script = document.createElement('script');
             script.src = this.options.hlsScriptUrl;
@@ -568,69 +475,90 @@ export class RfmStage {
         });
     }
 
+    _startFrameTracking() {
+        if (!('requestVideoFrameCallback' in this.video)) return;
+
+        const track = (_, metadata) => {
+            if (this.state !== 'video') return;
+            this._mon.video.lastFrameAt = performance.now();
+            this.video.requestVideoFrameCallback(track);
+        };
+
+        this.video.requestVideoFrameCallback(track);
+    }
+
+    _resetStallTimer() {
+        if (this._timers.stall) clearTimeout(this._timers.stall);
+
+        if (this.state !== 'video') return;
+
+        this._timers.stall = setTimeout(() => {
+            const lastFrameAt = this._mon.video.lastFrameAt;
+            const sinceFrame = lastFrameAt ? performance.now() - lastFrameAt : Infinity;
+
+            if (sinceFrame > this.timings.stallTimeout) {
+                this._log('warn', `⏱️ Stall (${sinceFrame.toFixed(0)}ms keine Frames)`);
+                this._switchToCanvas();
+            } else {
+                this._resetStallTimer();
+            }
+        }, this.timings.stallTimeout);
+    }
+
     /* ---------------- CANVAS SETUP ---------------- */
 
-    async _switchToCanvas() {
-        if (this.state === 'canvas' || !this._canSwitch()) return;
-        
+    _switchToCanvas() {
+        if (this.state === 'canvas' || !this._canSwitch('canvas')) return;
+
         this._log('info', '🎨 CANVAS MODE');
         this._setCooldown();
-        
         this.state = 'canvas';
-        this._mon.switching.lastSwitch = Date.now();
-        this._mon.switching.switchCount++;
-        this._mon.video.lastMediaTimeAtSwitch = this._mon.video.lastMediaTime;
-        
+        this._mon.switching.lastSwitchAt = Date.now();
+
         this.stageEl.className = 'rfm-stage rfm-stage--canvas';
-        
-        // HLS stoppen
+        this._stopVideo();
+        this._startPolling();
+
+        if (this.tagCloud && !this.tagCloud.isActive) {
+            this.tagCloud.activate();
+        }
+    }
+
+    _stopVideo() {
+        if (this._timers.stall) {
+            clearTimeout(this._timers.stall);
+            this._timers.stall = null;
+        }
+
         if (this.hls) {
             this.hls.stopLoad();
             this.hls.detachMedia();
+            this.hls.destroy();
+            this.hls = null;
         }
+
         if (this.video) {
             this.video.pause();
         }
-        this._startMonitoring();
-        
-        // Visualizer starten
-        setTimeout(() => {
-            if (this.tagCloud && !this.tagCloud.isActive) {
-                this.tagCloud.activate();
-            }
-        }, 10);
-        
-        // Retry Counter zurücksetzen nach Wechsel zu Canvas
-        this._mon.video.totalRetries = 0;
+        this._mon.video.lastFrameAt = 0;
     }
-    
-    _canSwitch() {
+
+    _canSwitch(targetState) {
         const now = Date.now();
-        const sinceLastSwitch = now - this._mon.switching.lastSwitch;
-        const inCooldown = now < this._mon.switching.cooldownUntil;
-        
-        if (inCooldown) {
+
+        if (now < this._mon.switching.cooldownUntil) {
             this._log('debug', `⏳ Switch cooldown (${this._mon.switching.cooldownUntil - now}ms)`);
             return false;
         }
-        
-        if (sinceLastSwitch < this.timings.switchCooldown) {
-            this._log('debug', `⚡ Zu schneller Switch (${sinceLastSwitch}ms)`);
+
+        if (targetState === 'video' && this._mon.video.hlsRetries >= this.switching.maxHlsRetries) {
+            this._log('warn', `🛑 Max video retries (${this._mon.video.hlsRetries}) - bleibe bei Canvas`);
             return false;
         }
-        
-        // 🚨 KORREKTUR: Max retries NUR prüfen wenn wir ZU VIDEO wechseln wollen
-        // Nicht wenn wir von Video ZU Canvas wechseln wollen!
-        const targetState = this.state === 'video' ? 'canvas' : 'video';
-        
-        if (targetState === 'video' && this._mon.video.totalRetries >= this.switching.maxVideoRetries) {
-            this._log('warn', `🛑 Max video retries (${this._mon.video.totalRetries}) - bleibe bei Canvas`);
-            return false;
-        }
-        
+
         return true;
     }
-    
+
     _setCooldown() {
         this._mon.switching.cooldownUntil = Date.now() + this.timings.switchCooldown;
     }
@@ -654,84 +582,96 @@ export class RfmStage {
 
     _buildDOM() {
         this.rootEl.innerHTML = '';
-        
+
         const stage = document.createElement('div');
         stage.className = 'rfm-stage rfm-stage--init';
-        
+
         const visual = document.createElement('div');
         visual.className = 'rfm-stage-visual';
-        
+
         const video = document.createElement('video');
+        video.className = 'rfm-stage-video';
         video.muted = true;
         video.playsInline = true;
         video.autoplay = true;
         video.preload = 'auto';
-        
+
         const canvas = document.createElement('canvas');
-        
+        canvas.className = 'rfm-stage-canvas';
+
         visual.append(video, canvas);
         stage.appendChild(visual);
         this.rootEl.appendChild(stage);
-        
+
+        if (this.options.audioUrl) {
+            const audio = document.createElement('audio');
+            audio.className = 'rfm-stage-audio';
+            audio.controls = this.audioConfig.controls;
+            audio.autoplay = this.audioConfig.autoplay;
+            audio.muted = this.audioConfig.muted;
+            audio.preload = this.audioConfig.preload;
+            audio.src = this.options.audioUrl;
+            this.rootEl.appendChild(audio);
+            this.audio = audio;
+        }
+
         this.stageEl = stage;
-        this.visualEl = visual;
         this.video = video;
         this.canvas = canvas;
         this.ctx = canvas.getContext('2d');
-        
-        // Resize
+
         const resize = () => {
-            const rect = this.visualEl.getBoundingClientRect();
+            const rect = visual.getBoundingClientRect();
             const dpr = window.devicePixelRatio || 1;
-            this.canvas.width = rect.width * dpr;
-            this.canvas.height = rect.height * dpr;
+            canvas.width = rect.width * dpr;
+            canvas.height = rect.height * dpr;
             this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
             this.tagCloud?.onResize?.();
         };
-        
+
         resize();
-        new ResizeObserver(resize).observe(this.visualEl);
+        new ResizeObserver(resize).observe(visual);
     }
-    
-    _clearAllTimers() {
-        Object.values(this._timers).forEach(timer => {
-            if (timer) clearInterval(timer);
-        });
-        this._timers = {};
+
+    _stopAllTimers() {
+        if (this._timers.poll) clearInterval(this._timers.poll);
+        if (this._timers.metrics) clearInterval(this._timers.metrics);
+        if (this._timers.stall) clearTimeout(this._timers.stall);
+        this._timers = {
+            poll: null,
+            stall: null,
+            metrics: null,
+        };
     }
-    
+
     _logMetrics() {
         const metrics = {
             state: this.state,
-            video: {
-                score: this._mon.video.score,
-                fails: this._mon.video.consecutiveFails,
-                success: this._mon.video.consecutiveSuccess,
-                retries: this._mon.video.totalRetries,
-                lastFrame: Math.round(performance.now() - this._mon.video.lastFrame),
-                buffering: this._mon.video.buffering,
+            playlist: {
+                advanceCount: this._mon.playlist.advanceCount,
+                fails: this._mon.playlist.consecutiveFails,
             },
-            switching: {
-                count: this._mon.switching.switchCount,
-                last: Date.now() - this._mon.switching.lastSwitch,
-                cooldown: this._mon.switching.cooldownUntil - Date.now(),
-            }
+            played: this._mon.played,
+            video: {
+                lastFrame: Math.round(performance.now() - this._mon.video.lastFrameAt),
+                retries: this._mon.video.hlsRetries,
+            },
         };
         this._log('debug', '📊 METRICS', metrics);
     }
-    
+
     /* ---------------- PUBLIC API ---------------- */
-    
+
     getConfig() {
         return {
             timings: this.timings,
             switching: this.switching,
             debug: this.debug,
             state: this.state,
-            monitoring: JSON.parse(JSON.stringify(this._mon))
+            monitoring: JSON.parse(JSON.stringify(this._mon)),
         };
     }
-    
+
     updateConfig(newConfig) {
         if (newConfig.timings) {
             Object.assign(this.timings, newConfig.timings);
@@ -745,18 +685,17 @@ export class RfmStage {
             Object.assign(this.debug, newConfig.debug);
             this._log('info', '⚙️ Debug updated', this.debug);
         }
-        
-        // Restart monitoring with new timings
-        if (this._timers.videoPoll) {
-            this._startMonitoring();
+
+        if (this._timers.poll) {
+            this._startPolling();
         }
     }
-    
+
     forceVideo() {
         this._log('info', '🔄 MANUAL: Force Video');
         this._switchToVideo();
     }
-    
+
     forceCanvas() {
         this._log('info', '🔄 MANUAL: Force Canvas');
         this._switchToCanvas();
