@@ -29,6 +29,7 @@ export class RfmStage {
                 immediateSwitchToVideo: true,  // Video sofort wenn verfügbar
                 requireVideoFrames: true,      // Muss Frames bekommen sonst Fehler
                 maxVideoRetries: 3,            // Max Versuche bevor Canvas bleibt
+                minMediaTimeAdvance: 0.15,     // Mindest-Fortschritt (s) für "neue" Frames
             },
             
             // 🐛 DEBUG
@@ -61,6 +62,8 @@ export class RfmStage {
         this._mon = {
             video: {
                 lastFrame: 0,
+                lastMediaTime: -Infinity,
+                lastMediaTimeAtSwitch: -Infinity,
                 consecutiveFails: 0,
                 consecutiveSuccess: 0,
                 totalRetries: 0,
@@ -207,9 +210,14 @@ export class RfmStage {
         
         // Video Frame Monitoring
         if ('requestVideoFrameCallback' in this.video) {
-            const trackFrames = () => {
+            const trackFrames = (_, metadata) => {
                 const now = performance.now();
                 this._mon.video.lastFrame = now;
+                if (typeof metadata?.mediaTime === 'number') {
+                    this._mon.video.lastMediaTime = metadata.mediaTime;
+                } else if (typeof this.video?.currentTime === 'number') {
+                    this._mon.video.lastMediaTime = this.video.currentTime;
+                }
                 
                 // Buffering detection
                 if (this.video.readyState < 3) {
@@ -339,6 +347,7 @@ export class RfmStage {
         this._mon.switching.switchCount++;
         
         this.stageEl.className = 'rfm-stage rfm-stage--video';
+        this._startMonitoring();
         
         // Visualizer stoppen
         this.tagCloud?.deactivate?.();
@@ -388,15 +397,27 @@ export class RfmStage {
             
             this.hls.attachMedia(this.video);
             
-            // Erfolg wenn erste Frames da sind
+            // Erfolg wenn erste Frames da sind (und tatsächlich "neu" sind)
             if ('requestVideoFrameCallback' in this.video) {
-                this.video.requestVideoFrameCallback(() => {
-                    if (!resolved) {
+                const lastMediaTimeAtSwitch = this._mon.video.lastMediaTimeAtSwitch;
+                const minAdvance = this.switching.minMediaTimeAdvance ?? 0;
+                const waitForFreshFrame = (_, metadata) => {
+                    const mediaTime = typeof metadata?.mediaTime === 'number'
+                        ? metadata.mediaTime
+                        : this.video.currentTime;
+                    const isFresh = !this.switching.requireVideoFrames
+                        || mediaTime > lastMediaTimeAtSwitch + minAdvance;
+                    if (isFresh && !resolved) {
                         resolved = true;
                         clearTimeout(timeout);
                         resolve();
+                        return;
                     }
-                });
+                    if (!resolved) {
+                        this.video.requestVideoFrameCallback(waitForFreshFrame);
+                    }
+                };
+                this.video.requestVideoFrameCallback(waitForFreshFrame);
             } else {
                 this.video.addEventListener('loadeddata', () => {
                     if (!resolved) {
@@ -453,13 +474,19 @@ export class RfmStage {
         this.state = 'canvas';
         this._mon.switching.lastSwitch = Date.now();
         this._mon.switching.switchCount++;
+        this._mon.video.lastMediaTimeAtSwitch = this._mon.video.lastMediaTime;
         
         this.stageEl.className = 'rfm-stage rfm-stage--canvas';
         
         // HLS stoppen
         if (this.hls) {
             this.hls.stopLoad();
+            this.hls.detachMedia();
         }
+        if (this.video) {
+            this.video.pause();
+        }
+        this._startMonitoring();
         
         // Visualizer starten
         setTimeout(() => {
