@@ -34,11 +34,6 @@
     <button id="btn-canvas">Canvas erzwingen</button>
   </p>
 
-  <!-- Live-Audio separat -->
-  <audio
-    controls
-    src="https://icecast.radiorfm.de/rfm.ogg">
-  </audio>
 </main>
 
 <script type="module">
@@ -48,18 +43,23 @@
     document.getElementById('stage-root'),
     {
       videoUrl: 'https://dv.radiorfm.de/hls/stream.m3u8', // echtes Video!
+      audioUrl: 'https://icecast.radiorfm.de/rfm.ogg',
       yamnetEndpoint: '/api/yamnet/stream',
-      debug: true
+      audio: { controls: true },
+      debug: {
+        logLevel: 'debug',
+        exposeGlobal: true
+      }
     }
   );
 
   stage.mount();
 
   document.getElementById('btn-video')
-    .addEventListener('click', () => stage.showVideoDebug());
+    .addEventListener('click', () => stage.forceVideo());
 
   document.getElementById('btn-canvas')
-    .addEventListener('click', () => stage.showCanvasDebug());
+    .addEventListener('click', () => stage.forceCanvas());
 </script>
 
 </body>
