@@ -1,15 +1,9 @@
-# /opt/rfm/airlift-node/server/yamnet_service.py
 #!/usr/bin/env python3
-"""
-RFM YAMNet Production Service
-Mit automatischem Neustart, Health Checks und Monitoring
-"""
-
 import subprocess
 import numpy as np
 import tensorflow as tf
 import tensorflow_hub as hub
-from flask import Flask, jsonify, Response
+from flask import Flask, jsonify, Response, request
 from flask_cors import CORS
 import threading
 import time
@@ -22,242 +16,176 @@ from collections import defaultdict, deque
 from datetime import datetime
 import psutil  # pip install psutil
 
-# Logging konfigurieren
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('/var/log/rfm-yamnet.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+app = Flask(__name__)
+CORS(app)
 
-class ProductionYamnetAnalyzer:
+class YamnetAnalyzer:
     def __init__(self, stream_url):
         self.stream_url = stream_url
-        self.model = None
+        self.model = hub.load('https://tfhub.dev/google/yamnet/1')
         self.ffmpeg_process = None
-        self.analysis_queue = queue.Queue(maxsize=30)
+        self.analysis_queue = queue.Queue(maxsize=20)
         self.latest_analysis = None
         self.running = False
-        self.start_time = time.time()
-        self.analysis_count = 0
-        self.error_count = 0
-        self.retry_count = 0
-        self.max_retries = 5
-        self.retry_delay = 30  # Sekunden
+        self.stream_delay = 10.5  # Sekunden für Buffer-Aufbau
         
-        # Statistik
-        self.stats = {
-            'total_analyses': 0,
-            'average_processing_time': 0,
-            'last_error': None,
-            'uptime': 0
-        }
+        # Klassennamen
+        self.class_names = self.load_class_names()
+        self.class_categories = self.categorize_all_classes()
         
-        # Klassennamen und Kategorisierung
-        self.class_names = {}
-        self.class_categories = {}
+        print(f"✅ YAMNet geladen, {len(self.class_names)} Klassen")
         
-        # Initialisiere in separatem Thread um Blockieren zu vermeiden
-        self.init_thread = threading.Thread(target=self._initialize, daemon=True)
-        self.init_thread.start()
-        
-    def _initialize(self):
-        """Initialisiert YAMNet im Hintergrund"""
-        try:
-            logger.info("🚀 Initialisiere YAMNet Modell...")
-            self.model = hub.load('https://tfhub.dev/google/yamnet/1')
-            
-            # Klassennamen laden
-            class_map_path = self.model.class_map_path().numpy().decode('utf-8')
-            class_names = {}
-            with open(class_map_path, 'r') as f:
-                for line in f:
-                    parts = line.strip().split(',')
-                    if len(parts) >= 3:
-                        try:
-                            index = int(parts[0])
-                            display_name = parts[2]
-                            class_names[index] = display_name
-                        except:
-                            continue
-            
-            self.class_names = class_names
-            self.class_categories = self.categorize_all_classes()
-            
-            logger.info(f"✅ YAMNet initialisiert: {len(self.class_names)} Klassen")
-            
-            # Test mit Dummy-Audio
-            test_audio = np.zeros(16000, dtype=np.float32)
-            scores, _, _ = self.model(test_audio)
-            logger.info(f"✅ Modell-Test erfolgreich: {scores.shape}")
-            
-        except Exception as e:
-            logger.error(f"❌ YAMNet Initialisierung fehlgeschlagen: {e}")
-            self.running = False
-            raise
-    
-    def start(self):
-        """Startet den Analyse-Service"""
-        if not self.model:
-            logger.warning("⚠️ Modell noch nicht initialisiert, warte...")
-            self.init_thread.join(timeout=30)
-            
-        if not self.model:
-            logger.error("❌ Modell konnte nicht initialisiert werden")
-            return False
-            
-        self.running = True
-        self.analysis_thread = threading.Thread(target=self._analysis_loop, daemon=True)
-        self.analysis_thread.start()
-        
-        logger.info("▶️ Analyse-Service gestartet")
-        return True
-    
-    def _analysis_loop(self):
-        """Haupt-Analyse-Loop mit Fehlerbehandlung"""
-        restart_attempts = 0
-        
-        while self.running and restart_attempts < self.max_retries:
-            try:
-                self._run_ffmpeg_analysis()
-            except Exception as e:
-                logger.error(f"❌ Analyse-Loop Fehler: {e}")
-                self.error_count += 1
-                self.stats['last_error'] = str(e)
-                restart_attempts += 1
-                
-                if restart_attempts < self.max_retries:
-                    logger.info(f"🔄 Neustartversuch {restart_attempts}/{self.max_retries} in 10s...")
-                    time.sleep(10)
-                else:
-                    logger.error(f"⛔ Maximale Neustartversuche erreicht")
-                    break
-        
-        self.running = False
-        logger.info("⏹️ Analyse-Loop beendet")
-    
-    def _run_ffmpeg_analysis(self):
-        """FFmpeg Analyse-Prozess"""
-        # FFmpeg Konfiguration
-        ffmpeg_cmd = [
-            'ffmpeg',
-            '-i', self.stream_url,
-            '-f', 's16le',
-            '-acodec', 'pcm_s16le',
-            '-ac', '1',
-            '-ar', '16000',
-            '-loglevel', 'error',
-            '-reconnect', '1',
-            '-reconnect_streamed', '1',
-            '-reconnect_delay_max', '5',
-            'pipe:1'
-        ]
-        
-        logger.info(f"🎯 Starte Audio-Stream: {self.stream_url}")
-        
-        try:
-            self.ffmpeg_process = subprocess.Popen(
-                ffmpeg_cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                bufsize=10**7
-            )
-        except Exception as e:
-            logger.error(f"❌ FFmpeg start failed: {e}")
-            raise
-        
-        # Prüfe ob Prozess läuft
-        time.sleep(1)
-        if self.ffmpeg_process.poll() is not None:
-            stderr = self.ffmpeg_process.stderr.read().decode('utf-8', errors='ignore')
-            logger.error(f"❌ FFmpeg beendet sofort: {stderr[:200]}")
-            raise RuntimeError(f"FFmpeg failed: {stderr[:200]}")
-        
-        # Audio-Verarbeitung
-        chunk_size = 16000 * 3  # 3 Sekunden
-        last_update = time.time()
-        
-        while self.running and self.ffmpeg_process.poll() is None:
-            try:
-                # Audio lesen
-                raw_bytes = self.ffmpeg_process.stdout.read(chunk_size * 2)
-                
-                if not raw_bytes:
-                    time.sleep(0.1)
-                    continue
-                
-                # Konvertieren
-                audio_int16 = np.frombuffer(raw_bytes, dtype=np.int16)
-                if len(audio_int16) < chunk_size * 0.5:
-                    continue
-                    
-                audio_float32 = audio_int16.astype(np.float32) / 32768.0
-                
-                # Analyse
-                start_time = time.time()
-                analysis = self.analyze_audio(audio_float32)
-                processing_time = time.time() - start_time
-                
-                self.latest_analysis = analysis
-                self.analysis_count += 1
-                self.stats['total_analyses'] = self.analysis_count
-                
-                # Update Statistik
-                if self.stats['average_processing_time'] == 0:
-                    self.stats['average_processing_time'] = processing_time
-                else:
-                    # Gleitender Durchschnitt
-                    self.stats['average_processing_time'] = (
-                        0.9 * self.stats['average_processing_time'] + 0.1 * processing_time
-                    )
-                
-                # In Queue ablegen (nicht blockierend)
-                try:
-                    self.analysis_queue.put_nowait(analysis)
-                except queue.Full:
-                    # Ältesten entfernen
+    def load_class_names(self):
+        class_map_path = self.model.class_map_path().numpy().decode('utf-8')
+        class_names = {}
+        with open(class_map_path, 'r') as f:
+            for line in f:
+                parts = line.strip().split(',')
+                if len(parts) >= 3:
                     try:
-                        self.analysis_queue.get_nowait()
-                        self.analysis_queue.put_nowait(analysis)
+                        index = int(parts[0])
+                        display_name = parts[2]
+                        class_names[index] = display_name
+                    except:
+                        continue
+        return class_names
+    
+    def categorize_class(self, class_name):
+        if not class_name: return 'other'
+        lower = class_name.lower()
+        
+        if any(k in lower for k in ['music', 'song', 'singing', 'choir', 'vocal']): return 'music'
+        if any(k in lower for k in ['guitar', 'drum', 'piano', 'violin', 'trumpet']): return 'instrument'
+        if any(k in lower for k in ['speech', 'talk', 'conversation', 'narration']): return 'speech'
+        if any(k in lower for k in ['laughter', 'cough', 'sneeze', 'breathing']): return 'human'
+        if any(k in lower for k in ['dog', 'cat', 'bird', 'horse', 'owl']): return 'animal'
+        if any(k in lower for k in ['car', 'engine', 'train', 'airplane', 'siren']): return 'vehicle'
+        if any(k in lower for k in ['rain', 'wind', 'thunder', 'water', 'fire']): return 'nature'
+        if any(k in lower for k in ['telephone', 'computer', 'radio', 'television']): return 'electronic'
+        if any(k in lower for k in ['door', 'window', 'chair', 'table', 'curtain']): return 'household'
+        if any(k in lower for k in ['hammer', 'saw', 'drill', 'wrench']): return 'tool'
+        if any(k in lower for k in ['applause', 'cheering', 'crowd', 'stadium']): return 'sport'
+        if any(k in lower for k in ['gunshot', 'explosion', 'blast', 'fireworks']): return 'impact'
+        return 'other'
+    
+    def categorize_all_classes(self):
+        return {idx: self.categorize_class(name) for idx, name in self.class_names.items()}
+    
+    def get_category_color(self, category):
+        colors = {
+            'music': '#5aff8c', 'instrument': '#2ecc71', 'speech': '#ff8c5a',
+            'human': '#e74c3c', 'animal': '#9b59b6', 'vehicle': '#3498db',
+            'nature': '#1abc9c', 'electronic': '#00bcd4', 'household': '#795548',
+            'tool': '#f39c12', 'sport': '#e67e22', 'impact': '#e91e63',
+            'other': '#607d8b'
+        }
+        return colors.get(category, '#607d8b')
+    
+    def start_analysis(self):
+        self.running = True
+        
+        while self.running:
+            try:
+                # FFmpeg starten
+                ffmpeg_cmd = [
+                    'ffmpeg', '-i', self.stream_url,
+                    '-f', 's16le', '-acodec', 'pcm_s16le',
+                    '-ac', '1', '-ar', '16000',
+                    '-reconnect', '1', '-reconnect_streamed', '1',
+                    '-reconnect_delay_max', '5', '-loglevel', 'error',
+                    'pipe:1'
+                ]
+                
+                print(f"🎯 Verbinde zu: {self.stream_url}")
+                self.ffmpeg_process = subprocess.Popen(
+                    ffmpeg_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    bufsize=10**6,
+                    start_new_session=True
+                )
+                
+                time.sleep(3)
+                
+                if self.ffmpeg_process.poll() is not None:
+                    print("❌ FFmpeg start fehlgeschlagen")
+                    time.sleep(10)
+                    continue
+                
+                # WICHTIG: Audio-Buffer für Delay aufbauen
+                print(f"⏳ Baue {self.stream_delay}s Audio-Buffer auf...")
+                buffer_needed = int(16000 * self.stream_delay) * 2  # Bytes
+                buffer_data = bytearray()
+                
+                while len(buffer_data) < buffer_needed and self.running:
+                    chunk = self.ffmpeg_process.stdout.read(4096)
+                    if chunk:
+                        buffer_data.extend(chunk)
+                    else:
+                        time.sleep(0.01)
+                
+                print(f"✅ Buffer aufgebaut: {len(buffer_data)/32000:.1f}s")
+                
+                # Haupt-Analyse-Loop
+                chunk_size = int(16000 * 1.0) * 2  # 1 Sekunde
+                
+                while self.running and self.ffmpeg_process.poll() is None:
+                    try:
+                        raw_bytes = self.ffmpeg_process.stdout.read(chunk_size)
+                        if not raw_bytes:
+                            time.sleep(0.01)
+                            continue
+                        
+                        # Analysiere
+                        audio_int16 = np.frombuffer(raw_bytes, dtype=np.int16)
+                        audio_float32 = audio_int16.astype(np.float32) / 32768.0
+                        
+                        analysis = self.analyze_audio(audio_float32)
+                        self.latest_analysis = analysis
+                        
+                        try:
+                            self.analysis_queue.put_nowait(analysis)
+                        except queue.Full:
+                            try:
+                                self.analysis_queue.get_nowait()
+                                self.analysis_queue.put_nowait(analysis)
+                            except:
+                                pass
+                                
+                    except Exception as e:
+                        print(f"❌ Analyse-Fehler: {e}")
+                        break
+                        
+            except Exception as e:
+                print(f"❌ Stream-Fehler: {e}")
+                time.sleep(5)
+            finally:
+                if self.ffmpeg_process:
+                    try:
+                        self.ffmpeg_process.terminate()
+                        self.ffmpeg_process.wait(timeout=2)
                     except:
                         pass
-                
-                # Status-Log alle 30 Sekunden
-                if time.time() - last_update > 30:
-                    queue_size = self.analysis_queue.qsize()
-                    logger.info(f"📊 Status: {self.analysis_count} Analysen, Queue: {queue_size}, "
-                              f"Avg time: {self.stats['average_processing_time']:.3f}s")
-                    last_update = time.time()
-                    
-            except Exception as e:
-                logger.error(f"❌ Audio-Verarbeitungsfehler: {e}")
-                time.sleep(1)
-                continue
-        
-        # FFmpeg beenden
-        self._stop_ffmpeg()
     
     def analyze_audio(self, audio_data):
-        """Audio-Analyse mit YAMNet"""
         try:
             scores, _, _ = self.model(audio_data)
         except Exception as e:
-            logger.error(f"❌ YAMNet Inferenz fehlgeschlagen: {e}")
-            return self._create_error_analysis()
+            print(f"❌ YAMNet Fehler: {e}")
+            return {
+                'timestamp': time.time(),
+                'topClasses': [],
+                'dominantCategory': 'error',
+                'analysisId': int(time.time() * 1000)
+            }
         
         avg_scores = np.mean(scores, axis=0)
-        top_indices = np.argsort(avg_scores)[-15:][::-1]
+        top_indices = np.argsort(avg_scores)[-20:][::-1]
         
         top_classes = []
-        total_confidence = 0
-        
         for idx in top_indices:
             confidence = float(avg_scores[idx])
-            if confidence < 0.005:
-                continue
+            if confidence < 0.005: continue
                 
             class_name = self.class_names.get(idx, f"Class_{idx}")
             category = self.class_categories.get(idx, 'other')
@@ -269,12 +197,11 @@ class ProductionYamnetAnalyzer:
                 'category': category,
                 'color': self.get_category_color(category)
             })
-            
-            total_confidence += confidence
         
         top_classes.sort(key=lambda x: x['confidence'], reverse=True)
+        if len(top_classes) > 15:
+            top_classes = top_classes[:15]
         
-        # Kategorie-Statistik
         category_scores = defaultdict(float)
         for cls in top_classes:
             category_scores[cls['category']] += cls['confidence']
@@ -282,100 +209,33 @@ class ProductionYamnetAnalyzer:
         dominant_category = max(category_scores.items(), key=lambda x: x[1], default=('other', 0))[0]
         
         return {
-            'timestamp': time.time(),
-            'topClasses': top_classes[:10],  # Nur Top 10
+            'timestamp': time.time(),  # ECHTE Zeit, kein Delay mehr
+            'topClasses': top_classes,
             'dominantCategory': dominant_category,
-            'totalConfidence': round(total_confidence, 3),
             'totalClasses': len(top_classes),
             'analysisId': int(time.time() * 1000),
-            'serverTime': datetime.now().isoformat()
+            'stream_delay': self.stream_delay
         }
     
-    def _create_error_analysis(self):
-        """Erstellt eine Fehler-Analyse"""
-        return {
-            'timestamp': time.time(),
-            'topClasses': [],
-            'dominantCategory': 'error',
-            'totalConfidence': 0,
-            'totalClasses': 0,
-            'analysisId': int(time.time() * 1000),
-            'error': True,
-            'serverTime': datetime.now().isoformat()
-        }
-    
-    def _stop_ffmpeg(self):
-        """Stoppt FFmpeg sicher"""
+    def stop(self):
+        self.running = False
         if self.ffmpeg_process:
             try:
                 self.ffmpeg_process.terminate()
                 self.ffmpeg_process.wait(timeout=2)
             except:
-                try:
-                    self.ffmpeg_process.kill()
-                except:
-                    pass
-            finally:
-                self.ffmpeg_process = None
-    
-    def stop(self):
-        """Stoppt den Service komplett"""
-        self.running = False
-        self._stop_ffmpeg()
-        logger.info("⏹️ Service gestoppt")
-    
-    def get_status(self):
-        """Gibt detaillierten Status zurück"""
-        return {
-            'running': self.running,
-            'uptime': round(time.time() - self.start_time, 1),
-            'analysis_count': self.analysis_count,
-            'error_count': self.error_count,
-            'queue_size': self.analysis_queue.qsize(),
-            'stats': self.stats,
-            'ffmpeg_alive': self.ffmpeg_process is not None and self.ffmpeg_process.poll() is None,
-            'stream_url': self.stream_url,
-            'model_loaded': self.model is not None,
-            'memory_usage': psutil.Process().memory_info().rss / 1024 / 1024  # MB
-        }
-    
-    # Hilfsmethoden (aus deinem Originalcode)
-    def categorize_all_classes(self):
-        categories = {}
-        for idx, name in self.class_names.items():
-            categories[idx] = self.categorize_class(name)
-        return categories
-    
-    def categorize_class(self, class_name):
-        # ... (gleiche Methode wie in deinem Code)
-        pass
-    
-    def get_category_color(self, category):
-        colors = {
-            'music': '#5aff8c',
-            'instrument': '#2ecc71',
-            'speech': '#ff8c5a',
-            'human': '#e74c3c',
-            'animal': '#9b59b6',
-            'vehicle': '#3498db',
-            'nature': '#1abc9c',
-            'electronic': '#00bcd4',
-            'household': '#795548',
-            'tool': '#f39c12',
-            'sport': '#e67e22',
-            'impact': '#e91e63',
-            'other': '#607d8b'
-        }
-        return colors.get(category, '#607d8b')
+                pass
 
-# Flask App
-app = Flask(__name__)
-CORS(app)
-analyzer = ProductionYamnetAnalyzer("https://icecast.radiorfm.de/rfm.ogg")
+# Globale Instanz
+STREAM_URL = "https://icecast.radiorfm.de/rfm.ogg"
+analyzer = YamnetAnalyzer(STREAM_URL)
+analysis_thread = threading.Thread(target=analyzer.start_analysis, daemon=True)
 
 @app.route('/api/yamnet/analysis')
 def get_analysis():
-    return jsonify(analyzer.latest_analysis or analyzer._create_error_analysis())
+    if analyzer.latest_analysis:
+        return jsonify(analyzer.latest_analysis)
+    return jsonify({'status': 'starting', 'timestamp': time.time()})
 
 @app.route('/api/yamnet/stream')
 def stream_analysis():
@@ -409,59 +269,44 @@ def stream_analysis():
 
 @app.route('/api/yamnet/status')
 def get_status():
-    return jsonify(analyzer.get_status())
-
-@app.route('/api/yamnet/health')
-def health_check():
-    status = analyzer.get_status()
-    
-    # Health Check Logik
-    is_healthy = (
-        status['running'] and
-        status['model_loaded'] and
-        status['ffmpeg_alive'] and
-        analyzer.analysis_count > 0 and
-        status['error_count'] < 10
-    )
-    
     return jsonify({
-        'status': 'healthy' if is_healthy else 'unhealthy',
-        'timestamp': datetime.now().isoformat(),
-        'details': status
+        'running': analyzer.running,
+        'queue_size': analyzer.analysis_queue.qsize(),
+        'stream_delay': analyzer.stream_delay,
+        'timestamp': time.time()
     })
 
-@app.route('/api/yamnet/restart', methods=['POST'])
-def restart_service():
-    analyzer.stop()
-    time.sleep(2)
-    success = analyzer.start()
-    return jsonify({'success': success, 'message': 'Service neugestartet'})
-
-# Signal-Handler für sauberes Beenden
-def signal_handler(signum, frame):
-    logger.info(f"Signal {signum} empfangen, beende Service...")
-    analyzer.stop()
-    sys.exit(0)
+@app.route('/api/yamnet/delay', methods=['GET', 'POST'])
+def manage_delay():
+    if request.method == 'POST':
+        data = request.get_json()
+        new_delay = float(data.get('delay', 10.5))
+        analyzer.stream_delay = max(0, min(60, new_delay))
+        return jsonify({
+            'status': 'success',
+            'delay': analyzer.stream_delay,
+            'timestamp': time.time()
+        })
+    return jsonify({
+        'current_delay': analyzer.stream_delay,
+        'timestamp': time.time()
+    })
 
 if __name__ == '__main__':
-    # Signal-Handler registrieren
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    print("="*60)
+    print("🎯 RFM YAMNet Server mit Audio-Buffer")
+    print("="*60)
+    print(f"📡 Stream: {STREAM_URL}")
+    print(f"⏳ Audio-Buffer: {analyzer.stream_delay}s")
+    print()
     
-    logger.info("🚀 RFM YAMNet Production Service startet...")
+    analysis_thread.start()
+    print("🌐 API Endpoints:")
+    print("  GET  /api/yamnet/analysis")
+    print("  GET  /api/yamnet/stream")
+    print("  GET  /api/yamnet/status")
+    print("  GET/POST /api/yamnet/delay")
+    print()
+    print("▶️  Starte Analyse mit Buffer...")
     
-    # Service starten
-    if analyzer.start():
-        logger.info("✅ Service erfolgreich gestartet")
-        
-        # Flask Server starten
-        app.run(
-            host='0.0.0.0',
-            port=5000,
-            debug=False,
-            threaded=True,
-            use_reloader=False
-        )
-    else:
-        logger.error("❌ Service konnte nicht gestartet werden")
-        sys.exit(1)
+    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)

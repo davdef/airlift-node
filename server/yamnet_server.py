@@ -3,38 +3,80 @@ import subprocess
 import numpy as np
 import tensorflow as tf
 import tensorflow_hub as hub
-from flask import Flask, jsonify, Response
+from flask import Flask, jsonify, Response, request
 from flask_cors import CORS
 import threading
 import time
 import queue
 import json
+import signal
+import sys
 from collections import defaultdict
+from dataclasses import dataclass
+from typing import Optional
+import logging
+from datetime import datetime
+
+# Logging einrichten
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('/var/log/yamnet_server.log')
+    ]
+)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)
 
+@dataclass
+class StreamState:
+    """Zustand des Audio-Streams"""
+    connected: bool = False
+    last_connect_time: Optional[float] = None
+    connection_attempts: int = 0
+    total_analyses: int = 0
+    stream_start_time: Optional[float] = None
+    last_audio_data: Optional[float] = None
+    ffmpeg_pid: Optional[int] = None
+    buffer_offset: float = 0.0
+
 class YamnetAnalyzer:
-    def __init__(self, stream_url):
+    def __init__(self, stream_url: str, stream_delay: float = 0.0):
         self.stream_url = stream_url
+        self.stream_delay = stream_delay
         self.model = hub.load('https://tfhub.dev/google/yamnet/1')
-        self.ffmpeg_process = None
-        self.analysis_queue = queue.Queue(maxsize=20)
+        self.ffmpeg_process: Optional[subprocess.Popen] = None
+        self.analysis_queue = queue.Queue(maxsize=50)
         self.latest_analysis = None
         self.running = False
+        self.should_reconnect = True
+        self.state = StreamState()
         
         # Klassennamen und Kategorisierung
         self.class_names = self.load_class_names()
         self.class_categories = self.categorize_all_classes()
         
-        print(f"✅ YAMNet geladen, {len(self.class_names)} Klassen")
+        logger.info(f"YAMNet geladen, {len(self.class_names)} Klassen")
         
-        # DEBUG: Test YAMNet
-        print("🔧 DEBUG: Testing YAMNet with dummy audio...")
+        # Test YAMNet
+        logger.info("Testing YAMNet with dummy audio...")
         test_audio = np.zeros(16000 * 3, dtype=np.float32)
         scores, _, _ = self.model(test_audio)
-        print(f"✅ YAMNet test passed, scores shape: {scores.shape}")
+        logger.info(f"YAMNet test passed, scores shape: {scores.shape}")
         
+        # Signal-Handler
+        signal.signal(signal.SIGTERM, self.signal_handler)
+        signal.signal(signal.SIGINT, self.signal_handler)
+    
+    def signal_handler(self, signum, frame):
+        """Behandelt Signale für sauberes Beenden"""
+        logger.info(f"Received signal {signum}, shutting down...")
+        self.stop()
+        sys.exit(0)
+    
     def load_class_names(self):
         """Lädt alle 521 YAMNet-Klassennamen"""
         class_map_path = self.model.class_map_path().numpy().decode('utf-8')
@@ -51,7 +93,7 @@ class YamnetAnalyzer:
                         continue
         return class_names
     
-    def categorize_class(self, class_name):
+    def categorize_class(self, class_name: str) -> str:
         """Kategorisiert eine Klasse für die Visualisierung"""
         if not class_name:
             return 'other'
@@ -61,83 +103,65 @@ class YamnetAnalyzer:
         # Musik
         if any(keyword in lower for keyword in 
                ['music', 'song', 'singing', 'sing', 'melody', 'harmony',
-                'choir', 'vocal', 'opera', 'symphony', 'orchestra', 'choir']):
+                'choir', 'vocal', 'opera', 'symphony', 'orchestra']):
             return 'music'
         
         # Instrumente
         if any(keyword in lower for keyword in
                ['guitar', 'drum', 'piano', 'violin', 'cello', 'trumpet',
-                'saxophone', 'flute', 'clarinet', 'harp', 'banjo', 'ukulele',
-                'accordion', 'organ', 'keyboard', 'synthesizer', 'bass',
-                'mandolin', 'harmonica', 'xylophone', 'marimba', 'bell']):
+                'saxophone', 'flute', 'clarinet', 'harp', 'banjo']):
             return 'instrument'
         
         # Sprache
         if any(keyword in lower for keyword in
                ['speech', 'talk', 'conversation', 'narration', 'monologue',
-                'dialog', 'dialogue', 'voice', 'announce', 'announcer',
-                'commentary', 'comment', 'interview', 'whispering']):
+                'dialog', 'voice', 'announce', 'announcer', 'commentary']):
             return 'speech'
         
         # Menschliche Laute
         if any(keyword in lower for keyword in
                ['laughter', 'laugh', 'crying', 'cry', 'sob', 'sigh',
-                'cough', 'sneeze', 'snore', 'breathing', 'gasp', 'grunt',
-                'groan', 'moan', 'whimper', 'hiccup', 'burp', 'scream',
-                'shout', 'yell', 'whistle', 'hum', 'sniff']):
+                'cough', 'sneeze', 'snore', 'breathing', 'gasp']):
             return 'human'
         
         # Tiere
         if any(keyword in lower for keyword in
                ['dog', 'cat', 'bird', 'horse', 'cow', 'sheep', 'pig',
-                'chicken', 'rooster', 'duck', 'goose', 'owl', 'eagle',
-                'crow', 'sparrow', 'parrot', 'canary', 'lion', 'tiger',
-                'elephant', 'monkey', 'wolf', 'frog', 'cricket', 'insect',
-                'bee', 'mosquito', 'fly', 'cicada', 'cricket']):
+                'chicken', 'rooster', 'duck', 'goose', 'owl']):
             return 'animal'
         
         # Fahrzeuge
         if any(keyword in lower for keyword in
                ['car', 'vehicle', 'engine', 'motor', 'train', 'airplane',
-                'aircraft', 'helicopter', 'boat', 'ship', 'siren', 'horn',
-                'alarm', 'truck', 'bus', 'motorcycle', 'bicycle', 'ambulance',
-                'fire engine', 'police', 'construction']):
+                'aircraft', 'helicopter', 'boat', 'ship', 'siren']):
             return 'vehicle'
         
         # Natur
         if any(keyword in lower for keyword in
                ['rain', 'wind', 'thunder', 'lightning', 'storm', 'water',
-                'wave', 'stream', 'river', 'ocean', 'sea', 'fire', 'crackle',
-                'earthquake', 'avalanche', 'waterfall', 'fountain']):
+                'wave', 'stream', 'river', 'ocean', 'sea', 'fire']):
             return 'nature'
         
         # Elektronik
         if any(keyword in lower for keyword in
                ['telephone', 'phone', 'cell phone', 'computer', 'keyboard',
-                'typewriter', 'printer', 'scanner', 'radio', 'television',
-                'tv', 'microwave', 'oven', 'refrigerator', 'washer', 'dryer',
-                'clock', 'watch', 'timer', 'bell', 'buzzer', 'beep']):
+                'typewriter', 'printer', 'scanner', 'radio', 'television']):
             return 'electronic'
         
         # Haushalt
         if any(keyword in lower for keyword in
                ['door', 'window', 'gate', 'drawer', 'cabinet', 'chair',
-                'table', 'bed', 'curtain', 'blender', 'mixer', 'vacuum',
-                'fan', 'air conditioner', 'heater', 'faucet', 'shower',
-                'toilet', 'flush', 'zipper', 'keys', 'jingle']):
+                'table', 'bed', 'curtain', 'blender', 'mixer']):
             return 'household'
         
         # Werkzeuge
         if any(keyword in lower for keyword in
-               ['hammer', 'saw', 'drill', 'wrench', 'screwdriver', 'nail',
-                'jackhammer']):
+               ['hammer', 'saw', 'drill', 'wrench', 'screwdriver', 'nail']):
             return 'tool'
         
         # Sport
         if any(keyword in lower for keyword in
-               ['applause', 'cheering', 'crowd', 'stadium', 'whistle',
-                'referee', 'basketball', 'football', 'soccer', 'tennis',
-                'baseball', 'golf', 'bowling', 'pool', 'swimming']):
+               ['applause', 'cheering', 'crowd', 'stadium', 'whistle']):
             return 'sport'
         
         # Explosionen
@@ -149,12 +173,9 @@ class YamnetAnalyzer:
     
     def categorize_all_classes(self):
         """Kategorisiert alle 521 Klassen einmalig"""
-        categories = {}
-        for idx, name in self.class_names.items():
-            categories[idx] = self.categorize_class(name)
-        return categories
+        return {idx: self.categorize_class(name) for idx, name in self.class_names.items()}
     
-    def get_category_color(self, category):
+    def get_category_color(self, category: str) -> str:
         """Gibt Farbcode für Kategorie zurück"""
         colors = {
             'music': '#5aff8c',
@@ -173,242 +194,234 @@ class YamnetAnalyzer:
         }
         return colors.get(category, '#607d8b')
     
+    def cleanup_ffmpeg(self):
+        """Bereinigt FFmpeg-Prozess sicher"""
+        if self.ffmpeg_process:
+            try:
+                self.ffmpeg_process.terminate()
+                try:
+                    self.ffmpeg_process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    logger.warning("FFmpeg did not terminate, sending SIGKILL")
+                    self.ffmpeg_process.kill()
+                    self.ffmpeg_process.wait(timeout=1)
+            except Exception as e:
+                logger.error(f"Error cleaning up FFmpeg: {e}")
+            finally:
+                self.ffmpeg_process = None
+                self.state.ffmpeg_pid = None
+    
+    def start_ffmpeg_stream(self) -> bool:
+        """Startet FFmpeg-Prozess für Stream - einfache Version"""
+        try:
+            # FFmpeg für OGG → PCM 16kHz (bewährte Einstellungen)
+            ffmpeg_cmd = [
+                'ffmpeg',
+                '-i', self.stream_url,
+                '-f', 's16le',
+                '-acodec', 'pcm_s16le',
+                '-ac', '1',
+                '-ar', '16000',
+                '-reconnect', '1',
+                '-reconnect_streamed', '1',
+                '-reconnect_delay_max', '5',
+                '-timeout', '15000000',
+                '-loglevel', 'error',
+                'pipe:1'
+            ]
+            
+            logger.info(f"Starting FFmpeg: {' '.join(ffmpeg_cmd[:10])}...")
+            
+            self.ffmpeg_process = subprocess.Popen(
+                ffmpeg_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=10**6,
+                start_new_session=True
+            )
+            
+            self.state.ffmpeg_pid = self.ffmpeg_process.pid
+            logger.info(f"FFmpeg started with PID {self.state.ffmpeg_pid}")
+            
+            # Warte auf Initialisierung
+            time.sleep(3)
+            
+            # Prüfe ob Prozess läuft
+            if self.ffmpeg_process.poll() is not None:
+                stderr = ""
+                try:
+                    stderr = self.ffmpeg_process.stderr.read().decode('utf-8', errors='ignore')
+                except:
+                    pass
+                if stderr:
+                    logger.error(f"FFmpeg died: {stderr[:500]}")
+                else:
+                    logger.error("FFmpeg died without error output")
+                self.cleanup_ffmpeg()
+                return False
+            
+            logger.info("FFmpeg is running")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to start FFmpeg: {e}")
+            self.cleanup_ffmpeg()
+            return False
+    
+    def apply_stream_delay(self):
+        """Wendet Stream-Delay an durch Warten"""
+        if self.stream_delay <= 0:
+            return
+        
+        logger.info(f"Waiting {self.stream_delay:.1f} seconds for stream delay...")
+        wait_start = time.time()
+        while time.time() - wait_start < self.stream_delay and self.running:
+            time.sleep(0.1)
+        logger.info("Stream delay applied")
+    
     def start_analysis(self):
-        """Startet die kontinuierliche Analyse mit Reconnect-Mechanismus"""
+        """Haupt-Analyse-Schleife"""
         self.running = True
         
-        print("🔧 DEBUG: Starting analysis thread")
+        max_backoff = 300
+        base_backoff = 5
         
-        max_reconnect_attempts = 10
-        reconnect_delay = 10  # Sekunden zwischen Reconnect-Versuchen
+        logger.info("Starting YAMNet analysis loop")
         
         while self.running:
-            reconnect_attempts = 0
+            reconnect_attempt = 0
             
-            while reconnect_attempts < max_reconnect_attempts and self.running:
-                try:
-                    # Teste FFmpeg zuerst
-                    print("🔧 DEBUG: Testing FFmpeg...")
-                    test_cmd = ['ffmpeg', '-version']
-                    result = subprocess.run(test_cmd, capture_output=True, text=True)
-                    print(f"✅ FFmpeg verfügbar: {result.stdout.split()[2]}")
+            while self.running:
+                logger.info(f"Connection attempt {reconnect_attempt + 1}")
+                
+                # Starte FFmpeg
+                if not self.start_ffmpeg_stream():
+                    wait_time = min(base_backoff * (2 ** reconnect_attempt), max_backoff)
+                    logger.error(f"Failed to start FFmpeg, waiting {wait_time}s")
                     
-                    # Stream-Test überspringen - Icecast gibt manchmal 400 für HEAD
-                    print(f"🎯 Versuche Verbindung zu: {self.stream_url}")
-                    print("⚠️  Stream-Test übersprungen (Icecast gibt manchmal 400 für HEAD)")
+                    for i in range(int(wait_time)):
+                        if not self.running:
+                            return
+                        time.sleep(1)
                     
-                    # FFmpeg für OGG → PCM 16kHz
-                    ffmpeg_cmd = [
-                        'ffmpeg',
-                        '-i', self.stream_url,
-                        '-f', 's16le',
-                        '-acodec', 'pcm_s16le',
-                        '-ac', '1',
-                        '-ar', '16000',
-                        '-reconnect', '1',
-                        '-reconnect_streamed', '1',
-                        '-reconnect_delay_max', '5',
-                        '-timeout', '15000000',  # 15 Sekunden timeout
-                        '-loglevel', 'error',
-                        'pipe:1'
-                    ]
-                    
-                    print(f"🔧 DEBUG: Reconnect attempt {reconnect_attempts + 1}/{max_reconnect_attempts}")
-                    
-                    self.ffmpeg_process = subprocess.Popen(
-                        ffmpeg_cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        bufsize=10**6,
-                        start_new_session=True
-                    )
-                    
-                    print("✅ FFmpeg process started")
-                    
-                    # Warte bis Prozess stabil ist
-                    time.sleep(3)
-                    
-                    # Prüfe ob Prozess noch läuft
-                    if self.ffmpeg_process.poll() is not None:
-                        stderr = ""
-                        try:
-                            stderr = self.ffmpeg_process.stderr.read().decode('utf-8', errors='ignore')
-                        except:
-                            pass
-                        if stderr:
-                            print(f"❌ FFmpeg process died. Stderr: {stderr[:500]}")
-                        else:
-                            print("❌ FFmpeg process died without error output")
-                        time.sleep(reconnect_delay)
-                        reconnect_attempts += 1
-                        continue
-                    
-                    print("🎯 FFmpeg läuft, beginne mit Audio-Analyse")
-
-                    if STREAM_DELAY_SECONDS > 0:
-                        print(f"⏳ Warte {STREAM_DELAY_SECONDS:.1f}s für Stream-Delay-Abgleich")
-                        time.sleep(STREAM_DELAY_SECONDS)
-                    
-                    # Haupt-Analyse-Schleife
-                    chunk_duration = 1.0
-                    chunk_size = int(16000 * chunk_duration)
-                    
-                    analysis_count = 0
-                    last_sent_time = 0
-                    consecutive_empty_reads = 0
-                    max_empty_reads = 50  # Reduziert für schnelleres Reconnect
-                    
-                    last_data_time = time.time()
-                    
-                    while self.running:
-                        current_time = time.time()
-                        
-                        # Prüfe ob FFmpeg Prozess noch läuft
-                        if self.ffmpeg_process.poll() is not None:
-                            stderr = ""
-                            try:
-                                stderr = self.ffmpeg_process.stderr.read().decode('utf-8', errors='ignore')
-                            except:
-                                pass
-                            if stderr:
-                                print(f"⚠️  FFmpeg process died. Reason: {stderr[:200]}")
-                            else:
-                                print("⚠️  FFmpeg process died (no stderr)")
-                            break
-                        
-                        # Prüfe ob zu lange keine Daten kamen
-                        if current_time - last_data_time > 30:  # 30 Sekunden ohne Daten
-                            print(f"⚠️  No data for 30 seconds, reconnecting...")
-                            break
-                        
+                    reconnect_attempt += 1
+                    continue
+                
+                # Reset reconnect counter
+                reconnect_attempt = 0
+                
+                # Wende Stream-Delay an
+                self.apply_stream_delay()
+                
+                # Setze Zustand
+                self.state.connected = True
+                self.state.last_connect_time = time.time()
+                self.state.stream_start_time = time.time()
+                self.state.connection_attempts += 1
+                self.state.last_audio_data = time.time()
+                
+                logger.info(f"Stream connected, starting analysis (delay: {self.stream_delay}s)")
+                
+                # Haupt-Analyse-Loop
+                chunk_duration = 1.0
+                chunk_size = int(16000 * chunk_duration)
+                empty_reads = 0
+                max_empty_reads = 100
+                
+                while self.running and self.ffmpeg_process and self.ffmpeg_process.poll() is None:
+                    try:
                         # Audio-Daten lesen
-                        try:
-                            raw_bytes = self.ffmpeg_process.stdout.read(chunk_size * 2)
-                        except Exception as e:
-                            print(f"❌ Read error: {e}")
-                            break
+                        raw_bytes = self.ffmpeg_process.stdout.read(chunk_size * 2)
                         
                         if not raw_bytes:
-                            consecutive_empty_reads += 1
+                            empty_reads += 1
                             
-                            # Prüfe stderr auf Fehlermeldungen
+                            # Prüfe stderr auf Fehler
                             try:
                                 stderr_line = self.ffmpeg_process.stderr.readline()
                                 if stderr_line:
                                     error_msg = stderr_line.decode('utf-8', errors='ignore').strip()
-                                    if error_msg:
-                                        print(f"🔧 DEBUG: FFmpeg stderr: {error_msg}")
-                                        # Bei bestimmten Fehlern sofort reconnect
-                                        if any(err in error_msg for err in ['Connection timed out', 'Server returned', '404 Not Found', '400 Bad Request']):
-                                            print("⚠️  Stream connection error detected, reconnecting...")
-                                            break
+                                    if error_msg and any(err in error_msg for err in 
+                                                       ['Connection timed out', 'Server returned', '404', '400', '403']):
+                                        logger.error(f"FFmpeg error: {error_msg}")
+                                        break
                             except:
                                 pass
                             
-                            if consecutive_empty_reads > max_empty_reads:
-                                print(f"⚠️  Too many empty reads ({consecutive_empty_reads}), reconnecting...")
+                            if empty_reads > max_empty_reads:
+                                logger.warning(f"Too many empty reads ({empty_reads}), reconnecting")
                                 break
                             
-                            # Kurz warten bevor nächster Versuch
-                            time.sleep(0.05)
+                            time.sleep(0.01)
                             continue
                         
-                        # Daten erhalten
-                        consecutive_empty_reads = 0
-                        last_data_time = current_time
+                        # Reset empty counter
+                        empty_reads = 0
+                        self.state.last_audio_data = time.time()
                         
-                        if len(raw_bytes) < chunk_size * 2 * 0.3:
-                            print(f"⚠️  Not enough data: {len(raw_bytes)} bytes")
+                        if len(raw_bytes) < chunk_size * 2 * 0.5:
+                            logger.debug(f"Partial chunk: {len(raw_bytes)}/{chunk_size * 2} bytes")
                             continue
                         
-                        # Konvertieren und analysieren
+                        # Analysiere
                         try:
                             audio_int16 = np.frombuffer(raw_bytes, dtype=np.int16)
                             audio_float32 = audio_int16.astype(np.float32) / 32768.0
                             
-                            # Debug erste Analyse
-                            if analysis_count == 0:
-                                print(f"🔧 DEBUG: First audio chunk - shape: {audio_float32.shape}, "
-                                      f"min: {audio_float32.min():.3f}, max: {audio_float32.max():.3f}, "
-                                      f"mean: {audio_float32.mean():.3f}")
-                            
                             analysis = self.analyze_audio(audio_float32)
+                            
+                            # Berücksichtige Stream-Delay in timestamp
+                            if self.state.stream_start_time:
+                                adjusted_time = time.time() - self.stream_delay
+                                analysis['timestamp'] = adjusted_time
+                                analysis['stream_time'] = time.time() - self.state.stream_start_time
+                            
                             self.latest_analysis = analysis
+                            self.state.total_analyses += 1
                             
-                            current_time = time.time()
-                            if current_time - last_sent_time >= 0.1:  # 100ms Mindestabstand
-                                try:
-                                    self.analysis_queue.put_nowait(analysis)
-                                    last_sent_time = current_time
-                                    
-                                    if analysis_count == 0 and analysis['topClasses']:
-                                        top_tag = analysis['topClasses'][0]
-                                        print(f"🎯 First analysis successful: {top_tag['name']} ({top_tag['confidence']:.1%})")
-                                    
-                                except queue.Full:
-                                    try:
-                                        self.analysis_queue.get_nowait()
-                                        self.analysis_queue.put_nowait(analysis)
-                                        last_sent_time = current_time
-                                    except:
-                                        pass
-                            
-                            analysis_count += 1
-                            
-                            # Status-Log alle 30 Analysen
-                            if analysis_count % 30 == 0 and analysis['topClasses']:
-                                top_tag = analysis['topClasses'][0]
-                                print(f"📊 Analysis #{analysis_count}: {top_tag['name']} ({top_tag['confidence']:.1%}), "
-                                      f"Tags: {len(analysis['topClasses'])}")
-                                
-                        except Exception as e:
-                            print(f"❌ Analysis error: {e}")
-                            import traceback
-                            traceback.print_exc()
-                            break
-                    
-                    # Verlasse innere Schleife (FFmpeg gestorben/fehlerhaft)
-                    print(f"🔄 Analysis loop ended after {analysis_count} analyses")
-                    
-                    # Bereinige alten Prozess
-                    if self.ffmpeg_process:
-                        try:
-                            self.ffmpeg_process.terminate()
-                            self.ffmpeg_process.wait(timeout=2)
-                        except:
+                            # In Queue ablegen
                             try:
-                                self.ffmpeg_process.kill()
-                            except:
-                                pass
-                        finally:
-                            self.ffmpeg_process = None
-                    
-                    # Kurze Pause vor Reconnect
-                    time.sleep(2)
-                    
-                except Exception as e:
-                    print(f"❌ Setup error: {type(e).__name__}: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    time.sleep(reconnect_delay)
-                    reconnect_attempts += 1
-            
-            # Wenn max reconnect attempts erreicht, längere Pause
-            if self.running and reconnect_attempts >= max_reconnect_attempts:
-                print(f"⚠️  Max reconnect attempts ({max_reconnect_attempts}) reached. Waiting 30 seconds...")
-                for i in range(30):
-                    if not self.running:
+                                self.analysis_queue.put_nowait(analysis)
+                            except queue.Full:
+                                try:
+                                    self.analysis_queue.get_nowait()
+                                    self.analysis_queue.put_nowait(analysis)
+                                except:
+                                    pass
+                            
+                            # Status-Log
+                            if self.state.total_analyses % 60 == 0:
+                                if analysis['topClasses']:
+                                    top = analysis['topClasses'][0]
+                                    logger.info(f"Analysis #{self.state.total_analyses}: "
+                                               f"{top['name']} ({top['confidence']:.1%}), "
+                                               f"Queue: {self.analysis_queue.qsize()}")
+                            
+                        except Exception as e:
+                            logger.error(f"Analysis error: {e}")
+                            continue
+                            
+                    except Exception as e:
+                        logger.error(f"Audio processing error: {e}")
                         break
-                    time.sleep(1)
+                
+                # Loop beendet, bereinige
+                logger.info(f"Analysis loop ended, total analyses: {self.state.total_analyses}")
+                self.cleanup_ffmpeg()
+                self.state.connected = False
+                
+                # Kurze Pause vor Reconnect
+                time.sleep(2)
+                break
         
-        print("⏹️  Analyse komplett gestoppt")
+        logger.info("Analysis stopped")
     
-    def analyze_audio(self, audio_data):
-        """Führt YAMNet-Analyse durch und gibt relevante Klassen zurück"""
+    def analyze_audio(self, audio_data: np.ndarray) -> dict:
+        """Führt YAMNet-Analyse durch"""
         try:
             scores, _, _ = self.model(audio_data)
         except Exception as e:
-            print(f"❌ YAMNet inference failed: {e}")
+            logger.error(f"YAMNet inference failed: {e}")
             return {
                 'timestamp': time.time(),
                 'topClasses': [],
@@ -418,10 +431,7 @@ class YamnetAnalyzer:
                 'analysisId': int(time.time() * 1000)
             }
         
-        # Durchschnittliche Scores über Zeitfenster
         avg_scores = np.mean(scores, axis=0)
-        
-        # Top 20 Klassen finden
         top_indices = np.argsort(avg_scores)[-20:][::-1]
         
         top_classes = []
@@ -431,8 +441,7 @@ class YamnetAnalyzer:
             class_name = self.class_names.get(idx, f"Class_{idx}")
             confidence = float(avg_scores[idx])
             
-            # NIEDRIGERE SCHWELLE für mehr Klassen
-            if confidence < 0.005:  # 0.5% statt 1%
+            if confidence < 0.005:
                 continue
                 
             category = self.class_categories.get(idx, 'other')
@@ -440,21 +449,18 @@ class YamnetAnalyzer:
             top_classes.append({
                 'id': int(idx),
                 'name': class_name,
-                'confidence': confidence,  # ORIGINAL CONFIDENCE
+                'confidence': confidence,
                 'category': category,
                 'color': self.get_category_color(category)
             })
             
             total_confidence += confidence
         
-        # Nach Confidence sortieren
         top_classes.sort(key=lambda x: x['confidence'], reverse=True)
         
-        # Auf 8-15 Klassen limitieren
         if len(top_classes) > 15:
             top_classes = top_classes[:15]
         
-        # Dominante Kategorie bestimmen
         category_scores = defaultdict(float)
         for cls in top_classes:
             category_scores[cls['category']] += cls['confidence']
@@ -467,28 +473,27 @@ class YamnetAnalyzer:
             'dominantCategory': dominant_category,
             'totalConfidence': total_confidence,
             'totalClasses': len(top_classes),
-            'analysisId': int(time.time() * 1000)
+            'analysisId': int(time.time() * 1000),
+            'state': {
+                'connected': self.state.connected,
+                'total_analyses': self.state.total_analyses,
+                'queue_size': self.analysis_queue.qsize()
+            }
         }
     
     def stop(self):
-        """Stoppt die Analyse"""
+        """Stoppt die Analyse sauber"""
+        logger.info("Stopping analyzer...")
         self.running = False
-        if self.ffmpeg_process:
-            try:
-                self.ffmpeg_process.terminate()
-                self.ffmpeg_process.wait(timeout=2)
-                print("✅ FFmpeg process stopped")
-            except:
-                try:
-                    self.ffmpeg_process.kill()
-                except:
-                    pass
-        print("⏹️  Analyse gestoppt")
+        self.should_reconnect = False
+        self.cleanup_ffmpeg()
+        logger.info("Analyzer stopped")
 
 # Globale Instanz
 STREAM_URL = "https://icecast.radiorfm.de/rfm.ogg"
-STREAM_DELAY_SECONDS = 8.5
-analyzer = YamnetAnalyzer(STREAM_URL)
+STREAM_DELAY = 10.5
+
+analyzer = YamnetAnalyzer(STREAM_URL, STREAM_DELAY)
 
 # Starte Analyse-Thread
 analysis_thread = threading.Thread(target=analyzer.start_analysis, daemon=True)
@@ -500,74 +505,81 @@ def get_analysis():
         return jsonify(analyzer.latest_analysis)
     else:
         return jsonify({
-            'status': 'starting',
-            'message': 'Analyse wird gestartet...',
+            'status': 'starting' if analyzer.running else 'stopped',
+            'message': 'Analyse wird gestartet...' if analyzer.running else 'Analyse gestoppt',
             'timestamp': time.time(),
             'queueSize': analyzer.analysis_queue.qsize(),
-            'analyzerRunning': analyzer.running
+            'streamConnected': analyzer.state.connected,
+            'totalAnalyses': analyzer.state.total_analyses
         })
 
 @app.route('/api/yamnet/stream')
 def stream_analysis():
-    """Server-Sent Events Stream für Echtzeit-Updates mit verbesserter Fehlerbehandlung"""
+    """Server-Sent Events Stream mit Synchronisation"""
+    # Hole client_id AUSSERHALB des Generators
+    client_id = request.args.get('client', 'unknown')
+    
     def generate():
-        last_keepalive = time.time()
-        last_analysis_id = None
-        empty_count = 0
-        max_empty_cycles = 60  # 1 Minute bei 1s timeout
+        logger.info(f"SSE stream started for client {client_id}")
         
-        print(f"🔧 DEBUG: SSE stream started, queue size: {analyzer.analysis_queue.qsize()}")
+        last_sent_id = None
+        keepalive_counter = 0
         
-        # Sofort eine Keep-Alive-Nachricht senden
-        yield f"data: {{\"status\": \"connected\", \"timestamp\": {time.time()}, \"queueSize\": {analyzer.analysis_queue.qsize()}, \"analyzerRunning\": {analyzer.running}}}\n\n"
+        # Sende Initialzustand
+        init_data = {
+            'type': 'init',
+            'status': 'connected',
+            'timestamp': time.time(),
+            'client_id': client_id,
+            'stream_delay': STREAM_DELAY,
+            'analyzer_state': {
+                'running': analyzer.running,
+                'connected': analyzer.state.connected,
+                'queue_size': analyzer.analysis_queue.qsize()
+            }
+        }
+        yield f"data: {json.dumps(init_data)}\n\n"
         
         while True:
             try:
-                # Prüfe ob Analyzer noch läuft
-                if not analyzer.running:
-                    yield f"data: {{\"error\": \"analyzer_stopped\", \"message\": \"Analyzer not running\", \"timestamp\": {time.time()}}}\n\n"
-                    time.sleep(2)
-                    continue
-                
-                # Falls keine Analyse existiert, aber Analyzer läuft
-                if analyzer.latest_analysis is None and analyzer.running:
-                    yield f"data: {{\"status\": \"waiting_for_first_analysis\", \"timestamp\": {time.time()}, \"message\": \"Waiting for first audio analysis...\"}}\n\n"
-                    time.sleep(1)
-                    continue
-                
-                # Versuche neue Analyse zu bekommen
+                # Versuche neue Analyse
                 try:
                     analysis = analyzer.analysis_queue.get(timeout=1.0)
                 except queue.Empty:
-                    analysis = analyzer.latest_analysis  # Nimm die letzte Analyse
+                    analysis = analyzer.latest_analysis
                 
-                if analysis:
-                    # Nur senden wenn sich was geändert hat
-                    if analysis.get('analysisId') != last_analysis_id:
-                        yield f"data: {json.dumps(analysis)}\n\n"
-                        last_analysis_id = analysis.get('analysisId')
-                        last_keepalive = time.time()
-                        empty_count = 0
-                    else:
-                        empty_count += 1
-                
-            except queue.Empty:
-                empty_count += 1
-                
-                # Wenn zu lange keine Daten, debug info
-                if empty_count > 10 and empty_count % 5 == 0:
-                    print(f"🔧 DEBUG: SSE queue empty for {empty_count} cycles, "
-                          f"queue: {analyzer.analysis_queue.qsize()}, "
-                          f"analyzer running: {analyzer.running}")
-                
-                # Keep-Alive alle 5 Sekunden
-                if time.time() - last_keepalive > 5:
-                    yield f"data: {{\"keepalive\": true, \"timestamp\": {time.time()}, \"queueSize\": {analyzer.analysis_queue.qsize()}, \"analyzerRunning\": {analyzer.running}, \"emptyCycles\": {empty_count}}}\n\n"
-                    last_keepalive = time.time()
+                if analysis and analysis.get('analysisId') != last_sent_id:
+                    # Füge Synchronisations-Info hinzu
+                    analysis['type'] = 'analysis'
+                    analysis['synchronized'] = True
+                    analysis['server_time'] = time.time()
+                    
+                    yield f"data: {json.dumps(analysis)}\n\n"
+                    last_sent_id = analysis.get('analysisId')
+                    keepalive_counter = 0
+                else:
+                    keepalive_counter += 1
+                    
+                    # Keep-Alive alle 10 Sekunden
+                    if keepalive_counter >= 10:
+                        keepalive_data = {
+                            'type': 'keepalive',
+                            'timestamp': time.time(),
+                            'queue_size': analyzer.analysis_queue.qsize(),
+                            'stream_connected': analyzer.state.connected,
+                            'total_analyses': analyzer.state.total_analyses
+                        }
+                        yield f"data: {json.dumps(keepalive_data)}\n\n"
+                        keepalive_counter = 0
                 
             except Exception as e:
-                print(f"❌ SSE generation error: {e}")
-                yield f"data: {{\"error\": \"stream_error\", \"message\": \"{str(e)}\", \"timestamp\": {time.time()}}}\n\n"
+                logger.error(f"SSE error for client {client_id}: {e}")
+                error_data = {
+                    'type': 'error',
+                    'message': str(e),
+                    'timestamp': time.time()
+                }
+                yield f"data: {json.dumps(error_data)}\n\n"
                 time.sleep(1)
     
     return Response(
@@ -577,165 +589,189 @@ def stream_analysis():
             'Cache-Control': 'no-cache',
             'Content-Type': 'text/event-stream',
             'X-Accel-Buffering': 'no',
-            'Access-Control-Allow-Origin': '*'
+            'Access-Control-Allow-Origin': '*',
+            'Connection': 'keep-alive'
         }
     )
 
 @app.route('/api/yamnet/status')
 def get_status():
-    """Gibt Server-Status zurück"""
+    """Detaillierter Status"""
     return jsonify({
         'status': 'running' if analyzer.running else 'stopped',
-        'streamUrl': STREAM_URL,
-        'analyzing': analyzer.running,
-        'queueSize': analyzer.analysis_queue.qsize(),
-        'lastUpdate': analyzer.latest_analysis['timestamp'] if analyzer.latest_analysis else None,
-        'totalClasses': len(analyzer.class_names),
-        'debug': {
-            'ffmpegAlive': analyzer.ffmpeg_process is not None and analyzer.ffmpeg_process.poll() is None,
-            'analysisThreadAlive': analysis_thread.is_alive()
-        }
-    })
-
-@app.route('/api/yamnet/classes')
-def get_all_classes():
-    """Gibt alle 521 Klassen mit Kategorien zurück"""
-    classes_by_category = defaultdict(list)
-    
-    for idx, name in analyzer.class_names.items():
-        category = analyzer.class_categories.get(idx, 'other')
-        classes_by_category[category].append({
-            'id': int(idx),
-            'name': name,
-            'color': analyzer.get_category_color(category)
-        })
-    
-    # Sortieren
-    for category in classes_by_category:
-        classes_by_category[category].sort(key=lambda x: x['name'])
-    
-    return jsonify({
-        'total': len(analyzer.class_names),
-        'categories': {
-            category: {
-                'count': len(classes),
-                'classes': classes[:30]  # Max 30 pro Kategorie anzeigen
-            }
-            for category, classes in classes_by_category.items()
-        }
-    })
-
-@app.route('/api/yamnet/debug')
-def get_debug():
-    """Debug-Informationen"""
-    return jsonify({
-        'analyzer': {
-            'running': analyzer.running,
-            'queue_size': analyzer.analysis_queue.qsize(),
-            'has_latest': analyzer.latest_analysis is not None,
-            'ffmpeg_alive': analyzer.ffmpeg_process is not None and analyzer.ffmpeg_process.poll() is None
+        'stream_url': STREAM_URL,
+        'stream_delay': STREAM_DELAY,
+        'state': {
+            'connected': analyzer.state.connected,
+            'connection_attempts': analyzer.state.connection_attempts,
+            'total_analyses': analyzer.state.total_analyses,
+            'last_connect_time': analyzer.state.last_connect_time,
+            'last_audio_data': analyzer.state.last_audio_data,
+            'stream_start_time': analyzer.state.stream_start_time
         },
-        'thread': {
-            'alive': analysis_thread.is_alive(),
-            'name': analysis_thread.name,
-            'daemon': analysis_thread.daemon
+        'queue': {
+            'size': analyzer.analysis_queue.qsize(),
+            'maxsize': analyzer.analysis_queue.maxsize
         },
-        'timestamp': time.time()
+        'system': {
+            'timestamp': time.time(),
+            'uptime': time.time() - (analyzer.state.stream_start_time or 0),
+            'python_version': sys.version,
+            'tensorflow_version': tf.__version__
+        }
     })
 
 @app.route('/api/yamnet/health')
 def health_check():
-    """Einfacher Health Check"""
-    return jsonify({
-        'status': 'healthy' if analyzer.running else 'stopped',
+    """Health Check für Load Balancer"""
+    health_status = {
+        'status': 'healthy' if analyzer.running and analyzer.state.connected else 'unhealthy',
         'timestamp': time.time(),
-        'analyzerRunning': analyzer.running,
-        'queueSize': analyzer.analysis_queue.qsize(),
-        'lastAnalysis': analyzer.latest_analysis is not None,
-        'ffmpegAlive': analyzer.ffmpeg_process is not None and analyzer.ffmpeg_process.poll() is None
-    })
+        'checks': {
+            'analyzer_running': analyzer.running,
+            'stream_connected': analyzer.state.connected,
+            'ffmpeg_alive': analyzer.ffmpeg_process is not None and analyzer.ffmpeg_process.poll() is None,
+            'recent_data': analyzer.state.last_audio_data is not None and 
+                          (time.time() - analyzer.state.last_audio_data) < 60,
+            'queue_healthy': analyzer.analysis_queue.qsize() < analyzer.analysis_queue.maxsize * 0.8
+        }
+    }
+    
+    if health_status['status'] == 'unhealthy':
+        return jsonify(health_status), 503
+    return jsonify(health_status)
 
-@app.route('/api/yamnet/restart', methods=['POST'])
+@app.route('/api/yamnet/control/restart', methods=['POST'])
 def restart_analyzer():
-    """Manueller Restart des Analyzers"""
+    """Manueller Restart"""
     global analyzer, analysis_thread
     
-    print("🔄 Manueller Restart angefordert")
+    logger.info("Manual restart requested")
     
-    # Stoppe alten Analyzer
     analyzer.stop()
     
     # Warte auf Thread
     if analysis_thread.is_alive():
         analysis_thread.join(timeout=5)
     
-    # Neue Instanz erstellen
-    analyzer = YamnetAnalyzer(STREAM_URL)
+    # Neue Instanz
+    analyzer = YamnetAnalyzer(STREAM_URL, STREAM_DELAY)
     
-    # Neuen Thread starten
+    # Neuen Thread
     analysis_thread = threading.Thread(target=analyzer.start_analysis, daemon=True)
     analysis_thread.start()
     
-    time.sleep(2)  # Kurze Pause
+    time.sleep(2)
     
     return jsonify({
         'status': 'restarted',
         'timestamp': time.time(),
-        'analyzerRunning': analyzer.running,
-        'threadAlive': analysis_thread.is_alive()
+        'analyzer_running': analyzer.running,
+        'thread_alive': analysis_thread.is_alive()
+    })
+
+@app.route('/api/yamnet/control/stop', methods=['POST'])
+def stop_analyzer():
+    """Manueller Stop"""
+    analyzer.stop()
+    return jsonify({
+        'status': 'stopped',
+        'timestamp': time.time()
+    })
+
+@app.route('/api/yamnet/control/start', methods=['POST'])
+def start_analyzer():
+    """Manueller Start"""
+    global analysis_thread
+    
+    if not analyzer.running:
+        analyzer.running = True
+        analysis_thread = threading.Thread(target=analyzer.start_analysis, daemon=True)
+        analysis_thread.start()
+    
+    return jsonify({
+        'status': 'started' if analyzer.running else 'already_running',
+        'timestamp': time.time()
+    })
+
+@app.route('/api/yamnet/debug')
+def get_debug():
+    """Debug-Info mit mehr Details"""
+    ffmpeg_info = None
+    if analyzer.ffmpeg_process:
+        ffmpeg_info = {
+            'pid': analyzer.ffmpeg_process.pid if analyzer.ffmpeg_process else None,
+            'alive': analyzer.ffmpeg_process.poll() is None,
+            'returncode': analyzer.ffmpeg_process.poll()
+        }
+    
+    return jsonify({
+        'analyzer': {
+            'running': analyzer.running,
+            'should_reconnect': analyzer.should_reconnect,
+            'state': analyzer.state.__dict__,
+            'ffmpeg': ffmpeg_info
+        },
+        'threads': {
+            'analysis_alive': analysis_thread.is_alive(),
+            'analysis_name': analysis_thread.name,
+            'thread_count': threading.active_count()
+        },
+        'memory': {
+            'queue_size': analyzer.analysis_queue.qsize(),
+            'queue_maxsize': analyzer.analysis_queue.maxsize
+        },
+        'timestamp': time.time(),
+        'datetime': datetime.now().isoformat()
     })
 
 if __name__ == '__main__':
-    print("🚀 RFM YAMNet API Server (DEBUG VERSION)")
-    print("=" * 60)
+    print("\n" + "="*60)
+    print("🚀 RFM YAMNet Audio Analysis Server")
+    print("="*60)
     
-    # Kategorien-Statistik anzeigen
-    category_stats = defaultdict(int)
-    for cat in analyzer.class_categories.values():
-        category_stats[cat] += 1
+    # Zeige Konfiguration
+    print(f"\n📡 Stream: {STREAM_URL}")
+    print(f"⏳ Stream-Delay: {STREAM_DELAY} Sekunden")
+    print(f"🎯 Audio-Rate: 16kHz, Mono")
+    print(f"📊 Analyse-Intervall: ~1 Sekunde")
+    print(f"🔄 Auto-Reconnect: Aktiviert")
     
-    print("📊 Klassenverteilung nach Kategorien (Top 10):")
-    for cat, count in sorted(category_stats.items(), key=lambda x: x[1], reverse=True)[:10]:
-        print(f"  {cat:15} {count:3d} Klassen")
-    
-    print(f"\n🎯 Stream: {STREAM_URL}")
-    print("📈 Update-Rate: ~10Hz (100ms Interval)")
-    print("🎯 Chunk-Größe: 1.0 Sekunden")
-    print(f"⏳ Stream-Delay: {STREAM_DELAY_SECONDS:.1f} Sekunden")
-    print("🔄 Reconnect: Automatisch nach Verbindungsabbruch")
-    print("🎯 Confidence-Schwelle: 0.5%")
-    
-    # Starte Analyse-Thread
+    # Starte Analyse
+    print("\n▶️  Starte Analyse-Thread...")
     analysis_thread.start()
-    print("▶️  Analyse-Thread gestartet")
     
-    # Kurz warten und Status prüfen
-    time.sleep(2)
+    # Warte auf Initialisierung
+    time.sleep(3)
     
-    print(f"\n🔧 Initial status:")
-    print(f"  - Thread alive: {analysis_thread.is_alive()}")
-    print(f"  - Analyzer running: {analyzer.running}")
-    print(f"  - Queue size: {analyzer.analysis_queue.qsize()}")
+    print(f"\n📊 Initialer Status:")
+    print(f"  - Thread aktiv: {analysis_thread.is_alive()}")
+    print(f"  - Analyzer läuft: {analyzer.running}")
+    print(f"  - Stream verbunden: {analyzer.state.connected}")
+    print(f"  - Warteschlange: {analyzer.analysis_queue.qsize()}")
     
-    # API Endpoints anzeigen
+    # API Endpoints
     print("\n🌐 API Endpoints:")
-    print("  GET /api/yamnet/analysis     - Aktuelle Analyse")
-    print("  GET /api/yamnet/stream       - Echtzeit-Stream (SSE)")
-    print("  GET /api/yamnet/status       - Server-Status")
-    print("  GET /api/yamnet/classes      - Alle 521 Klassen")
-    print("  GET /api/yamnet/debug        - Debug-Informationen")
-    print("  GET /api/yamnet/health       - Health Check")
-    print("  POST /api/yamnet/restart     - Manueller Restart")
+    print("  GET  /api/yamnet/analysis      - Aktuelle Analyse")
+    print("  GET  /api/yamnet/stream        - Echtzeit-Stream (SSE)")
+    print("  GET  /api/yamnet/status        - Detaillierter Status")
+    print("  GET  /api/yamnet/health        - Health Check")
+    print("  GET  /api/yamnet/debug         - Debug-Informationen")
+    print("  POST /api/yamnet/control/restart - Restart Analyzer")
+    print("  POST /api/yamnet/control/stop  - Stop Analyzer")
+    print("  POST /api/yamnet/control/start - Start Analyzer")
     
-    print(f"\n📡 Server läuft auf: http://localhost:5000")
+    print(f"\n📡 Server läuft auf: http://0.0.0.0:5000")
     print("   Nginx Proxy: /api/yamnet/* → http://localhost:5000/api/yamnet/*")
     print("\n⏳ Warte auf erste Audio-Analyse...")
-    print("Drücke Ctrl+C zum Beenden\n")
+    print("📝 Logs: /var/log/yamnet_server.log")
+    print("\nDrücke Ctrl+C zum Beenden\n")
     
     try:
         app.run(host='0.0.0.0', port=5000, debug=False, threaded=True, use_reloader=False)
     except KeyboardInterrupt:
-        print("\n\n👋 Server wird beendet...")
+        print("\n👋 Server wird beendet...")
         analyzer.stop()
         if analysis_thread.is_alive():
-            analysis_thread.join(timeout=2)
+            analysis_thread.join(timeout=5)
+        print("✅ Server gestoppt")

@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>RFM YAMNet API Debug</title>
+  <style>
+    /* CSS bleibt gleich wie vorher */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #333; min-height: 100vh; padding: 20px; }
+    .container { max-width: 1200px; margin: 0 auto; }
+    .header { background: rgba(255,255,255,0.95); border-radius: 16px; padding: 30px; margin-bottom: 30px; box-shadow: 0 20px 60px rgba(0,0,0,0.15); }
+    h1 { font-size: 2.5rem; color: #1a1a1a; margin-bottom: 10px; display: flex; align-items: center; gap: 15px; }
+    .status-badge { display: inline-block; padding: 5px 15px; border-radius: 20px; font-size: 0.9rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+    .status-badge.online { background: #10b981; color: white; }
+    .status-badge.offline { background: #ef4444; color: white; }
+    .dashboard { display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-bottom: 30px; }
+    @media (max-width: 768px) { .dashboard { grid-template-columns: 1fr; } }
+    .card { background: rgba(255,255,255,0.95); border-radius: 16px; padding: 25px; box-shadow: 0 10px 40px rgba(0,0,0,0.1); }
+    .card h2 { font-size: 1.5rem; color: #1a1a1a; margin-bottom: 20px; padding-bottom: 10px; border-bottom: 2px solid #e5e7eb; display: flex; align-items: center; gap: 10px; }
+    .endpoint-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+    .endpoint { background: white; border: 2px solid #e5e7eb; border-radius: 12px; padding: 20px; transition: all 0.3s ease; }
+    .endpoint:hover { border-color: #667eea; transform: translateY(-2px); box-shadow: 0 10px 25px rgba(102,126,234,0.15); }
+    .method { display: inline-block; padding: 4px 12px; border-radius: 6px; font-weight: 600; font-size: 0.9rem; margin-bottom: 10px; }
+    .method.get { background: #10b981; color: white; }
+    .method.post { background: #3b82f6; color: white; }
+    .method.sse { background: #8b5cf6; color: white; }
+    .endpoint-url { font-family: 'Monaco', 'Consolas', monospace; background: #f8fafc; padding: 10px; border-radius: 8px; margin: 10px 0; word-break: break-all; font-size: 0.9rem; }
+    .controls { display: flex; gap: 10px; margin-top: 15px; }
+    button { padding: 10px 20px; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; transition: all 0.2s ease; display: flex; align-items: center; gap: 8px; font-size: 0.9rem; }
+    button.primary { background: #667eea; color: white; }
+    button.primary:hover { background: #5a67d8; transform: translateY(-1px); }
+    button.secondary { background: #e5e7eb; color: #374151; }
+    button.secondary:hover { background: #d1d5db; }
+    button.danger { background: #ef4444; color: white; }
+    button.danger:hover { background: #dc2626; }
+    button.success { background: #10b981; color: white; }
+    button.success:hover { background: #059669; }
+    .result { margin-top: 15px; padding: 15px; background: #f8fafc; border-radius: 8px; max-height: 300px; overflow-y: auto; font-family: 'Monaco','Consolas',monospace; font-size: 0.85rem; white-space: pre-wrap; border: 1px solid #e5e7eb; }
+    .delay-control { display: flex; align-items: center; gap: 15px; margin: 20px 0; }
+    .delay-value { font-size: 2rem; font-weight: 700; color: #667eea; min-width: 80px; text-align: center; }
+    input[type="range"] { flex: 1; height: 8px; border-radius: 4px; background: #e5e7eb; outline: none; -webkit-appearance: none; }
+    input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%; background: #667eea; cursor: pointer; border: 3px solid white; box-shadow: 0 2px 10px rgba(0,0,0,0.2); }
+    .sse-log { height: 300px; overflow-y: auto; padding: 15px; background: #1a1a1a; color: #00ff00; border-radius: 8px; font-family: 'Monaco','Consolas',monospace; font-size: 0.85rem; margin-top: 15px; }
+    .sse-entry { padding: 5px 0; border-bottom: 1px solid #333; }
+    .timestamp { color: #888; font-size: 0.8rem; }
+    .error { color: #ff4444; background: rgba(255,68,68,0.1); padding: 10px; border-radius: 6px; margin: 10px 0; }
+    .success-msg { color: #10b981; background: rgba(16,185,129,0.1); padding: 10px; border-radius: 6px; margin: 10px 0; }
+    .info { color: #3b82f6; background: rgba(59,130,246,0.1); padding: 10px; border-radius: 6px; margin: 10px 0; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>🛠️ RFM YAMNet API Debug Center</h1>
+    <p>Teste und steuere alle YAMNet API Endpoints</p>
+  </div>
+  
+  <div class="dashboard">
+    <div class="card">
+      <h2>📊 Server Status</h2>
+      <div id="statusInfo" class="result">Lade Status...</div>
+      <div class="controls">
+        <button class="primary" onclick="fetchStatus()">🔄 Refresh</button>
+        <button class="secondary" onclick="fetchHealth()">❤️ Health</button>
+      </div>
+    </div>
+    
+    <div class="card">
+      <h2>⏱️ Stream Delay</h2>
+      <div id="currentDelay" class="delay-value">--.-- s</div>
+      <div class="delay-control">
+        <button class="secondary" onclick="adjustDelay(-0.5)">-0.5s</button>
+        <input type="range" id="delaySlider" min="0" max="20" step="0.1" value="10.5" oninput="updateDelayValue(this.value)">
+        <button class="secondary" onclick="adjustDelay(0.5)">+0.5s</button>
+      </div>
+      <div class="controls">
+        <button class="success" onclick="setDelay(10.5)">🔄 Reset</button>
+        <button class="primary" onclick="testSync()">🔗 Sync Test</button>
+      </div>
+      <div id="delayResult" class="result"></div>
+    </div>
+  </div>
+  
+  <div class="card">
+    <h2>🔌 API Endpoints</h2>
+    <div class="endpoint-grid">
+      
+      <div class="endpoint">
+        <span class="method get">GET</span>
+        <h3>Current Analysis</h3>
+        <div class="endpoint-url">/api/yamnet/analysis</div>
+        <div class="controls">
+          <button class="primary" onclick="callEndpoint('/api/yamnet/analysis', 'analysis')">🚀 Test</button>
+        </div>
+        <div id="result-analysis" class="result"></div>
+      </div>
+      
+      <div class="endpoint">
+        <span class="method sse">SSE</span>
+        <h3>Live Stream</h3>
+        <div class="endpoint-url">/api/yamnet/stream</div>
+        <div class="controls">
+          <button id="toggleSSE" class="primary" onclick="toggleSSE()">▶️ Start SSE</button>
+          <button class="secondary" onclick="clearSSELog()">🧹 Clear</button>
+        </div>
+        <div id="sseLog" class="sse-log"></div>
+      </div>
+      
+      <div class="endpoint">
+        <span class="method get">GET</span>
+        <h3>Server Status</h3>
+        <div class="endpoint-url">/api/yamnet/status</div>
+        <div class="controls">
+          <button class="primary" onclick="callEndpoint('/api/yamnet/status', 'status')">📊 Get Status</button>
+        </div>
+        <div id="result-status" class="result"></div>
+      </div>
+      
+      <div class="endpoint">
+        <span class="method get">GET</span>
+        <h3>Health Check</h3>
+        <div class="endpoint-url">/api/yamnet/health</div>
+        <div class="controls">
+          <button class="primary" onclick="callEndpoint('/api/yamnet/health', 'health')">❤️ Check</button>
+        </div>
+        <div id="result-health" class="result"></div>
+      </div>
+      
+      <div class="endpoint">
+        <span class="method get">GET</span>
+        <h3>Debug Info</h3>
+        <div class="endpoint-url">/api/yamnet/debug</div>
+        <div class="controls">
+          <button class="primary" onclick="callEndpoint('/api/yamnet/debug', 'debug')">🐛 Debug</button>
+        </div>
+        <div id="result-debug" class="result"></div>
+      </div>
+      
+      <div class="endpoint">
+        <span class="method get">GET</span>
+        <h3>All Classes</h3>
+        <div class="endpoint-url">/api/yamnet/classes</div>
+        <div class="controls">
+          <button class="primary" onclick="callEndpoint('/api/yamnet/classes', 'classes')">📚 Classes</button>
+        </div>
+        <div id="result-classes" class="result"></div>
+      </div>
+      
+      <div class="endpoint">
+        <span class="method post">POST</span>
+        <h3>Restart Service</h3>
+        <div class="endpoint-url">/api/yamnet/control/restart</div>
+        <div class="controls">
+          <button class="danger" onclick="callEndpoint('/api/yamnet/control/restart', 'restart', 'POST')">🔄 Restart</button>
+        </div>
+        <div id="result-restart" class="result"></div>
+      </div>
+      
+      <div class="endpoint">
+        <span class="method get">GET</span>
+        <h3>Delay Info</h3>
+        <div class="endpoint-url">/api/yamnet/delay</div>
+        <div class="controls">
+          <button class="primary" onclick="callEndpoint('/api/yamnet/delay', 'delay')">⏱️ Delay</button>
+          <button class="secondary" onclick="getCurrentDelay()">🔍 Refresh</button>
+        </div>
+        <div id="result-delay" class="result"></div>
+      </div>
+      
+    </div>
+  </div>
+</div>
+
+<script>
+// Globale Variablen
+let sseConnection = null;
+let currentDelay = 10.5;
+
+// Haupt-Fetch Funktion
+async function callEndpoint(url, resultId, method = 'GET', data = null) {
+  const resultDiv = document.getElementById(`result-${resultId}`);
+  
+  try {
+    resultDiv.innerHTML = '<div class="info">Loading...</div>';
+    
+    const options = {
+      method,
+      headers: { 'Content-Type': 'application/json' }
+    };
+    
+    if (data && method === 'POST') {
+      options.body = JSON.stringify(data);
+    }
+    
+    const response = await fetch(url, options);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
+    const result = await response.json();
+    
+    resultDiv.innerHTML = 
+      `<div class="success-msg">✅ ${method} ${url} - Status: ${response.status}</div>
+       <pre>${JSON.stringify(result, null, 2)}</pre>`;
+    
+    updateStatusBadge(true);
+    return result;
+    
+  } catch (error) {
+    resultDiv.innerHTML = `<div class="error">❌ Error: ${error.message}</div>`;
+    updateStatusBadge(false);
+    console.error('API Error:', error);
+  }
+}
+
+// Status Funktionen
+function updateStatusBadge(online) {
+  const badge = document.getElementById('statusBadge') || document.createElement('span');
+  badge.id = 'statusBadge';
+  badge.className = online ? 'status-badge online' : 'status-badge offline';
+  badge.textContent = online ? 'Online' : 'Offline';
+  
+  const header = document.querySelector('.header h1');
+  if (!header.querySelector('#statusBadge')) {
+    header.appendChild(badge);
+  }
+}
+
+async function fetchStatus() {
+  const status = await callEndpoint('/api/yamnet/status', 'status');
+  if (status) {
+    document.getElementById('statusInfo').innerHTML = 
+      `<pre>${JSON.stringify(status, null, 2)}</pre>`;
+  }
+}
+
+async function fetchHealth() {
+  const health = await callEndpoint('/api/yamnet/health', 'health');
+  if (health) {
+    document.getElementById('statusInfo').innerHTML = 
+      `<pre>${JSON.stringify(health, null, 2)}</pre>`;
+  }
+}
+
+// Delay Steuerung
+function updateDelayValue(value) {
+  document.getElementById('currentDelay').textContent = `${value}s`;
+}
+
+function updateDelayDisplay(delay) {
+  currentDelay = delay;
+  document.getElementById('currentDelay').textContent = `${delay}s`;
+  document.getElementById('delaySlider').value = delay;
+}
+
+async function getCurrentDelay() {
+  const result = await callEndpoint('/api/yamnet/delay', 'delay');
+  if (result && result.current_delay !== undefined) {
+    updateDelayDisplay(result.current_delay);
+  }
+}
+
+async function setDelay(delay) {
+  const result = await callEndpoint('/api/yamnet/delay', 'delay', 'POST', { delay: parseFloat(delay) });
+  if (result && result.delay !== undefined) {
+    updateDelayDisplay(result.delay);
+    document.getElementById('delayResult').innerHTML = 
+      `<div class="success-msg">✅ Delay updated to ${result.delay}s</div>`;
+  }
+}
+
+async function adjustDelay(amount) {
+  const result = await callEndpoint('/api/yamnet/delay/adjust', 'delay', 'POST', { adjustment: amount });
+  if (result && result.new_delay !== undefined) {
+    updateDelayDisplay(result.new_delay);
+    document.getElementById('delayResult').innerHTML = 
+      `<div class="success-msg">✅ Delay adjusted by ${amount}s to ${result.new_delay}s</div>`;
+  }
+}
+
+async function testSync() {
+  const result = await callEndpoint('/api/yamnet/sync-test', 'delay');
+  if (result) {
+    document.getElementById('delayResult').innerHTML = 
+      `<div class="info">🔗 Sync Test:</div>
+       <pre>${JSON.stringify(result, null, 2)}</pre>`;
+  }
+}
+
+// SSE Stream
+function toggleSSE() {
+  const button = document.getElementById('toggleSSE');
+  
+  if (sseConnection) {
+    sseConnection.close();
+    sseConnection = null;
+    button.innerHTML = '▶️ Start SSE';
+    button.className = 'button primary';
+    addSSELog('SSE stopped');
+  } else {
+    startSSE();
+    button.innerHTML = '⏸️ Stop SSE';
+    button.className = 'button danger';
+  }
+}
+
+function startSSE() {
+  const sseLog = document.getElementById('sseLog');
+  sseLog.innerHTML = '';
+  
+  addSSELog('Connecting to SSE...');
+  
+  sseConnection = new EventSource('/api/yamnet/stream');
+  
+  sseConnection.onopen = () => addSSELog('✅ SSE connected');
+  
+  sseConnection.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      if (data.keepalive) {
+        addSSELog('💓 Keep-alive');
+      } else if (data.topClasses && data.topClasses.length > 0) {
+        const top = data.topClasses[0];
+        addSSELog(`🎵 ${top.name} (${(top.confidence * 100).toFixed(1)}%)`);
+      } else {
+        addSSELog(`📦 ${event.data.substring(0, 100)}...`);
+      }
+    } catch {
+      addSSELog(`📦 ${event.data.substring(0, 100)}...`);
+    }
+  };
+  
+  sseConnection.onerror = () => {
+    addSSELog('❌ SSE error');
+    if (sseConnection) {
+      sseConnection.close();
+      sseConnection = null;
+      document.getElementById('toggleSSE').innerHTML = '▶️ Start SSE';
+      document.getElementById('toggleSSE').className = 'button primary';
+    }
+  };
+}
+
+function addSSELog(message) {
+  const sseLog = document.getElementById('sseLog');
+  const timestamp = new Date().toLocaleTimeString();
+  const entry = document.createElement('div');
+  entry.className = 'sse-entry';
+  entry.innerHTML = `<span class="timestamp">[${timestamp}]</span> ${message}`;
+  sseLog.appendChild(entry);
+  sseLog.scrollTop = sseLog.scrollHeight;
+}
+
+function clearSSELog() {
+  document.getElementById('sseLog').innerHTML = '';
+}
+
+// Initialisierung
+document.addEventListener('DOMContentLoaded', () => {
+  fetchStatus();
+  getCurrentDelay();
+  updateDelayValue(document.getElementById('delaySlider').value);
+  
+  // Slider Change Event
+  document.getElementById('delaySlider').addEventListener('change', function() {
+    setDelay(this.value);
+  });
+});
+</script>
+</body>
+</html>
