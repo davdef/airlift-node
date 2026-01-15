@@ -18,7 +18,7 @@ import json
 import logging
 import signal
 import sys
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import datetime
 import psutil  # pip install psutil
 
@@ -380,12 +380,30 @@ def get_analysis():
 @app.route('/api/yamnet/stream')
 def stream_analysis():
     def generate():
+        delay_seconds = 10.25
+        buffer = deque()
+        last_keepalive = time.time()
         while True:
             try:
-                analysis = analyzer.analysis_queue.get(timeout=2)
-                yield f"data: {json.dumps(analysis)}\n\n"
+                analysis = analyzer.analysis_queue.get(timeout=1)
+                buffer.append(analysis)
             except queue.Empty:
+                pass
+
+            now = time.time()
+            while buffer:
+                analysis_timestamp = buffer[0].get('timestamp', now)
+                if now - analysis_timestamp < delay_seconds:
+                    break
+                analysis = buffer.popleft()
+                yield f"data: {json.dumps(analysis)}\n\n"
+                last_keepalive = time.time()
+
+            if time.time() - last_keepalive > 2 and not buffer:
                 yield f"data: {{\"keepalive\": true, \"timestamp\": {time.time()}}}\n\n"
+                last_keepalive = time.time()
+
+            time.sleep(0.05)
     
     return Response(generate(), mimetype='text/event-stream')
 
